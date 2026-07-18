@@ -41,6 +41,10 @@ impl WType {
             ShaderType::Vec4 => WType::Vec4,
             ShaderType::Mat4 => WType::Mat4,
             ShaderType::Mat3 => WType::Mat3,
+            // Unreachable: both WGSL shader emitters reject u32 params before
+            // building param infos (`reject_u32_params` in `shader.rs`). The
+            // scalar mapping keeps this total until the walker learns u32.
+            ShaderType::U32 => WType::F32,
         }
     }
 

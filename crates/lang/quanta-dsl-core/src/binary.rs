@@ -794,6 +794,7 @@ fn shader_type_to_ir(ty: &ShaderType) -> quanta_ir::ShaderType {
         ShaderType::Vec4 => quanta_ir::ShaderType::Vec4,
         ShaderType::Mat4 => quanta_ir::ShaderType::Mat4,
         ShaderType::Mat3 => quanta_ir::ShaderType::Mat3,
+        ShaderType::U32 => quanta_ir::ShaderType::U32,
     }
 }
 

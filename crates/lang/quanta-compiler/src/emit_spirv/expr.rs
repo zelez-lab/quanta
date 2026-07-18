@@ -411,6 +411,31 @@ impl SpvEmitter {
         self.parse_comparison(tokens, pos, params, locals)
     }
 
+    /// Convert a scalar value to the target scalar family when exactly one of
+    /// {`F32`, `U32`} meets the other; every other (type, target) pair passes
+    /// through untouched. This is how a BARE integer literal — tokenized as
+    /// f32, see `ShaderToken::UInt` — participates in u32 comparisons
+    /// (`shape_type == 3` → `OpConvertFToU %float_3` → `OpIEqual`), and how a
+    /// u32 value joins float arithmetic (`OpConvertUToF`). An f32→u32
+    /// conversion truncates toward zero; negative values are undefined per
+    /// SPIR-V, which only integer-literal comparisons ever exercise here.
+    pub(crate) fn coerce_scalar(
+        &mut self,
+        id: u32,
+        ty: quanta_ir::ShaderType,
+        target: quanta_ir::ShaderType,
+    ) -> (u32, quanta_ir::ShaderType) {
+        use quanta_ir::ShaderType::{F32, U32};
+        let (opcode, target_ty_id) = match (ty, target) {
+            (F32, U32) => (OP_CONVERT_F_TO_U, self.ensure_type_u32()),
+            (U32, F32) => (OP_CONVERT_U_TO_F, self.ensure_type_f32()),
+            _ => return (id, ty),
+        };
+        let result = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, opcode, &[target_ty_id, result, id]);
+        (result, target)
+    }
+
     pub(crate) fn parse_comparison(
         &mut self,
         tokens: &[ShaderToken],
@@ -426,16 +451,41 @@ impl SpvEmitter {
             };
             if let Some(op) = cmp_op {
                 *pos += 1;
-                let (right, _) = self.parse_additive(tokens, pos, params, locals)?;
+                let (right, right_ty) = self.parse_additive(tokens, pos, params, locals)?;
+                // A comparison with a u32 on EITHER side is an integer
+                // comparison: the other side coerces to u32 (a bare literal
+                // RHS arrives f32-typed) and the UNSIGNED opcode family is
+                // used — comparing a uint with the float ops is invalid
+                // SPIR-V. Pure float comparisons keep the FOrd ops.
+                let unsigned =
+                    ty == quanta_ir::ShaderType::U32 || right_ty == quanta_ir::ShaderType::U32;
+                let (left, right) = if unsigned {
+                    let (l, _) = self.coerce_scalar(left, ty, quanta_ir::ShaderType::U32);
+                    let (r, _) = self.coerce_scalar(right, right_ty, quanta_ir::ShaderType::U32);
+                    (l, r)
+                } else {
+                    (left, right)
+                };
                 let bool_ty = self.ensure_type_bool();
                 let result = self.alloc_id();
-                let opcode = match op {
-                    ShaderCmpOp::Lt => OP_FORD_LESS_THAN,
-                    ShaderCmpOp::Gt => OP_FORD_GREATER_THAN,
-                    ShaderCmpOp::Le => OP_FORD_LESS_THAN_EQUAL,
-                    ShaderCmpOp::Ge => OP_FORD_GREATER_THAN_EQUAL,
-                    ShaderCmpOp::Eq => OP_FORD_EQUAL,
-                    ShaderCmpOp::Ne => OP_FORD_NOT_EQUAL,
+                let opcode = if unsigned {
+                    match op {
+                        ShaderCmpOp::Lt => OP_ULESS_THAN,
+                        ShaderCmpOp::Gt => OP_UGREATER_THAN,
+                        ShaderCmpOp::Le => OP_ULESS_THAN_EQ,
+                        ShaderCmpOp::Ge => OP_UGREATER_THAN_EQUAL,
+                        ShaderCmpOp::Eq => OP_IEQUAL,
+                        ShaderCmpOp::Ne => OP_INOT_EQUAL,
+                    }
+                } else {
+                    match op {
+                        ShaderCmpOp::Lt => OP_FORD_LESS_THAN,
+                        ShaderCmpOp::Gt => OP_FORD_GREATER_THAN,
+                        ShaderCmpOp::Le => OP_FORD_LESS_THAN_EQUAL,
+                        ShaderCmpOp::Ge => OP_FORD_GREATER_THAN_EQUAL,
+                        ShaderCmpOp::Eq => OP_FORD_EQUAL,
+                        ShaderCmpOp::Ne => OP_FORD_NOT_EQUAL,
+                    }
                 };
                 Self::emit_op(
                     &mut self.sec_function,
@@ -448,6 +498,36 @@ impl SpvEmitter {
         Ok((left, ty))
     }
 
+    /// Emit one scalar-aware arithmetic op. Two u32 operands use the integer
+    /// opcode at u32 type; a MIXED u32/f32 pair widens the u32 side to f32
+    /// (float wins — silently truncating `x * 0.5` through u32 would be
+    /// worse) and uses the float opcode; everything else is the pre-existing
+    /// float path keyed on the left type. Returns the result value and type.
+    fn emit_arith_op(
+        &mut self,
+        left: (u32, quanta_ir::ShaderType),
+        right: (u32, quanta_ir::ShaderType),
+        int_op: u16,
+        float_op: u16,
+    ) -> (u32, quanta_ir::ShaderType) {
+        use quanta_ir::ShaderType::U32;
+        let result = self.alloc_id();
+        if left.1 == U32 && right.1 == U32 {
+            let ty_id = self.ensure_type_u32();
+            Self::emit_op(
+                &mut self.sec_function,
+                int_op,
+                &[ty_id, result, left.0, right.0],
+            );
+            return (result, U32);
+        }
+        let (l, lty) = self.coerce_scalar(left.0, left.1, quanta_ir::ShaderType::F32);
+        let (r, _) = self.coerce_scalar(right.0, right.1, quanta_ir::ShaderType::F32);
+        let ty_id = self.shader_type_id(lty);
+        Self::emit_op(&mut self.sec_function, float_op, &[ty_id, result, l, r]);
+        (result, lty)
+    }
+
     pub(crate) fn parse_additive(
         &mut self,
         tokens: &[ShaderToken],
@@ -455,32 +535,18 @@ impl SpvEmitter {
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
         locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
-        let (mut left, ty) = self.parse_multiplicative(tokens, pos, params, locals)?;
+        let (mut left, mut ty) = self.parse_multiplicative(tokens, pos, params, locals)?;
         while *pos < tokens.len() {
             match &tokens[*pos] {
                 ShaderToken::Op('+') => {
                     *pos += 1;
-                    let (right, _) = self.parse_multiplicative(tokens, pos, params, locals)?;
-                    let result = self.alloc_id();
-                    let ty_id = self.shader_type_id(ty);
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_FADD,
-                        &[ty_id, result, left, right],
-                    );
-                    left = result;
+                    let right = self.parse_multiplicative(tokens, pos, params, locals)?;
+                    (left, ty) = self.emit_arith_op((left, ty), right, OP_IADD, OP_FADD);
                 }
                 ShaderToken::Op('-') => {
                     *pos += 1;
-                    let (right, _) = self.parse_multiplicative(tokens, pos, params, locals)?;
-                    let result = self.alloc_id();
-                    let ty_id = self.shader_type_id(ty);
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_FSUB,
-                        &[ty_id, result, left, right],
-                    );
-                    left = result;
+                    let right = self.parse_multiplicative(tokens, pos, params, locals)?;
+                    (left, ty) = self.emit_arith_op((left, ty), right, OP_ISUB, OP_FSUB);
                 }
                 _ => break,
             }
@@ -502,7 +568,6 @@ impl SpvEmitter {
                 ShaderToken::Op('*') => {
                     *pos += 1;
                     let (right, right_ty) = self.parse_unary(tokens, pos, params, locals)?;
-                    let result = self.alloc_id();
 
                     let is_left_mat = matches!(
                         left_ty,
@@ -514,6 +579,7 @@ impl SpvEmitter {
                     );
 
                     if is_left_mat && is_right_vec {
+                        let result = self.alloc_id();
                         let result_ty_id = self.shader_type_id(right_ty);
                         Self::emit_op(
                             &mut self.sec_function,
@@ -523,26 +589,20 @@ impl SpvEmitter {
                         left = result;
                         left_ty = right_ty;
                     } else {
-                        let ty_id = self.shader_type_id(left_ty);
-                        Self::emit_op(
-                            &mut self.sec_function,
+                        (left, left_ty) = self.emit_arith_op(
+                            (left, left_ty),
+                            (right, right_ty),
+                            OP_IMUL,
                             OP_FMUL,
-                            &[ty_id, result, left, right],
                         );
-                        left = result;
                     }
                 }
                 ShaderToken::Op('/') => {
                     *pos += 1;
-                    let (right, _) = self.parse_unary(tokens, pos, params, locals)?;
-                    let result = self.alloc_id();
-                    let ty_id = self.shader_type_id(left_ty);
-                    Self::emit_op(
-                        &mut self.sec_function,
-                        OP_FDIV,
-                        &[ty_id, result, left, right],
-                    );
-                    left = result;
+                    let right = self.parse_unary(tokens, pos, params, locals)?;
+                    // u32 / u32 is the UNSIGNED integer division; anything
+                    // mixed widens to float division (emit_arith_op).
+                    (left, left_ty) = self.emit_arith_op((left, left_ty), right, OP_UDIV, OP_FDIV);
                 }
                 _ => break,
             }
@@ -562,7 +622,14 @@ impl SpvEmitter {
             let (val, ty) = self.parse_unary(tokens, pos, params, locals)?;
             let result = self.alloc_id();
             let ty_id = self.shader_type_id(ty);
-            Self::emit_op(&mut self.sec_function, OP_F_NEGATE, &[ty_id, result, val]);
+            // OpFNegate on an integer operand is invalid; a u32 negates with
+            // the integer op (two's-complement wrap, like Rust `wrapping_neg`).
+            let opcode = if ty == quanta_ir::ShaderType::U32 {
+                OP_S_NEGATE
+            } else {
+                OP_F_NEGATE
+            };
+            Self::emit_op(&mut self.sec_function, opcode, &[ty_id, result, val]);
             return Ok((result, ty));
         }
         // Unary deref: uniform params are `&T` in the source, so

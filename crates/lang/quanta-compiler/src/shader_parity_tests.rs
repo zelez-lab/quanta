@@ -85,6 +85,9 @@ const OP_FMUL: u16 = 133;
 const OP_FDIV: u16 = 136;
 const OP_MATRIX_TIMES_VECTOR: u16 = 145;
 const OP_F_NEGATE: u16 = 127;
+const OP_IEQUAL: u16 = 170;
+const OP_ULESS_THAN: u16 = 176;
+const OP_FORD_EQUAL: u16 = 180;
 const OP_FORD_GREATER_THAN: u16 = 186;
 const OP_DPDX: u16 = 207;
 const OP_FWIDTH: u16 = 209;
@@ -230,6 +233,8 @@ const REAL_WORK_OPCODES: &[u16] = &[
     OP_FMUL,
     OP_FDIV,
     OP_MATRIX_TIMES_VECTOR,
+    OP_IEQUAL,
+    OP_ULESS_THAN,
     OP_FORD_GREATER_THAN,
     OP_DPDX,
     OP_FWIDTH,
@@ -278,7 +283,7 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[];
 // ─── The fixture table ───────────────────────────────────────────────────────
 
 use ShaderStage::{Fragment, Vertex};
-use ShaderType::{F32, Mat4, Vec2, Vec3, Vec4};
+use ShaderType::{F32, Mat4, U32, Vec2, Vec3, Vec4};
 
 fn fixtures() -> Vec<Fixture> {
     vec![
@@ -984,6 +989,97 @@ fn fixtures() -> Vec<Fixture> {
             // same verdict, via the unknown-intrinsic path.
             wgsl: WgslExpect::Reject {
                 err_contains: "frag_coord",
+            },
+        },
+        // ── U32 SCALARS (integer attribute → flat varying → comparison) ──
+        // The dija `shape_type` shape: a u32 vertex attribute forwarded as a
+        // u32 varying, branched on in the fragment with an integer compare —
+        // replacing the f32-smuggled `> 0.5` hack. SPIR-V: the varying is
+        // `Flat` on BOTH the vertex Output and the fragment Input (a non-Flat
+        // int interpolant is invalid), the vertex-attribute Input is NOT Flat,
+        // and comparisons use the UNSIGNED opcode family (OpIEqual /
+        // OpULessThan), never the FOrd float ops. MSL: `uint` members carry
+        // `[[flat]]` in the vertex-out and fragment-in structs, and literals
+        // spell as `Nu`. WGSL: documented gap — u32 params reject with a named
+        // error (flat interpolation + u32 literals not wired in the walker).
+        // The `u32_flat_wiring_spirv` test below pins the decorations by
+        // decoding the modules.
+        Fixture {
+            name: "u32_flat_varying_vert",
+            stage: Vertex,
+            params: &[
+                ("pos", Vec2, ParamKind::Attr),
+                ("uv", Vec2, ParamKind::Attr),
+                ("shape_type", U32, ParamKind::Attr),
+            ],
+            body: "{ Vec4 :: new ( pos . x , pos . y , 0.0 , 1.0 ) }",
+            alt: None,
+            // Loads + a constant ctor are byte-shaped like a passthrough (the
+            // varying forwarding is interface setup, present either way), so
+            // the witness is waived — Ok emission plus the decoration test
+            // below are the assertions.
+            spirv: SpirvExpect::Real { witness: &[] },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "uint shape_type [[attribute(2)]];",
+                    "float2 uv [[user(loc0)]];",
+                    "uint shape_type [[user(loc1)]] [[flat]];",
+                    "out.shape_type = shape_type;",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "u32 shader params are not yet supported",
+            },
+        },
+        // Fragment consuming the flat u32 varying with `== 3u32` — the
+        // explicit-suffix literal form. OpIEqual witnesses the integer
+        // compare; the phi carries the branch.
+        Fixture {
+            name: "u32_eq_suffixed_literal_frag",
+            stage: Fragment,
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("shape_type", U32, ParamKind::Attr),
+            ],
+            body: "{ let c = if shape_type == 3u32 { 1.0 } else { 0.2 } ; \
+                   Vec4 :: new ( c , uv . x , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_IEQUAL],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "uint shape_type [[user(loc1)]] [[flat]];",
+                    "uint shape_type = in.shape_type;",
+                    "shape_type == 3u",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "u32 shader params are not yet supported",
+            },
+        },
+        // The BARE-integer-literal twin (`kind < 2`): the tokenizer types a
+        // bare `2` as f32, so the comparison coerces it with OpConvertFToU
+        // and still compares UNSIGNED (OpULessThan). MSL spells the literal
+        // `2u` so its comparison is integer too.
+        Fixture {
+            name: "u32_cmp_bare_literal_frag",
+            stage: Fragment,
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("kind", U32, ParamKind::Attr),
+            ],
+            body: "{ let c = if kind < 2 { 0.9 } else { 0.1 } ; \
+                   Vec4 :: new ( c , c , c , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_ULESS_THAN],
+            },
+            msl: MslExpect::Accept {
+                contains: &["uint kind [[user(loc1)]] [[flat]];", "kind < 2u"],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "u32 shader params are not yet supported",
             },
         },
         // ── SLICE PARAMS (`&[T]` storage-buffer arrays) ───────────────────
@@ -2004,5 +2100,173 @@ fn frag_coord_spirv_builtin_wiring() {
     assert!(
         entry_operand_words.contains(&id),
         "FragCoord id %{id} missing from the OpEntryPoint interface"
+    );
+}
+
+/// The u32 interface contract, pinned by decoding the modules (spirv-val
+/// checks well-formedness in `spirv_validates`; this pins the SPECIFIC
+/// wiring so a regression cannot slip through while staying "valid"):
+///
+/// - vertex: the u32 VARYING Output is decorated `Flat`; the u32
+///   vertex-attribute Input is NOT (Flat is invalid on vertex inputs); the
+///   float varying Output is NOT (floats stay smooth).
+/// - fragment: the u32 Input is decorated `Flat`; the float input is NOT.
+/// - fragment: the `== 3u32` comparison lowers to the INTEGER OpIEqual, and
+///   no float FOrdEqual appears.
+#[test]
+fn u32_flat_wiring_spirv() {
+    const OP_TYPE_INT: u16 = 21;
+    const OP_TYPE_POINTER: u16 = 32;
+    const OP_VARIABLE: u16 = 59;
+    const OP_DECORATE: u16 = 71;
+    const DECORATION_FLAT: u32 = 14;
+    const STORAGE_CLASS_INPUT: u32 = 1;
+    const STORAGE_CLASS_OUTPUT: u32 = 3;
+
+    /// Decode a module into (opcode, operands) instructions.
+    fn instrs(spirv: &[u8]) -> Vec<(u16, Vec<u32>)> {
+        let words: Vec<u32> = spirv
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut out = Vec::new();
+        let mut i = 5;
+        while i < words.len() {
+            let word_count = ((words[i] >> 16) as usize).max(1);
+            out.push((
+                (words[i] & 0xFFFF) as u16,
+                words[i + 1..i + word_count].to_vec(),
+            ));
+            i += word_count;
+        }
+        out
+    }
+
+    /// The variables of storage class `class` whose pointee type is / is not
+    /// the module's `OpTypeInt 32 0`, plus the set of Flat-decorated ids.
+    struct Wiring {
+        uint_vars: Vec<u32>,
+        other_vars: Vec<u32>,
+        flat_ids: Vec<u32>,
+    }
+    fn wiring(instrs: &[(u16, Vec<u32>)], class: u32) -> Wiring {
+        let uint_ty: Vec<u32> = instrs
+            .iter()
+            .filter(|(op, a)| *op == OP_TYPE_INT && a.len() == 3 && a[1] == 32 && a[2] == 0)
+            .map(|(_, a)| a[0])
+            .collect();
+        // OpTypePointer: [result, storage_class, pointee]
+        let ptr_to = |uint: bool| -> Vec<u32> {
+            instrs
+                .iter()
+                .filter(|(op, a)| {
+                    *op == OP_TYPE_POINTER
+                        && a.len() == 3
+                        && a[1] == class
+                        && uint_ty.contains(&a[2]) == uint
+                })
+                .map(|(_, a)| a[0])
+                .collect()
+        };
+        let (uint_ptrs, other_ptrs) = (ptr_to(true), ptr_to(false));
+        // OpVariable: [result_type, result_id, storage_class]
+        let vars_of = |ptrs: &[u32]| -> Vec<u32> {
+            instrs
+                .iter()
+                .filter(|(op, a)| {
+                    *op == OP_VARIABLE && a.len() >= 3 && a[2] == class && ptrs.contains(&a[0])
+                })
+                .map(|(_, a)| a[1])
+                .collect()
+        };
+        Wiring {
+            uint_vars: vars_of(&uint_ptrs),
+            other_vars: vars_of(&other_ptrs),
+            flat_ids: instrs
+                .iter()
+                .filter(|(op, a)| *op == OP_DECORATE && a.len() == 2 && a[1] == DECORATION_FLAT)
+                .map(|(_, a)| a[0])
+                .collect(),
+        }
+    }
+
+    // ── Vertex: u32 varying Output Flat; u32 attribute Input NOT Flat. ──
+    let vert = fixtures()
+        .into_iter()
+        .find(|f| f.name == "u32_flat_varying_vert")
+        .expect("u32_flat_varying_vert fixture present");
+    let spirv = emit_spirv(&def(&vert)).expect("vertex fixture must emit");
+    let vi = instrs(&spirv);
+
+    let outputs = wiring(&vi, STORAGE_CLASS_OUTPUT);
+    assert_eq!(
+        outputs.uint_vars.len(),
+        1,
+        "vertex: expected exactly one u32 varying Output, found {:?}",
+        outputs.uint_vars
+    );
+    assert!(
+        outputs.flat_ids.contains(&outputs.uint_vars[0]),
+        "vertex: the u32 varying Output %{} must be decorated Flat (Flat ids: {:?})",
+        outputs.uint_vars[0],
+        outputs.flat_ids
+    );
+    for float_out in &outputs.other_vars {
+        assert!(
+            !outputs.flat_ids.contains(float_out),
+            "vertex: float varying Output %{float_out} must NOT be Flat (smooth interpolation)"
+        );
+    }
+
+    let inputs = wiring(&vi, STORAGE_CLASS_INPUT);
+    assert_eq!(
+        inputs.uint_vars.len(),
+        1,
+        "vertex: expected exactly one u32 attribute Input, found {:?}",
+        inputs.uint_vars
+    );
+    assert!(
+        !inputs.flat_ids.contains(&inputs.uint_vars[0]),
+        "vertex: the u32 ATTRIBUTE Input %{} must NOT be Flat — the decoration is \
+         invalid on vertex-stage Inputs",
+        inputs.uint_vars[0]
+    );
+
+    // ── Fragment: u32 Input Flat, float input smooth, integer compare. ──
+    let frag = fixtures()
+        .into_iter()
+        .find(|f| f.name == "u32_eq_suffixed_literal_frag")
+        .expect("u32_eq_suffixed_literal_frag fixture present");
+    let spirv = emit_spirv(&def(&frag)).expect("fragment fixture must emit");
+    let fi = instrs(&spirv);
+
+    let inputs = wiring(&fi, STORAGE_CLASS_INPUT);
+    assert_eq!(
+        inputs.uint_vars.len(),
+        1,
+        "fragment: expected exactly one u32 Input, found {:?}",
+        inputs.uint_vars
+    );
+    assert!(
+        inputs.flat_ids.contains(&inputs.uint_vars[0]),
+        "fragment: the u32 varying Input %{} must be decorated Flat (Flat ids: {:?})",
+        inputs.uint_vars[0],
+        inputs.flat_ids
+    );
+    for float_in in &inputs.other_vars {
+        assert!(
+            !inputs.flat_ids.contains(float_in),
+            "fragment: float Input %{float_in} must NOT be Flat"
+        );
+    }
+
+    let ops: Vec<u16> = fi.iter().map(|(op, _)| *op).collect();
+    assert!(
+        ops.contains(&OP_IEQUAL),
+        "fragment: `shape_type == 3u32` must lower to the integer OpIEqual"
+    );
+    assert!(
+        !ops.contains(&OP_FORD_EQUAL),
+        "fragment: no float FOrdEqual may appear for a u32 comparison"
     );
 }

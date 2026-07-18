@@ -149,6 +149,12 @@ impl SpvEmitter {
             );
             self.emit_name(var_id, &param.name);
             self.decorate(var_id, DECORATION_LOCATION, &[loc as u32]);
+            // An integer fragment Input must be Flat (integers cannot be
+            // interpolated); a non-Flat int interpolant is invalid SPIR-V.
+            // Float inputs stay smooth (undecorated).
+            if param.ty == crate::ShaderType::U32 {
+                self.decorate(var_id, DECORATION_FLAT, &[]);
+            }
             interface_ids.push(var_id);
             input_vars.push((var_id, ty_id));
         }
@@ -234,12 +240,24 @@ impl SpvEmitter {
         }
 
         let (first_var, first_ty) = input_vars[0];
-        let loaded = self.alloc_id();
+        let mut loaded = self.alloc_id();
         Self::emit_op(
             &mut self.sec_function,
             OP_LOAD,
             &[first_ty, loaded, first_var],
         );
+
+        // A u32 first input widens to f32 before the vec4 promotion — an
+        // OpCompositeConstruct with a uint member in a float vec4 is invalid.
+        if attr_params[0].1.ty == crate::ShaderType::U32 {
+            let widened = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_CONVERT_U_TO_F,
+                &[f32_ty, widened, loaded],
+            );
+            loaded = widened;
+        }
 
         // Promote to vec4 based on component count
         let components = Self::shader_type_components(attr_params[0].1.ty);

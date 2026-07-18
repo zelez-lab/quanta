@@ -29,8 +29,20 @@ impl SpvEmitter {
             return r;
         }
         let (var_id, type_id) = input_vars[0];
-        let loaded = self.alloc_id();
+        let mut loaded = self.alloc_id();
         Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+        // A u32 first input widens to f32 before the vec4 promotion below —
+        // an OpCompositeConstruct with a uint member in a float vec4 is
+        // invalid SPIR-V, even in a passthrough module.
+        if attr_params[0].1.ty == quanta_ir::ShaderType::U32 {
+            let widened = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_CONVERT_U_TO_F,
+                &[f32_ty, widened, loaded],
+            );
+            loaded = widened;
+        }
         let comps = Self::shader_type_components(attr_params[0].1.ty);
         match comps {
             4 => loaded,
@@ -171,6 +183,17 @@ impl SpvEmitter {
                 );
                 Some(r)
             }
+            // A u32 result widens to f32 (value-preserving), then promotes
+            // like a scalar — a uint member in a float vec4 is invalid.
+            quanta_ir::ShaderType::U32 => {
+                let widened = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_CONVERT_U_TO_F,
+                    &[f32_ty, widened, id],
+                );
+                self.promote_to_vec4(widened, quanta_ir::ShaderType::F32, f32_ty, vec4_ty)
+            }
             _ => None,
         }
     }
@@ -276,6 +299,14 @@ impl SpvEmitter {
             );
             self.emit_name(out_var, &format!("out_{}", param.name));
             self.decorate(out_var, DECORATION_LOCATION, &[varying_loc]);
+            // Integer varyings are Flat on BOTH ends of the interpolant (this
+            // Output and the fragment's matching Input): integers cannot be
+            // interpolated, and the fragment side is invalid without it. The
+            // u32 vertex-attribute INPUT above stays undecorated — Flat is
+            // never valid on vertex-stage Inputs. Float varyings stay smooth.
+            if param.ty == quanta_ir::ShaderType::U32 {
+                self.decorate(out_var, DECORATION_FLAT, &[]);
+            }
             interface_ids.push(out_var);
             varying_outputs.push((out_var, ty_id, input_vars[i].0));
         }

@@ -273,6 +273,7 @@ fn read_shader_type(tag: u8) -> Result<crate::ShaderType, &'static str> {
         3 => Ok(crate::ShaderType::Vec4),
         4 => Ok(crate::ShaderType::Mat4),
         5 => Ok(crate::ShaderType::Mat3),
+        6 => Ok(crate::ShaderType::U32),
         _ => Err("invalid ShaderType tag"),
     }
 }

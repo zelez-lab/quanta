@@ -56,6 +56,14 @@ impl SpvEmitter {
             );
             self.emit_name(var_id, &param.name);
             self.decorate(var_id, DECORATION_LOCATION, &[loc as u32]);
+            // An integer fragment Input MUST be Flat — integers cannot be
+            // interpolated, and spirv-val/drivers reject a non-Flat int
+            // interpolant (VUID-StandaloneSpirv-Flat-04744). Matches the Flat
+            // on the vertex emitter's u32 varying Output. Float inputs stay
+            // smooth (undecorated).
+            if param.ty == quanta_ir::ShaderType::U32 {
+                self.decorate(var_id, DECORATION_FLAT, &[]);
+            }
             interface_ids.push(var_id);
             input_vars.push((var_id, ty_id));
         }

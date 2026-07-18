@@ -8,6 +8,7 @@ fn shader_type_msl(ty: crate::ShaderType) -> &'static str {
         crate::ShaderType::Vec4 => "float4",
         crate::ShaderType::Mat4 => "float4x4",
         crate::ShaderType::Mat3 => "float3x3",
+        crate::ShaderType::U32 => "uint",
     }
 }
 
@@ -138,15 +139,22 @@ pub fn emit_fragment_shader(shader: &crate::ShaderDef) -> Result<String, String>
     let uniform_params: Vec<&crate::ShaderParam> =
         shader.params.iter().filter(|p| p.is_uniform).collect();
 
-    // Stage-in struct for interpolated inputs
+    // Stage-in struct for interpolated inputs. Integer members must be
+    // `[[flat]]` — Metal cannot interpolate integers.
     if !stage_in_params.is_empty() {
         out.push_str(&format!("struct {}_Input {{\n", shader.name));
         for (i, p) in stage_in_params.iter().enumerate() {
+            let flat = if p.ty == crate::ShaderType::U32 {
+                " [[flat]]"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "    {} {} [[user(loc{})]];\n",
+                "    {} {} [[user(loc{})]]{};\n",
                 shader_type_msl(p.ty),
                 p.name,
                 i,
+                flat,
             ));
         }
         out.push_str("};\n\n");

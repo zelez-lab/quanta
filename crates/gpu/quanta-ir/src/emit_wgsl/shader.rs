@@ -30,6 +30,27 @@ fn shader_type_wgsl(ty: ShaderType) -> &'static str {
         ShaderType::Vec4 => "vec4<f32>",
         ShaderType::Mat4 => "mat4x4<f32>",
         ShaderType::Mat3 => "mat3x3<f32>",
+        // Interface spelling only; u32 params are rejected before use — see
+        // `reject_u32_params` (varyings would need `@interpolate(flat)` and the
+        // walker would need u32-typed literals/comparisons).
+        ShaderType::U32 => "u32",
+    }
+}
+
+/// The WGSL emitter does not support `u32` shader params yet: a u32 varying
+/// needs `@interpolate(flat)` on both interface structs, and the body walker
+/// would emit float-typed literals against it (WGSL has no implicit
+/// conversions, so `naga` rejects the module). Fail emission with a named gap
+/// — the shader ships with `wgsl: None` and a build-time note, like the other
+/// documented WGSL gaps — instead of emitting invalid WGSL.
+fn reject_u32_params(shader: &ShaderDef) -> Result<(), String> {
+    match shader.params.iter().find(|p| p.ty == ShaderType::U32) {
+        Some(p) => Err(format!(
+            "shader `{}` param `{}`: u32 shader params are not yet supported by \
+             the WGSL emitter",
+            shader.name, p.name
+        )),
+        None => Ok(()),
     }
 }
 
@@ -194,6 +215,7 @@ fn emit_module_bindings(
 }
 
 pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
+    reject_u32_params(shader)?;
     let mut out = String::new();
 
     let bindings = shared_binding_indices(shader)?;
@@ -254,6 +276,7 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
 }
 
 pub fn emit_fragment_shader(shader: &ShaderDef) -> Result<String, String> {
+    reject_u32_params(shader)?;
     let mut out = String::new();
 
     let bindings = shared_binding_indices(shader)?;

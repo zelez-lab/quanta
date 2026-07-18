@@ -18,6 +18,11 @@ pub(crate) enum ShaderCmpOp {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ShaderToken {
     Float(f32),
+    /// A `u32`-suffixed integer literal (`3u32`). The suffix is the DSL's
+    /// explicit unsigned spelling; a BARE integer (`3`) stays [`Float`] for
+    /// backward compatibility and is coerced by type context (a comparison
+    /// against a u32 value converts it with `OpConvertFToU`).
+    UInt(u32),
     Ident(String),
     Op(char),         // + - * /
     Cmp(ShaderCmpOp), // < > <= >= == !=
@@ -86,6 +91,8 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
                         tokenize_word(&rest[1..], tokens);
                     }
                 }
+            } else if let Some(v) = parse_u32_suffixed(w) {
+                tokens.push(ShaderToken::UInt(v));
             } else if let Ok(f) = w.parse::<f32>() {
                 tokens.push(ShaderToken::Float(f));
             } else {
@@ -93,6 +100,19 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
             }
         }
     }
+}
+
+/// Parse a `u32`-suffixed integer literal word (`3u32`, `12u32`). Rust's
+/// token printer keeps a suffixed literal contiguous, so the whole word
+/// arrives as one token. A bare `u32` (the type ident in `as u32`) has no
+/// digits and falls through to `Ident`; digits with underscores (`1_000u32`)
+/// are accepted the way Rust spells them.
+fn parse_u32_suffixed(w: &str) -> Option<u32> {
+    let digits = w.strip_suffix("u32")?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit() || c == '_') {
+        return None;
+    }
+    digits.replace('_', "").parse::<u32>().ok()
 }
 
 /// Map function name to GLSL.std.450 extended instruction opcode.

@@ -24,13 +24,15 @@ use std::fmt::Write as _;
 
 use syn::{BinOp, Expr, Lit, Stmt, UnOp};
 
-/// The MSL value types a shader expression can have. Shaders are float-only, so
-/// this is scalars + float vectors, plus `Bool` for comparison results and
-/// `Slice` for a `&[T]` storage-buffer array param (whose element type is the
-/// boxed inner scalar/vector).
+/// The MSL value types a shader expression can have: float scalars/vectors,
+/// the `uint` scalar (u32 attributes/varyings and `Nu32` literals), plus
+/// `Bool` for comparison results and `Slice` for a `&[T]` storage-buffer
+/// array param (whose element type is the boxed inner scalar/vector).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MslType {
     Float,
+    /// 32-bit unsigned scalar (`uint`) — a u32 param or `Nu32` literal.
+    Uint,
     Vec2,
     Vec3,
     Vec4,
@@ -67,6 +69,7 @@ impl MslType {
     fn name(self) -> &'static str {
         match self {
             MslType::Float => "float",
+            MslType::Uint => "uint",
             MslType::Vec2 => "float2",
             MslType::Vec3 => "float3",
             MslType::Vec4 => "float4",
@@ -81,6 +84,7 @@ impl MslType {
     pub(crate) fn from_shader_type(ty: quanta_ir::ShaderType) -> MslType {
         match ty {
             quanta_ir::ShaderType::F32 => MslType::Float,
+            quanta_ir::ShaderType::U32 => MslType::Uint,
             quanta_ir::ShaderType::Vec2 => MslType::Vec2,
             quanta_ir::ShaderType::Vec3 => MslType::Vec3,
             quanta_ir::ShaderType::Vec4 => MslType::Vec4,
@@ -462,6 +466,9 @@ fn infer_type(expr: &Expr, env: &TypeEnv) -> MslType {
     match expr {
         Expr::Lit(lit) => match &lit.lit {
             Lit::Bool(_) => MslType::Bool,
+            // `3u32` is the DSL's explicit unsigned literal; a bare `3` stays
+            // float (backward compatibility — see `emit_lit`).
+            Lit::Int(i) if i.suffix() == "u32" => MslType::Uint,
             _ => MslType::Float,
         },
         Expr::Path(path) => path
@@ -515,6 +522,11 @@ fn infer_binary_type(b: &syn::ExprBinary, env: &TypeEnv) -> MslType {
             let l = infer_type(&b.left, env);
             let r = infer_type(&b.right, env);
             match (l, r) {
+                (MslType::Uint, MslType::Uint) => MslType::Uint,
+                // Mixed uint/float arithmetic is float — MSL's usual
+                // arithmetic conversions promote the uint operand, and the
+                // SPIR-V side widens it with OpConvertUToF (emit_arith_op).
+                (MslType::Uint, MslType::Float) | (MslType::Float, MslType::Uint) => MslType::Float,
                 (MslType::Float, other) | (MslType::Unknown, other) if other != MslType::Float => {
                     other
                 }
@@ -637,6 +649,11 @@ fn emit_lit(lit: &Lit) -> Result<String, String> {
             let s = f.base10_digits();
             Ok(ensure_float_literal(s))
         }
+        // `3u32` spells as the MSL `uint` literal `3u`; a BARE integer keeps
+        // the historical float spelling (`3` → `3.0`) so existing float
+        // bodies are untouched — a bare literal compared against a `uint`
+        // gets the integer spelling in `emit_binary` instead.
+        Lit::Int(i) if i.suffix() == "u32" => Ok(format!("{}u", i.base10_digits())),
         Lit::Int(i) => {
             let s = i.base10_digits();
             Ok(ensure_float_literal(s))
@@ -682,9 +699,46 @@ fn emit_unary(u: &syn::ExprUnary, env: &TypeEnv) -> Result<String, String> {
     }
 }
 
+/// Emit a comparison operand whose OTHER side is `uint`-typed: a bare
+/// (unsuffixed) integer literal spells as a `uint` literal (`3` → `3u`) so
+/// the MSL comparison stays integer — mirroring the SPIR-V side, which
+/// coerces the literal with `OpConvertFToU` and compares with the unsigned
+/// opcode family. Anything else emits normally (MSL's arithmetic conversions
+/// cover the remaining mixed cases).
+fn emit_cmp_operand_against_uint(expr: &Expr, env: &TypeEnv) -> Result<String, String> {
+    if let Expr::Lit(lit) = expr
+        && let Lit::Int(i) = &lit.lit
+        && i.suffix().is_empty()
+    {
+        return Ok(format!("{}u", i.base10_digits()));
+    }
+    emit_expr(expr, env)
+}
+
 fn emit_binary(b: &syn::ExprBinary, env: &TypeEnv) -> Result<String, String> {
-    let l = emit_expr(&b.left, env)?;
-    let r = emit_expr(&b.right, env)?;
+    let is_cmp = matches!(
+        b.op,
+        BinOp::Lt(_) | BinOp::Gt(_) | BinOp::Le(_) | BinOp::Ge(_) | BinOp::Eq(_) | BinOp::Ne(_)
+    );
+    let (l, r) = if is_cmp {
+        // A comparison with a uint side keeps the whole comparison integer:
+        // the opposite bare int literal spells as `Nu` (see the helper).
+        let lt = infer_type(&b.left, env);
+        let rt = infer_type(&b.right, env);
+        let l = if rt == MslType::Uint {
+            emit_cmp_operand_against_uint(&b.left, env)?
+        } else {
+            emit_expr(&b.left, env)?
+        };
+        let r = if lt == MslType::Uint {
+            emit_cmp_operand_against_uint(&b.right, env)?
+        } else {
+            emit_expr(&b.right, env)?
+        };
+        (l, r)
+    } else {
+        (emit_expr(&b.left, env)?, emit_expr(&b.right, env)?)
+    };
     let op = match b.op {
         BinOp::Add(_) => "+",
         BinOp::Sub(_) => "-",

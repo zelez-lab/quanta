@@ -275,7 +275,7 @@ proptest! {
     fn shader_def_roundtrip(
         name in "[a-z]{1,8}",
         stage_tag in 0u8..2,
-        ret_tag in 0u8..6,
+        ret_tag in 0u8..7,
     ) {
         let stage = if stage_tag == 0 { ShaderStage::Vertex } else { ShaderStage::Fragment };
         let return_type = shader_type_from_tag(ret_tag);
@@ -342,6 +342,7 @@ fn shader_type_from_tag(tag: u8) -> ShaderType {
         3 => ShaderType::Vec4,
         4 => ShaderType::Mat4,
         5 => ShaderType::Mat3,
+        6 => ShaderType::U32,
         _ => unreachable!(),
     }
 }

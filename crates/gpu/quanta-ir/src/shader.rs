@@ -8,6 +8,9 @@ pub enum ShaderStage {
 }
 
 /// Shader data types used in vertex/fragment parameters and return types.
+///
+/// Serialized by discriminant (`ty as u8`) in the wire format, so variants are
+/// append-only: existing tags 0-5 must never move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderType {
     F32 = 0,
@@ -16,6 +19,11 @@ pub enum ShaderType {
     Vec4 = 3,
     Mat4 = 4,
     Mat3 = 5,
+    /// 32-bit unsigned integer scalar. As a vertex attribute it is an integer
+    /// Input (fed by `AttributeFormat::UInt`); as a varying it must be
+    /// flat-interpolated on every backend (SPIR-V `Flat` on the vertex Output
+    /// AND fragment Input, MSL `[[flat]]` — integers cannot be interpolated).
+    U32 = 6,
 }
 
 /// A parsed shader parameter (vertex attribute, uniform, or slice binding).

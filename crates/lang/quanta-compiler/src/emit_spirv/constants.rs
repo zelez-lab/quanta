@@ -176,6 +176,12 @@ pub const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 pub const DECORATION_BLOCK: u32 = 2;
 pub const DECORATION_ARRAY_STRIDE: u32 = 6;
 pub const DECORATION_BUILTIN: u32 = 11;
+/// `Flat` — no interpolation. REQUIRED on every integer (or integer-vector)
+/// vertex→fragment interpolant: the fragment Input must carry it or the
+/// module is invalid (VUID-StandaloneSpirv-Flat-04744), and the vertex Output
+/// twin carries it for symmetry. Never valid on vertex-stage Inputs
+/// (attributes are fetched, not interpolated).
+pub const DECORATION_FLAT: u32 = 14;
 pub const DECORATION_RESTRICT: u32 = 19;
 pub const DECORATION_NON_WRITABLE: u32 = 24;
 pub const DECORATION_LOCATION: u32 = 30;

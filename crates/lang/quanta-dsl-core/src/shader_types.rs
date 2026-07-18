@@ -31,6 +31,9 @@ pub enum ShaderType {
     Vec4,
     Mat4,
     Mat3,
+    /// 32-bit unsigned integer scalar — an integer vertex attribute
+    /// (`AttributeFormat::UInt`) or a flat-interpolated varying.
+    U32,
 }
 
 impl ShaderType {
@@ -42,6 +45,7 @@ impl ShaderType {
             Self::Vec4 => "float4",
             Self::Mat4 => "float4x4",
             Self::Mat3 => "float3x3",
+            Self::U32 => "uint",
         }
     }
 
@@ -53,6 +57,7 @@ impl ShaderType {
             Self::Vec4 => "vec4<f32>",
             Self::Mat4 => "mat4x4<f32>",
             Self::Mat3 => "mat3x3<f32>",
+            Self::U32 => "u32",
         }
     }
 }
@@ -60,6 +65,7 @@ impl ShaderType {
 pub fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
     match name {
         "f32" => Ok(ShaderType::F32),
+        "u32" => Ok(ShaderType::U32),
         "Vec2" => Ok(ShaderType::Vec2),
         "Vec3" => Ok(ShaderType::Vec3),
         "Vec4" => Ok(ShaderType::Vec4),

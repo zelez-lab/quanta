@@ -646,19 +646,26 @@ fn roundtrip_shader_def_all_types() {
                 is_uniform: true,
                 is_slice: false,
             },
+            ShaderParam {
+                name: "g".into(),
+                ty: ShaderType::U32,
+                is_uniform: false,
+                is_slice: false,
+            },
         ],
         return_type: ShaderType::Vec4,
         body_source: "return d;".to_string(),
     };
     let bytes = serialize_shader(&s);
     let s2 = deserialize_shader(&bytes).unwrap();
-    assert_eq!(s2.params.len(), 6);
+    assert_eq!(s2.params.len(), 7);
     assert_eq!(s2.params[0].ty, ShaderType::F32);
     assert_eq!(s2.params[1].ty, ShaderType::Vec2);
     assert_eq!(s2.params[2].ty, ShaderType::Vec3);
     assert_eq!(s2.params[3].ty, ShaderType::Vec4);
     assert_eq!(s2.params[4].ty, ShaderType::Mat3);
     assert_eq!(s2.params[5].ty, ShaderType::Mat4);
+    assert_eq!(s2.params[6].ty, ShaderType::U32);
 }
 
 #[test]

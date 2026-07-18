@@ -473,6 +473,7 @@ impl SpvEmitter {
             // Mat4/Mat3: treat as vec4/vec3 for now (uniform matrices need proper handling later).
             crate::ShaderType::Mat4 => self.ensure_type_vector(f32_ty, 4),
             crate::ShaderType::Mat3 => self.ensure_type_vector(f32_ty, 3),
+            crate::ShaderType::U32 => self.ensure_type_u32(),
         }
     }
 
@@ -485,6 +486,7 @@ impl SpvEmitter {
             crate::ShaderType::Vec4 => 4,
             crate::ShaderType::Mat4 => 4,
             crate::ShaderType::Mat3 => 3,
+            crate::ShaderType::U32 => 1,
         }
     }
 

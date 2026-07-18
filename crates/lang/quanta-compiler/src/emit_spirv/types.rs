@@ -488,12 +488,15 @@ impl SpvEmitter {
                 let vec3_ty = self.ensure_type_vector(f32_ty, 3);
                 self.ensure_type_matrix(vec3_ty, 3)
             }
+            // Shares the ONE canonical %uint with the compute-kernel path —
+            // duplicate OpTypeInt declarations are invalid SPIR-V.
+            quanta_ir::ShaderType::U32 => self.ensure_type_u32(),
         }
     }
 
     pub(crate) fn shader_type_components(ty: quanta_ir::ShaderType) -> u32 {
         match ty {
-            quanta_ir::ShaderType::F32 => 1,
+            quanta_ir::ShaderType::F32 | quanta_ir::ShaderType::U32 => 1,
             quanta_ir::ShaderType::Vec2 => 2,
             quanta_ir::ShaderType::Vec3 => 3,
             quanta_ir::ShaderType::Vec4 | quanta_ir::ShaderType::Mat4 => 4,

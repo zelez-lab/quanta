@@ -165,6 +165,7 @@ pub(crate) const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
 pub(crate) const DECORATION_BLOCK: u32 = 2;
 pub(crate) const DECORATION_ARRAY_STRIDE: u32 = 6;
 pub(crate) const DECORATION_BUILTIN: u32 = 11;
+pub(crate) const DECORATION_FLAT: u32 = 14;
 pub(crate) const DECORATION_RESTRICT: u32 = 19;
 pub(crate) const DECORATION_NON_WRITABLE: u32 = 24;
 pub(crate) const DECORATION_LOCATION: u32 = 30;

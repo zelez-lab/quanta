@@ -49,6 +49,13 @@ impl SpvEmitter {
                 let id = self.emit_constant_f32(*val);
                 Ok((id, quanta_ir::ShaderType::F32))
             }
+            // `3u32` — an explicit unsigned literal (the u32-comparison RHS,
+            // or a plain u32 local's initializer).
+            ShaderToken::UInt(val) => {
+                *pos += 1;
+                let id = self.emit_constant_u32(*val);
+                Ok((id, quanta_ir::ShaderType::U32))
+            }
             ShaderToken::Open => {
                 *pos += 1;
                 let result = self.parse_conditional(tokens, pos, params, locals)?;
@@ -173,21 +180,17 @@ impl SpvEmitter {
             ));
         };
         *pos += 1; // '['
-        let (index_f, _) = self.parse_conditional(tokens, pos, params, locals)?;
+        let (index_val, index_ty) = self.parse_conditional(tokens, pos, params, locals)?;
         if tokens.get(*pos) == Some(&ShaderToken::BracketClose) {
             *pos += 1;
         } else {
             return Err(format!("expected `]` after index into `{name}`"));
         }
 
-        // f32 index → u32 (truncating).
-        let uint_ty = self.ensure_type_u32();
-        let index_u = self.alloc_id();
-        Self::emit_op(
-            &mut self.sec_function,
-            OP_CONVERT_F_TO_U,
-            &[uint_ty, index_u, index_f],
-        );
+        // f32 index → u32 (truncating); an already-u32 index (a u32 param or
+        // `Nu32` literal) is used directly — OpConvertFToU on a uint operand
+        // would be invalid SPIR-V.
+        let (index_u, _) = self.coerce_scalar(index_val, index_ty, quanta_ir::ShaderType::U32);
 
         // OpAccessChain [member 0, index] into the runtime array, then load.
         let zero = self.emit_constant_u32(0);
@@ -226,7 +229,11 @@ impl SpvEmitter {
             if i > 0 && *pos < tokens.len() && tokens[*pos] == ShaderToken::Comma {
                 *pos += 1;
             }
-            let (c, _) = self.parse_conditional(tokens, pos, params, locals)?;
+            let (c, c_ty) = self.parse_conditional(tokens, pos, params, locals)?;
+            // Vec constructors are float vectors: a u32 component (a u32
+            // param/varying used as a numeric value) widens to f32 — a uint
+            // member in a float composite is invalid SPIR-V.
+            let (c, _) = self.coerce_scalar(c, c_ty, quanta_ir::ShaderType::F32);
             components.push(c);
         }
         consume_call_close(tokens, pos);
@@ -311,6 +318,9 @@ impl SpvEmitter {
                 }
             }
             let (a, t) = self.parse_conditional(tokens, pos, params, locals)?;
+            // The GLSL.std.450 set here is float-only (FMin, FClamp, …): a
+            // u32 argument widens to f32 so the ext-inst operands stay float.
+            let (a, t) = self.coerce_scalar(a, t, quanta_ir::ShaderType::F32);
             if args.is_empty() {
                 first_ty = t;
             }

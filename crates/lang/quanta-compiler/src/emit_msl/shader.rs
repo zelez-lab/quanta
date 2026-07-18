@@ -137,6 +137,20 @@ fn shader_type_msl(ty: quanta_ir::ShaderType) -> &'static str {
         quanta_ir::ShaderType::Vec4 => "float4",
         quanta_ir::ShaderType::Mat4 => "float4x4",
         quanta_ir::ShaderType::Mat3 => "float3x3",
+        quanta_ir::ShaderType::U32 => "uint",
+    }
+}
+
+/// The interpolation qualifier a varying member of type `ty` carries in the
+/// vertex-out / fragment-in structs. Integer varyings MUST be `[[flat]]` —
+/// Metal cannot interpolate integers and rejects the pipeline otherwise
+/// (the MSL twin of the SPIR-V `Flat` decoration on both interface ends).
+/// Float varyings keep default (perspective-correct) interpolation. Vertex
+/// ATTRIBUTES take no qualifier — they are fetched, not interpolated.
+fn varying_qualifier_msl(ty: quanta_ir::ShaderType) -> &'static str {
+    match ty {
+        quanta_ir::ShaderType::U32 => " [[flat]]",
+        _ => "",
     }
 }
 
@@ -201,10 +215,11 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     ));
     for (i, p) in varying_params.iter().enumerate() {
         out.push_str(&format!(
-            "    {} {} [[user(loc{})]];\n",
+            "    {} {} [[user(loc{})]]{};\n",
             shader_type_msl(p.ty),
             p.name,
             i,
+            varying_qualifier_msl(p.ty),
         ));
     }
     out.push_str("};\n\n");
@@ -290,15 +305,17 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         .filter_map(|(p, b)| b.map(|b| (p, b)))
         .collect();
 
-    // Stage-in struct for interpolated inputs
+    // Stage-in struct for interpolated inputs; integer members are `[[flat]]`
+    // (see `varying_qualifier_msl`), matching the vertex-out struct.
     if !stage_in_params.is_empty() {
         out.push_str(&format!("struct {}_Input {{\n", shader.name));
         for (i, p) in stage_in_params.iter().enumerate() {
             out.push_str(&format!(
-                "    {} {} [[user(loc{})]];\n",
+                "    {} {} [[user(loc{})]]{};\n",
                 shader_type_msl(p.ty),
                 p.name,
                 i,
+                varying_qualifier_msl(p.ty),
             ));
         }
         out.push_str("};\n\n");
