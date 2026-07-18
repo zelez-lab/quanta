@@ -88,24 +88,102 @@ fn stamp_build_rev() {
     // Watch ONLY paths that exist (a missing rerun-if-changed path
     // makes cargo treat the script as always-dirty and the whole
     // dependent tree rebuilds forever), and watch what actually moves:
-    // HEAD (branch switches, in the per-worktree git dir) and the
-    // current branch's ref + packed-refs (commits, in the COMMON git
-    // dir — different from the worktree dir under `git worktree`).
-    let exists_then_watch = |p: String| {
-        if std::path::Path::new(&p).exists() {
-            println!("cargo:rerun-if-changed={p}");
+    // HEAD (branch switches) and FETCH_HEAD (rewritten by every
+    // fetch/pull, even one whose ref update lands only in
+    // packed-refs) in the per-worktree git dir; the current branch's
+    // loose ref + packed-refs (commits) in the COMMON git dir —
+    // different from the worktree dir under `git worktree`.
+    //
+    // Every path is rebuilt component-wise from git's `/`-separated
+    // output (native_path) and assembled with PathBuf::join — NEVER
+    // routed through fs::canonicalize: on Windows canonicalize
+    // returns a `\\?\`-verbatim path, and verbatim paths switch OFF
+    // Win32 normalization including `/`-as-separator, so a form like
+    // `\\?\C:\...\.git/packed-refs` stats as nonexistent, the watch
+    // is silently dropped, and a `git pull` stops re-stamping
+    // QUANTA_BUILD_REV.
+    let exists_then_watch = |p: std::path::PathBuf| {
+        if p.exists() {
+            println!("cargo:rerun-if-changed={}", p.display());
         }
     };
     if let Ok(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        exists_then_watch(format!("{git_dir}/HEAD"));
+        let git_dir = native_path(&git_dir);
+        exists_then_watch(git_dir.join("HEAD"));
+        exists_then_watch(git_dir.join("FETCH_HEAD"));
     }
     if let Ok(common) = git(&["rev-parse", "--git-common-dir"]) {
-        let common = std::fs::canonicalize(std::path::Path::new(&manifest_dir).join(&common))
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(common);
-        exists_then_watch(format!("{common}/packed-refs"));
+        // git prints the common dir relative to the cwd (from this
+        // manifest dir: `../../../.git`): resolve with a plain join
+        // against the manifest dir plus a lexical `..` collapse;
+        // fs::canonicalize only as the symlinked-tree fallback, with
+        // the `\\?\` verbatim prefix stripped.
+        let common = native_path(&common);
+        let common = if common.is_absolute() {
+            common
+        } else {
+            let joined = std::path::Path::new(&manifest_dir).join(&common);
+            let lexical = lexical_normalize(&joined);
+            if lexical.exists() {
+                lexical
+            } else {
+                std::fs::canonicalize(&joined)
+                    .map(strip_verbatim)
+                    .unwrap_or(lexical)
+            }
+        };
+        exists_then_watch(common.join("packed-refs"));
         if let Ok(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
-            exists_then_watch(format!("{common}/{head_ref}"));
+            // `refs/heads/<branch>` — `/`-separated: rebuild native
+            // before joining under the common dir.
+            exists_then_watch(common.join(native_path(&head_ref)));
         }
+    }
+}
+
+/// Rebuild a git-printed path (`/`-separated even on Windows) from
+/// its components, so separators come out native: `C:/r/.git` becomes
+/// `C:\r\.git` on Windows, and Unix paths pass through unchanged.
+fn native_path(printed: &str) -> std::path::PathBuf {
+    std::path::Path::new(printed).components().collect()
+}
+
+/// Collapse `.` and `<dir>/..` pairs lexically — a pure-string
+/// resolve for git's `../../../.git`-style relative output that
+/// involves no fs::canonicalize and therefore can never introduce
+/// the Windows `\\?\` verbatim prefix.
+fn lexical_normalize(p: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => match out.components().next_back() {
+                Some(std::path::Component::Normal(_)) => {
+                    out.pop();
+                }
+                _ => out.push(c),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Strip the `\\?\` verbatim prefix fs::canonicalize adds on Windows
+/// (`\\?\C:\x` → `C:\x`, `\\?\UNC\srv\share` → `\\srv\share`).
+/// Verbatim paths disable `/`-as-separator handling — exactly what
+/// broke the rerun watches. Non-Windows paths pass through untouched.
+fn strip_verbatim(p: std::path::PathBuf) -> std::path::PathBuf {
+    let stripped = {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            Some(format!(r"\\{rest}"))
+        } else {
+            s.strip_prefix(r"\\?\").map(str::to_string)
+        }
+    };
+    match stripped {
+        Some(s) => std::path::PathBuf::from(s),
+        None => p,
     }
 }
