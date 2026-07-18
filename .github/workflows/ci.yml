@@ -23,14 +23,23 @@ jobs:
         os: [macos-14, ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     env:
-      # These lanes don't build quanta-compiler; the DSL macros download
-      # the release bundle by version. Since v0.1.0-alpha.3 that bundle is
-      # rev-STAMPED, so on any push whose HEAD differs the handshake can
-      # PROVE a mismatch and turns fatal — which would fail every push.
-      # Host tests exercise wire/type/host behavior, not compiler output
+      # Host lanes are HERMETIC: no compiler download at all. They don't
+      # build quanta-compiler, and the old behavior — download a bundle
+      # and ACCEPT_STALE through the rev mismatch — broke the moment a
+      # push changed the shader model or wire format: the version-keyed
+      # release compiler is model-blind for that push, and the rev-exact
+      # compiler-dev asset loses the race against CI on essentially
+      # every push (it needs a manual dispatch + a multi-minute build).
+      # Host tests exercise wire/type/host behavior, not compiler
+      # output; the DSL macros emit stubs without a compiler and the
+      # shader-binary tests are written for the fields-are-None case
       # (the compiler-validation and GPU lanes build the compiler fresh
-      # and keep the strict handshake), so this is the documented
-      # rig-pinning case for the opt-out.
+      # and keep the strict handshake).
+      QUANTA_NO_DOWNLOAD: "1"
+      # Kept for the documented rig-pinning case (a self-hosted runner
+      # deliberately pinning a known-compatible compiler via
+      # QUANTA_COMPILER); inert on hosted runners now that no compiler
+      # resolves at all.
       QUANTA_ACCEPT_STALE_COMPILER: "1"
     steps:
       - uses: actions/checkout@v7
