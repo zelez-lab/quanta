@@ -193,6 +193,7 @@ pub const FP_FAST_MATH_FAST: u32 = 0x10;
 // ── Built-in values ─────────────────────────────────────────────────────────
 
 pub const BUILTIN_POSITION: u32 = 0;
+pub const BUILTIN_FRAG_COORD: u32 = 15;
 pub const BUILTIN_NUM_WORKGROUPS: u32 = 24;
 pub const BUILTIN_WORKGROUP_ID: u32 = 26;
 pub const BUILTIN_LOCAL_INVOCATION_ID: u32 = 27;

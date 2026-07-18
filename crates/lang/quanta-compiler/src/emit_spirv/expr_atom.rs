@@ -80,6 +80,27 @@ impl SpvEmitter {
                     return self.parse_texture_sample(tokens, pos, params, locals);
                 }
 
+                // Window-space position: frag_coord() → vec4 (x,y = pixel
+                // coords, z = depth, w = 1/w). Loads the `BuiltIn FragCoord`
+                // Input declared by `emit_fragment_shader`; outside a fragment
+                // body the var is absent and the error routes the body to the
+                // passthrough fallback, mirroring the MSL vertex rejection.
+                if name == "frag_coord" && *pos < tokens.len() && tokens[*pos] == ShaderToken::Open
+                {
+                    *pos += 1; // '('
+                    consume_call_close(tokens, pos);
+                    let Some(var_id) = self.frag_coord_var else {
+                        return Err(
+                            "frag_coord() is only available in fragment shader bodies".to_string()
+                        );
+                    };
+                    let f32_ty = self.ensure_type_f32();
+                    let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                    let loaded = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[vec4_ty, loaded, var_id]);
+                    return Ok((loaded, quanta_ir::ShaderType::Vec4));
+                }
+
                 // Screen-space derivatives — core fragment-stage ops.
                 if matches!(name.as_str(), "fwidth" | "dpdx" | "dpdy")
                     && *pos < tokens.len()

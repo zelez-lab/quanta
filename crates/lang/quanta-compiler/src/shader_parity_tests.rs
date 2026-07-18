@@ -932,6 +932,60 @@ fn fixtures() -> Vec<Fixture> {
                 ],
             },
         },
+        // ── BUILTINS: frag_coord() ────────────────────────────────────────
+        // The fragment window-space position: SPIR-V declares an Input vec4
+        // decorated `BuiltIn FragCoord` (enum 15) and loads it per call; MSL
+        // declares a `float4 _frag_coord [[position]]` parameter the walker
+        // lowers the call to. x,y are pixel coordinates (origin upper-left on
+        // both backends — OriginUpperLeft is the fragment execution mode),
+        // z is depth, w is 1/w. The `/ 64.0` witnesses via OpFDiv — a
+        // passthrough never divides. WGSL: the walker does not know the
+        // builtin yet and rejects it as an unknown function (documented gap;
+        // `@builtin(position)` is the analogue when it lands).
+        Fixture {
+            name: "frag_coord_scaled",
+            stage: Fragment,
+            params: &[],
+            body: "{ Vec4 :: new ( frag_coord ( ) . x / 64.0 , frag_coord ( ) . y / 64.0 , 0.0 , 1.0 ) }",
+            alt: Some("{ Vec4::new(frag_coord().x / 64.0, frag_coord().y / 64.0, 0.0, 1.0) }"),
+            spirv: SpirvExpect::Real {
+                witness: &[OP_FDIV],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "float4 _frag_coord [[position]]",
+                    "_frag_coord.x / 64.0",
+                    "_frag_coord.y / 64.0",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "frag_coord",
+            },
+        },
+        // frag_coord() in a VERTEX body is a stage error: MSL rejects
+        // structurally (the walker would otherwise emit an undeclared
+        // `_frag_coord` identifier); SPIR-V errors in the body parser and
+        // falls to the passthrough. Both agree on not-accepted, like the
+        // other rejection rows.
+        Fixture {
+            name: "rej_frag_coord_in_vertex",
+            stage: Vertex,
+            params: &[
+                ("pos", Vec3, ParamKind::Attr),
+                ("uv", Vec2, ParamKind::Attr),
+            ],
+            body: "{ Vec4 :: new ( frag_coord ( ) . x , pos . y , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "frag_coord",
+            },
+            // The WGSL walker rejects the call as an unknown function — the
+            // same verdict, via the unknown-intrinsic path.
+            wgsl: WgslExpect::Reject {
+                err_contains: "frag_coord",
+            },
+        },
         // ── SLICE PARAMS (`&[T]` storage-buffer arrays) ───────────────────
         // A literal index into a `&[Vec4]` slice. SPIR-V lowers `stops[0]` to
         // OpConvertFToU (index → uint) + OpAccessChain[member0, idx] + OpLoad —
@@ -1879,5 +1933,76 @@ fn clean_and_wire_forms_agree_on_msl() {
         "{} clean/wire-form failure(s):\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// The frag_coord fixture's SPIR-V must carry the FragCoord contract
+/// explicitly: exactly one id decorated `BuiltIn FragCoord`, whose OpVariable
+/// sits in the Input storage class, listed in the OpEntryPoint interface.
+/// spirv-val checks well-formedness (`spirv_validates` covers this fixture
+/// too); this pins the specific builtin wiring so a regression to, say, a
+/// Location-decorated input cannot slip through while staying "valid".
+#[test]
+fn frag_coord_spirv_builtin_wiring() {
+    const OP_ENTRY_POINT: u16 = 15;
+    const OP_VARIABLE: u16 = 59;
+    const OP_DECORATE: u16 = 71;
+    const DECORATION_BUILTIN: u32 = 11;
+    const BUILTIN_FRAG_COORD: u32 = 15;
+    const STORAGE_CLASS_INPUT: u32 = 1;
+
+    let f = fixtures()
+        .into_iter()
+        .find(|f| f.name == "frag_coord_scaled")
+        .expect("frag_coord_scaled fixture present");
+    let d = def(&f);
+    let spirv = emit_spirv(&d).expect("frag_coord fixture must emit");
+    let words: Vec<u32> = spirv
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    // One instruction-walk collecting the three facts.
+    let mut frag_coord_ids = Vec::new();
+    let mut input_var_ids = Vec::new();
+    let mut entry_operand_words: Vec<u32> = Vec::new();
+    let mut i = 5;
+    while i < words.len() {
+        let word_count = ((words[i] >> 16) as usize).max(1);
+        let op = (words[i] & 0xFFFF) as u16;
+        let operands = &words[i + 1..i + word_count];
+        match op {
+            OP_DECORATE
+                if operands.len() == 3
+                    && operands[1] == DECORATION_BUILTIN
+                    && operands[2] == BUILTIN_FRAG_COORD =>
+            {
+                frag_coord_ids.push(operands[0]);
+            }
+            // OpVariable: [result_type, result_id, storage_class, (init)]
+            OP_VARIABLE if operands.len() >= 3 && operands[2] == STORAGE_CLASS_INPUT => {
+                input_var_ids.push(operands[1]);
+            }
+            OP_ENTRY_POINT => entry_operand_words.extend_from_slice(operands),
+            _ => {}
+        }
+        i += word_count;
+    }
+
+    assert_eq!(
+        frag_coord_ids.len(),
+        1,
+        "expected exactly one BuiltIn FragCoord decoration, found {frag_coord_ids:?}"
+    );
+    let id = frag_coord_ids[0];
+    assert!(
+        input_var_ids.contains(&id),
+        "FragCoord id %{id} is not an Input-storage OpVariable (Input vars: {input_var_ids:?})"
+    );
+    // Interface ids trail the packed entry-point name; the id values are tiny
+    // next to ASCII-packed name words, so a plain contains is unambiguous.
+    assert!(
+        entry_operand_words.contains(&id),
+        "FragCoord id %{id} missing from the OpEntryPoint interface"
     );
 }

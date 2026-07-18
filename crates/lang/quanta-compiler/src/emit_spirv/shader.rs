@@ -189,6 +189,11 @@ impl SpvEmitter {
         shader: &quanta_ir::ShaderDef,
         passthrough: bool,
     ) -> Result<super::ShaderEmit, String> {
+        // FragCoord is a fragment-only builtin: never inherit one here, so a
+        // vertex body calling `frag_coord()` errors in the body parser (and
+        // falls to the passthrough) instead of loading a stale id.
+        self.frag_coord_var = None;
+
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,

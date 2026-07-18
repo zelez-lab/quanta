@@ -556,8 +556,9 @@ fn infer_call_type(c: &syn::ExprCall, env: &TypeEnv) -> MslType {
         return MslType::Unknown;
     };
     match name.as_str() {
-        // `sample()` returns a full Vec4.
-        "sample" => MslType::Vec4,
+        // `sample()` returns a full Vec4; so does `frag_coord()` (xyzw =
+        // window x, window y, depth, 1/w).
+        "sample" | "frag_coord" => MslType::Vec4,
         // Reductions to a scalar.
         "length" | "distance" | "dot" => MslType::Float,
         // Component-wise intrinsics take the type of their first argument.
@@ -784,6 +785,19 @@ fn emit_call(c: &syn::ExprCall, env: &TypeEnv) -> Result<String, String> {
     if name == "sample" {
         let args = emit_args(&c.args, env)?;
         return Ok(format!("sample({args})"));
+    }
+
+    // `frag_coord()` — the window-space position builtin. The fragment
+    // emitter declares a `float4 _frag_coord [[position]]` parameter whenever
+    // the body calls this, so the call lowers directly to that identifier
+    // (unlike `sample`, no post-pass rewrite is needed: the parameter name is
+    // fixed and the call is argument-free). Vertex bodies never reach here —
+    // `emit_vertex_shader` rejects `frag_coord()` before body lowering.
+    if name == "frag_coord" {
+        if !c.args.is_empty() {
+            return Err("frag_coord() takes no arguments".to_string());
+        }
+        return Ok("_frag_coord".to_string());
     }
 
     if let Some(msl_name) = intrinsic_msl_name(&name) {

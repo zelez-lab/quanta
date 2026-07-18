@@ -62,6 +62,13 @@ pub(crate) struct SpvEmitter {
     // to OpImageRead, not OpImageFetch (which is sampled-image only).
     pub(crate) texture_storage_slots: std::collections::HashSet<u32>,
 
+    // The `BuiltIn FragCoord` Input variable id, declared by
+    // `emit_fragment_shader` when the body calls `frag_coord()`. `None`
+    // everywhere else (vertex/compute emission resets it), so a stale id can
+    // never leak between shaders and the body parser errors cleanly on a
+    // `frag_coord()` outside a fragment body.
+    pub(crate) frag_coord_var: Option<u32>,
+
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
@@ -157,6 +164,7 @@ impl SpvEmitter {
             texture_samplers: HashMap::new(),
             texture_image_types: HashMap::new(),
             texture_storage_slots: std::collections::HashSet::new(),
+            frag_coord_var: None,
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),

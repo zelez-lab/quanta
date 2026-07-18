@@ -103,6 +103,27 @@ impl SpvEmitter {
             }
         }
 
+        // 2b'. FragCoord builtin: an Input vec4 decorated `BuiltIn FragCoord`
+        // (the Input analogue of the vertex emitter's gl_Position Output),
+        // declared only when the body calls `frag_coord()` — an unused builtin
+        // input just bloats the interface. The scan is deterministic over the
+        // same body, so the real and passthrough calls declare it identically
+        // (the id-consistency contract in the doc comment above).
+        self.frag_coord_var = None;
+        if body_uses_frag_coord(&shader.body_source) {
+            let ptr_input_vec4 = self.ensure_type_pointer(STORAGE_CLASS_INPUT, vec4_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_vec4, var_id, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(var_id, "gl_FragCoord");
+            self.decorate(var_id, DECORATION_BUILTIN, &[BUILTIN_FRAG_COORD]);
+            interface_ids.push(var_id);
+            self.frag_coord_var = Some(var_id);
+        }
+
         // 2c. Fragment uniforms + slices — shared storage-block emission over
         // one decl-index binding space (see emit_uniform_storage_blocks /
         // emit_slice_storage_blocks); the combined-cap error surfaces here.
@@ -245,6 +266,28 @@ impl SpvEmitter {
 /// output keeps `sample(N` contiguous, but any other ShaderDef producer (or a
 /// future printer change) could space them apart, so the slot scan must not
 /// depend on a contiguous form.
+/// Whether `body` calls the `frag_coord()` builtin, tolerating whitespace
+/// between `frag_coord` and `(` — the same scan contract as
+/// [`body_samples_slot`]. Only the call form counts: the DSL has no
+/// user-defined functions, so an identifier followed by `(` can only be a
+/// builtin call, and a param or local whose NAME contains the substring is
+/// never followed by `(` and does not trigger a declaration.
+fn body_uses_frag_coord(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find("frag_coord") {
+        let mut j = i + rel + "frag_coord".len();
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            return true;
+        }
+        i += rel + "frag_coord".len();
+    }
+    false
+}
+
 fn body_samples_slot(body: &str, slot: u32) -> bool {
     let digit = char::from_digit(slot, 10).unwrap() as u8;
     let bytes = body.as_bytes();
