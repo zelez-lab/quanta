@@ -22,6 +22,24 @@ enum ParamClass {
     Slice,
 }
 
+/// The shared-struct varying interface a `#[derive(Varyings)]` struct
+/// declares: the vertex↔fragment contract under the explicit model. The
+/// macro side mirror of `quanta_ir::ShaderVaryings` (mapped in
+/// `binary::compile_shader`).
+pub struct ShaderVaryings {
+    /// The struct's type name (`Surface`) — named by the vertex body's tail
+    /// literal and reused as the interface struct name in MSL/WGSL.
+    pub struct_name: String,
+    /// The `#[position]` field's name (a `Vec4` — gl_Position).
+    pub position: String,
+    /// The non-position varyings in field-declaration order (field i =
+    /// Location i).
+    pub fields: Vec<(String, ShaderType)>,
+    /// Fragment side: the receiver param's name (`s` in `fn fs(s: Surface)`).
+    /// `None` on the vertex side.
+    pub binding: Option<String>,
+}
+
 /// Shader types understood by the vertex/fragment emitters.
 #[derive(Clone, Copy)]
 pub enum ShaderType {

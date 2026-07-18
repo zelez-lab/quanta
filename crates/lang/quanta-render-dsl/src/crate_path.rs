@@ -9,10 +9,12 @@
 //! through. Default `::quanta`; a render consumer that depends on the
 //! split crates rather than the facade passes `crate = quanta_core`.
 //!
-//! Symmetric with `quanta-compute-dsl::crate_path`, minus the
-//! proc-macro self-reference machinery — the render macros emit no
-//! self-referencing macro invocations, so a single "types root" is all
-//! that is threaded.
+//! Symmetric with `quanta-compute-dsl::crate_path`, including the
+//! proc-macro self-reference machinery: the shared-struct varying model
+//! makes `#[quanta::vertex]` / `#[quanta::fragment]` two-stage macros (the
+//! Varyings trampoline re-invokes the hidden `__vertex_varyings` /
+//! `__fragment_varyings` proc-macros), so a macros root is threaded next to
+//! the types root.
 
 use proc_macro::TokenStream as RawTokenStream;
 use proc_macro2::TokenStream;
@@ -20,29 +22,49 @@ use quote::quote;
 use syn::parse::Parser;
 use syn::{Attribute, Meta, Path, Token, punctuated::Punctuated};
 
-/// The resolved crate root render types are named through.
+/// The resolved crate roots render types and the render-DSL proc-macros are
+/// named through.
 #[derive(Clone)]
 pub(crate) struct CratePath {
     types: Path,
+    /// True when the caller supplied an explicit `crate = ...` — drives the
+    /// proc-macro self-reference root (facade vs `quanta_render_dsl`).
+    overridden: bool,
 }
 
 impl Default for CratePath {
     fn default() -> Self {
         Self {
             types: syn::parse_quote!(::quanta),
+            overridden: false,
         }
     }
 }
 
 impl CratePath {
     fn from_path(path: Path) -> Self {
-        Self { types: path }
+        Self {
+            types: path,
+            overridden: true,
+        }
     }
 
     /// Token stream naming a render data-model type root.
     pub(crate) fn types(&self) -> TokenStream {
         let p = &self.types;
         quote! { #p }
+    }
+
+    /// Token stream naming the render-DSL proc-macro root. Facade
+    /// (`::quanta`) by default; `::quanta_render_dsl` once the caller
+    /// overrode the crate root (they no longer depend on the facade) —
+    /// mirroring `quanta-compute-dsl`'s `macros()`.
+    pub(crate) fn macros(&self) -> TokenStream {
+        if self.overridden {
+            quote! { ::quanta_render_dsl }
+        } else {
+            quote! { ::quanta }
+        }
     }
 }
 
@@ -62,11 +84,18 @@ fn crate_from_metas(metas: &Punctuated<Meta, Token![,]>) -> Option<CratePath> {
 /// inside `#[quanta::vertex(...)]`) into a `CratePath`, defaulting to
 /// `::quanta` when there is no `crate = ...` entry.
 pub(crate) fn from_attr_args(attr: RawTokenStream) -> CratePath {
+    from_attr_args2(attr.into())
+}
+
+/// [`from_attr_args`] over a `proc_macro2` stream — used by the hidden
+/// second-stage macros, whose attr tokens arrive re-quoted through the
+/// Varyings trampoline rather than as a raw attribute stream.
+pub(crate) fn from_attr_args2(attr: TokenStream) -> CratePath {
     if attr.is_empty() {
         return CratePath::default();
     }
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-    match parser.parse(attr) {
+    match parser.parse2(attr) {
         Ok(metas) => crate_from_metas(&metas).unwrap_or_default(),
         Err(_) => CratePath::default(),
     }

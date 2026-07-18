@@ -119,6 +119,47 @@ pub(crate) fn body_calls(body: &str, name: &str) -> bool {
     false
 }
 
+/// Whether `body` reads `receiver.field` (`s . clip`, `s.clip`, …): the
+/// receiver as a whole word, optional whitespace, `.`, optional whitespace,
+/// then the field as a whole word — the same wire-tolerant scan contract as
+/// [`body_calls`]. Used by the fragment emitter to declare the FragCoord
+/// builtin only when the Varyings position field is actually read; the scan
+/// is deterministic over the body, so the real and passthrough modules
+/// declare identical interfaces.
+pub(crate) fn body_reads_field(body: &str, receiver: &str, field: &str) -> bool {
+    fn is_ident_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find(receiver) {
+        let start = i + rel;
+        let end = start + receiver.len();
+        let word_start = start == 0 || !is_ident_byte(bytes[start - 1]);
+        let word_end = end >= bytes.len() || !is_ident_byte(bytes[end]);
+        if word_start && word_end {
+            let mut j = end;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'.' {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if body[j..].starts_with(field) {
+                    let fe = j + field.len();
+                    if fe >= bytes.len() || !is_ident_byte(bytes[fe]) {
+                        return true;
+                    }
+                }
+            }
+        }
+        i = end;
+    }
+    false
+}
+
 /// Emit Vulkan SPIR-V binary from a KernelDef.
 ///
 /// Returns the SPIR-V module as bytes, ready for `vkCreateShaderModule`.

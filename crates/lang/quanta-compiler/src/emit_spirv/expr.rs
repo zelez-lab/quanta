@@ -40,6 +40,152 @@ impl SpvEmitter {
         }
     }
 
+    /// Evaluate a VERTEX body under the shared-struct varying model: zero or
+    /// more statements, then — as the mandatory tail — the Varyings struct
+    /// literal (`Surface { clip : expr , uv : expr , … }`, any field order,
+    /// field-init shorthand allowed). The position field (a `Vec4`) stores to
+    /// gl_Position; every varying field stores to its named Output. Scalar
+    /// fields coerce between f32/u32 (`coerce_scalar`); any other type
+    /// mismatch, a missing/duplicate/unknown field, or trailing tokens after
+    /// the literal is an error (which routes the module to the passthrough
+    /// fallback, like every body error).
+    pub(crate) fn eval_vertex_varyings_body(
+        &mut self,
+        body_source: &str,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        varyings: &quanta_ir::ShaderVaryings,
+        position_var: u32,
+        varying_outputs: &std::collections::HashMap<String, (u32, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(), String> {
+        let src = body_source.trim();
+        let src = if src.starts_with('{') && src.ends_with('}') {
+            &src[1..src.len() - 1]
+        } else {
+            src
+        };
+        let tokens = tokenize_shader_expr(src);
+        let lit_start = find_struct_literal(&tokens, &varyings.struct_name).ok_or_else(|| {
+            format!(
+                "the vertex body must end in a `{} {{ .. }}` struct literal \
+                 (the Varyings interface is built exactly once, in tail position)",
+                varyings.struct_name
+            )
+        })?;
+
+        // Leading statements (up to the literal). A trailing VALUE there
+        // means the tail is not the struct literal — reject.
+        let mut locals: Vec<(String, u32, quanta_ir::ShaderType)> = Vec::new();
+        let mut pos = 0;
+        let lead = self.parse_statements(&tokens[..lit_start], &mut pos, params, &mut locals)?;
+        if lead.is_some() {
+            return Err(format!(
+                "the vertex body must end in a `{} {{ .. }}` struct literal",
+                varyings.struct_name
+            ));
+        }
+
+        // The literal: `Name { field [: expr] , … }`.
+        let mut pos = lit_start + 2; // past `Name` `{`
+        let mut seen: Vec<(String, u32, quanta_ir::ShaderType)> = Vec::new();
+        loop {
+            if tokens.get(pos) == Some(&ShaderToken::BraceClose) {
+                pos += 1;
+                break;
+            }
+            let field = match tokens.get(pos) {
+                Some(ShaderToken::Ident(n)) => n.clone(),
+                other => {
+                    return Err(format!(
+                        "expected a field name in the `{} {{ .. }}` literal, got {other:?}",
+                        varyings.struct_name
+                    ));
+                }
+            };
+            pos += 1;
+            let (id, ty) = match tokens.get(pos) {
+                // `field : expr`
+                Some(ShaderToken::Colon) => {
+                    pos += 1;
+                    self.parse_conditional(&tokens, &mut pos, params, &mut locals)?
+                }
+                // Field-init shorthand: `field` names a local/param of the
+                // same name.
+                Some(ShaderToken::Comma | ShaderToken::BraceClose) => {
+                    self.parse_bare_ident(&field, params, &locals)?
+                }
+                other => {
+                    return Err(format!(
+                        "expected `:` or `,` after field `{field}` in the `{} {{ .. }}` \
+                         literal, got {other:?}",
+                        varyings.struct_name
+                    ));
+                }
+            };
+            if seen.iter().any(|(n, _, _)| *n == field) {
+                return Err(format!(
+                    "duplicate field `{field}` in the `{} {{ .. }}` literal",
+                    varyings.struct_name
+                ));
+            }
+            seen.push((field, id, ty));
+            if tokens.get(pos) == Some(&ShaderToken::Comma) {
+                pos += 1;
+            }
+        }
+        if pos != tokens.len() {
+            return Err(format!(
+                "unexpected tokens after the `{} {{ .. }}` struct literal",
+                varyings.struct_name
+            ));
+        }
+
+        // Validate the field set, then store each field to its interface
+        // variable: position → gl_Position, varyings → their named Outputs.
+        for (name, _, _) in &seen {
+            if *name != varyings.position && varyings.field_type(name).is_none() {
+                return Err(format!(
+                    "unknown field `{name}` in the `{} {{ .. }}` literal",
+                    varyings.struct_name
+                ));
+            }
+        }
+        let mut ordered: Vec<&str> = Vec::with_capacity(1 + varyings.fields.len());
+        ordered.push(&varyings.position);
+        ordered.extend(varyings.fields.iter().map(|f| f.name.as_str()));
+        for name in ordered {
+            let Some(&(_, id, ty)) = seen.iter().find(|(n, _, _)| n == name) else {
+                return Err(format!(
+                    "missing field `{name}` in the `{} {{ .. }}` literal",
+                    varyings.struct_name
+                ));
+            };
+            if name == varyings.position {
+                if ty != quanta_ir::ShaderType::Vec4 {
+                    return Err(format!(
+                        "position field `{name}` of `{}` must be a Vec4 value, got {ty:?}",
+                        varyings.struct_name
+                    ));
+                }
+                Self::emit_op(&mut self.sec_function, OP_STORE, &[position_var, id]);
+                continue;
+            }
+            let declared = varyings.field_type(name).expect("validated above");
+            let (out_var, _, _) = varying_outputs[name];
+            // Scalar fields tolerate the f32/u32 pair (a bare literal arrives
+            // f32-typed); anything else must match the declared type exactly.
+            let (id, ty) = self.coerce_scalar(id, ty, declared);
+            if ty != declared {
+                return Err(format!(
+                    "field `{name}` of `{}` expects {declared:?} but the literal \
+                     provides {ty:?}",
+                    varyings.struct_name
+                ));
+            }
+            Self::emit_op(&mut self.sec_function, OP_STORE, &[out_var, id]);
+        }
+        Ok(())
+    }
+
     /// Statement walker: `let [mut]` bindings, assignments to locals,
     /// statement-`if`/`else` (locals assigned in branches are merged
     /// with OpPhi — SSA construction, no Function-storage variables),
@@ -918,4 +1064,27 @@ impl SpvEmitter {
         }
         self.parse_atom(tokens, pos, params, locals)
     }
+}
+
+/// Locate the tail struct literal: the token index of `Ident(name)` directly
+/// followed by `{`, at brace depth 0 (statement level — never inside an `if`
+/// or loop body, whose blocks are brace-balanced). Returns `None` when the
+/// body carries no such literal.
+fn find_struct_literal(tokens: &[ShaderToken], name: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for i in 0..tokens.len() {
+        match &tokens[i] {
+            ShaderToken::BraceOpen => depth += 1,
+            ShaderToken::BraceClose => depth -= 1,
+            ShaderToken::Ident(n)
+                if depth == 0
+                    && n == name
+                    && tokens.get(i + 1) == Some(&ShaderToken::BraceOpen) =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
 }

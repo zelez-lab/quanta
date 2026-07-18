@@ -34,6 +34,10 @@ pub enum ShaderType {
 /// share one binding space (see the compiler's shared decl-index): the runtime
 /// binds both with `.uniform(slot, …)` as a storage-buffer descriptor at
 /// binding=slot on both stages.
+///
+/// Plain value params are VERTEX-only (vertex attributes). Fragment stage
+/// inputs come from the shader's [`ShaderVaryings`] interface; a fragment
+/// `ShaderDef` carrying a plain value param is rejected by every emitter.
 #[derive(Debug, Clone)]
 pub struct ShaderParam {
     pub name: String,
@@ -42,7 +46,57 @@ pub struct ShaderParam {
     pub is_slice: bool,
 }
 
+/// One named varying of a vertex↔fragment interface struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaryingField {
+    pub name: String,
+    pub ty: ShaderType,
+}
+
+/// The vertex↔fragment interface under the shared-struct model (the
+/// WGSL/HLSL-convergent design): one user struct, derived with
+/// `#[derive(quanta::Varyings)]`, is the single explicit interface between
+/// the two stages. The vertex RETURNS it (a struct literal in tail
+/// position); the fragment TAKES it as its single stage-input param and
+/// reads varyings by field name.
+///
+/// - `position` names the `#[position]`-marked field (always a `Vec4`): the
+///   vertex routes it to gl_Position / `[[position]]`; a fragment reading it
+///   sees the interpolated window position (FragCoord semantics, as in WGSL).
+/// - `fields` are the non-position varyings in field-DECLARATION order:
+///   field `i` is Location `i` on every backend, deterministically. Integer
+///   (`U32`) fields are flat-interpolated on both ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderVaryings {
+    /// The struct's type name as written in the source (`Surface`). The
+    /// vertex body's tail literal names it; the MSL/WGSL emitters reuse it
+    /// as the interface struct's name.
+    pub struct_name: String,
+    /// The `#[position]` field's name (type `Vec4` — gl_Position).
+    pub position: String,
+    /// The non-position varyings in declaration order — field `i` is
+    /// Location `i`.
+    pub fields: Vec<VaryingField>,
+    /// Fragment stage: the receiving parameter's name (`s` in
+    /// `fn fs(s: Surface)`), which the body's `s.<field>` accesses resolve
+    /// against. `None` on the vertex stage (its body names the struct in the
+    /// tail literal instead).
+    pub binding: Option<String>,
+}
+
+impl ShaderVaryings {
+    /// The declared type of a non-position varying, by field name.
+    pub fn field_type(&self, name: &str) -> Option<ShaderType> {
+        self.fields.iter().find(|f| f.name == name).map(|f| f.ty)
+    }
+}
+
 /// Complete shader definition — input to the compiler for vertex/fragment shaders.
+///
+/// `varyings` carries the vertex↔fragment interface under the shared-struct
+/// model. `None` means the stage has NO varyings: a vertex returning a bare
+/// `Vec4` (position-only), or a fragment with no stage inputs (uniforms /
+/// textures / `frag_coord()` only).
 #[derive(Debug, Clone)]
 pub struct ShaderDef {
     pub name: String,
@@ -50,6 +104,7 @@ pub struct ShaderDef {
     pub params: Vec<ShaderParam>,
     pub return_type: ShaderType,
     pub body_source: String,
+    pub varyings: Option<ShaderVaryings>,
 }
 
 /// Compiler output for shader stages — SPIR-V and metallib binaries.

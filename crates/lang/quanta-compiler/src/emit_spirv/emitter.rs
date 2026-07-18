@@ -78,6 +78,16 @@ pub(crate) struct SpvEmitter {
     pub(crate) vertex_index_var: Option<u32>,
     pub(crate) instance_index_var: Option<u32>,
 
+    // The shared-struct varying interface of the shader being emitted
+    // (`ShaderDef::varyings`), plus the fragment side's Input variables:
+    // field name → (var_id, type_id, ShaderType). Set by the fragment
+    // emitter so the body's `<receiver>.<field>` accesses resolve by NAME;
+    // reset by both stage emitters so nothing leaks across shaders. The
+    // position field is NOT in the map — reading it goes through
+    // `frag_coord_var` (FragCoord semantics).
+    pub(crate) varyings: Option<quanta_ir::ShaderVaryings>,
+    pub(crate) varying_inputs: HashMap<String, (u32, u32, quanta_ir::ShaderType)>,
+
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
@@ -176,6 +186,8 @@ impl SpvEmitter {
             frag_coord_var: None,
             vertex_index_var: None,
             instance_index_var: None,
+            varyings: None,
+            varying_inputs: HashMap::new(),
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),

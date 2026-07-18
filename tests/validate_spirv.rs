@@ -16,6 +16,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
+use quanta::{Vec2, Vec4};
+
 const LLVM_PREFIX: &str = "/opt/homebrew/opt/llvm@22";
 const SPIRV_VAL: &str = "/opt/homebrew/bin/spirv-val";
 
@@ -353,6 +355,21 @@ fn validate_shader_spirv(spirv: &[u8], label: &str) {
 
 // Compile-time shader binaries from the proc macros
 
+// Shared vertex→fragment varying interfaces the fragments below receive.
+#[derive(quanta::Varyings)]
+struct UvVary {
+    #[position]
+    clip: Vec4,
+    uv: Vec2,
+}
+
+#[derive(quanta::Varyings)]
+struct ColorVary {
+    #[position]
+    clip: Vec4,
+    color: Vec4,
+}
+
 #[quanta::vertex]
 fn val_simple_vert(pos: Vec4) -> Vec4 {
     pos
@@ -369,13 +386,13 @@ fn val_vec2_vert(pos: Vec2) -> Vec4 {
 }
 
 #[quanta::fragment]
-fn val_solid_frag(uv: Vec2) -> Vec4 {
+fn val_solid_frag() -> Vec4 {
     Vec4::new(1.0, 0.0, 0.0, 1.0)
 }
 
 #[quanta::fragment]
-fn val_passthrough_frag(color: Vec4) -> Vec4 {
-    color
+fn val_passthrough_frag(s: ColorVary) -> Vec4 {
+    s.color
 }
 
 #[test]
@@ -485,8 +502,8 @@ fn spirv_val_identity() {
 }
 
 #[quanta::fragment]
-fn val_sample_frag(uv: Vec2, tex: &Texture2D) -> Vec4 {
-    sample(tex, uv)
+fn val_sample_frag(s: UvVary, tex: &Texture2D) -> Vec4 {
+    sample(tex, s.uv)
 }
 
 #[test]
@@ -503,9 +520,9 @@ fn spirv_val_fragment_sampled_texture() {
 }
 
 #[quanta::fragment]
-fn val_branchy_frag(uv: Vec2, half_size: &Vec2) -> Vec4 {
-    let dx = abs(uv.x) - (*half_size).x;
-    let dy = abs(uv.y) - (*half_size).y;
+fn val_branchy_frag(s: UvVary, half_size: &Vec2) -> Vec4 {
+    let dx = abs(s.uv.x) - (*half_size).x;
+    let dy = abs(s.uv.y) - (*half_size).y;
     let mut dist = 0.0;
     if dx > dy {
         dist = dx;
@@ -533,9 +550,9 @@ fn spirv_val_fragment_branch_and_uniform() {
 }
 
 #[quanta::fragment]
-fn val_deriv_frag(uv: Vec2) -> Vec4 {
-    let w = fwidth(uv.x);
-    Vec4::new(w, dpdx(uv.y), dpdy(uv.x), 1.0)
+fn val_deriv_frag(s: UvVary) -> Vec4 {
+    let w = fwidth(s.uv.x);
+    Vec4::new(w, dpdx(s.uv.y), dpdy(s.uv.x), 1.0)
 }
 
 #[test]

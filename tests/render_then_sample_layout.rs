@@ -20,6 +20,7 @@ use quanta::RenderGpu;
 
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, FieldUsage, Filter, Format, LoadOp, SamplerDesc, StoreOp};
+use quanta::{Vec2, Vec4};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -35,14 +36,25 @@ fn fill_green() -> Vec4 {
     Vec4::new(0.0, 1.0, 0.0, 1.0)
 }
 
+// Shared vertex→fragment interface for the textured sample pass.
+#[derive(quanta::Varyings)]
+struct UvVary {
+    #[position]
+    clip: Vec4,
+    uv: Vec2,
+}
+
 #[quanta::vertex]
-fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
-    Vec4::new(pos.x, pos.y, 0.0, 1.0)
+fn uv_vertex(pos: Vec3, uv: Vec2) -> UvVary {
+    UvVary {
+        clip: Vec4::new(pos.x, pos.y, 0.0, 1.0),
+        uv,
+    }
 }
 
 #[quanta::fragment]
-fn textured_frag(uv: Vec2) -> Vec4 {
-    sample(0, uv)
+fn textured_frag(s: UvVary) -> Vec4 {
+    sample(0, s.uv)
 }
 
 fn pos_layout() -> Vec<quanta::VertexLayout> {

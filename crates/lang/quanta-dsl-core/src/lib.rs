@@ -21,6 +21,6 @@ pub mod shader_types;
 pub use binary::{ShaderCompileOutput, compile_kernel, compile_shader};
 #[allow(unused_imports)]
 pub use shader_types::{
-    ShaderParam, ShaderType, extract_body_source, parse_return_type, parse_shader_params,
-    rewrite_texture_names,
+    ShaderParam, ShaderType, ShaderVaryings, extract_body_source, parse_return_type,
+    parse_shader_params, rewrite_texture_names,
 };

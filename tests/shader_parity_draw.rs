@@ -25,6 +25,7 @@ use quanta::RenderGpu;
 
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, FieldUsage, Format, LoadOp, StoreOp};
+use quanta::{Vec2, Vec4};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -94,23 +95,36 @@ fn field_of(gpu: &quanta::Gpu, data: &[f32]) -> quanta::Field<f32> {
 
 // ─── Shaders (bodies mirror the named Layer-A fixtures) ──────────────────────
 
+// The shared vertex→fragment interface for the fullscreen-quad pipelines: the
+// clip-space position plus the interpolated `uv` varying every quad fragment
+// reads (some fragments named it `corner` under the old positional model).
+#[derive(quanta::Varyings)]
+struct QuadVary {
+    #[position]
+    clip: Vec4,
+    uv: Vec2,
+}
+
 // Standard fullscreen-quad vertex (mirrors the vertex given to D1): pass the
 // clip-space position straight through so uv interpolates across the target.
 #[quanta::vertex]
-fn quad_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
-    Vec4::new(pos.x, pos.y, 0.0, 1.0)
+fn quad_vertex(pos: Vec3, uv: Vec2) -> QuadVary {
+    QuadVary {
+        clip: Vec4::new(pos.x, pos.y, 0.0, 1.0),
+        uv,
+    }
 }
 
 // mirrors fixture `expr_if_nested`
 #[quanta::fragment]
-fn nested_expr_if_frag(uv: Vec2) -> Vec4 {
-    let c = if uv.x < 0.25 {
+fn nested_expr_if_frag(s: QuadVary) -> Vec4 {
+    let c = if s.uv.x < 0.25 {
         Vec4::new(1.0, 0.0, 0.0, 1.0)
     } else {
-        if uv.x < 0.5 {
+        if s.uv.x < 0.5 {
             Vec4::new(0.0, 1.0, 0.0, 1.0)
         } else {
-            if uv.x < 0.75 {
+            if s.uv.x < 0.75 {
                 Vec4::new(0.0, 0.0, 1.0, 1.0)
             } else {
                 Vec4::new(1.0, 1.0, 1.0, 1.0)
@@ -122,15 +136,15 @@ fn nested_expr_if_frag(uv: Vec2) -> Vec4 {
 
 // mirrors fixture `stmt_if_nested`
 #[quanta::fragment]
-fn nested_stmt_if_frag(uv: Vec2) -> Vec4 {
+fn nested_stmt_if_frag(s: QuadVary) -> Vec4 {
     let mut c = Vec4::new(1.0, 1.0, 1.0, 1.0);
-    if uv.x < 0.25 {
+    if s.uv.x < 0.25 {
         c = Vec4::new(1.0, 0.0, 0.0, 1.0);
     } else {
-        if uv.x < 0.5 {
+        if s.uv.x < 0.5 {
             c = Vec4::new(0.0, 1.0, 0.0, 1.0);
         } else {
-            if uv.x < 0.75 {
+            if s.uv.x < 0.75 {
                 c = Vec4::new(0.0, 0.0, 1.0, 1.0);
             } else {
             }
@@ -141,7 +155,7 @@ fn nested_stmt_if_frag(uv: Vec2) -> Vec4 {
 
 // mirrors fixture `swizzle_multi`: recombine channels from a computed Vec4.
 #[quanta::fragment]
-fn multi_swizzle_frag(uv: Vec2) -> Vec4 {
+fn multi_swizzle_frag() -> Vec4 {
     let base = Vec4::new(0.2, 0.4, 0.6, 0.8);
     let s = base.zw;
     Vec4::new(s.x, s.y, base.xy.x, 1.0)
@@ -149,8 +163,8 @@ fn multi_swizzle_frag(uv: Vec2) -> Vec4 {
 
 // mirrors fixture `sample_swizzle`: sample .x times a uniform tint.
 #[quanta::fragment]
-fn sample_swizzle_frag(uv: Vec2, tint: &Vec4) -> Vec4 {
-    let c = sample(0, uv).x;
+fn sample_swizzle_frag(s: QuadVary, tint: &Vec4) -> Vec4 {
+    let c = sample(0, s.uv).x;
     Vec4::new(c * tint.x, c * tint.y, c * tint.z, 1.0)
 }
 
@@ -158,9 +172,9 @@ fn sample_swizzle_frag(uv: Vec2, tint: &Vec4) -> Vec4 {
 // coverage is written into RGB (not just alpha) so a no-blend readback reads
 // it directly from the R channel.
 #[quanta::fragment]
-fn fwidth_circle_frag(uv: Vec2) -> Vec4 {
-    let dx = uv.x - 0.5;
-    let dy = uv.y - 0.5;
+fn fwidth_circle_frag(s: QuadVary) -> Vec4 {
+    let dx = s.uv.x - 0.5;
+    let dy = s.uv.y - 0.5;
     let d = length(Vec2::new(dx, dy)) - 0.3;
     let w = fwidth(d);
     let a = 1.0 - smoothstep(-w, w, d);
@@ -174,7 +188,7 @@ fn fwidth_circle_frag(uv: Vec2) -> Vec4 {
 // parser rejects (pinned by the `ctor_trailing_comma` fixture) — the shader
 // would silently fall to a passthrough on Vulkan.
 #[quanta::fragment]
-fn two_uniform_frag(uv: Vec2, base: &Vec4, gain: &Vec4) -> Vec4 {
+fn two_uniform_frag(base: &Vec4, gain: &Vec4) -> Vec4 {
     let r = mix(base.x, gain.x, 0.25);
     let g = mix(base.y, gain.y, 0.25);
     let b = mix(base.z, gain.z, 0.25);
@@ -199,14 +213,14 @@ fn shared_off_vertex(pos: Vec3, uv: Vec2, off: &Vec2) -> Vec4 {
 }
 
 #[quanta::fragment]
-fn shared_off_frag(uv: Vec2, off: &Vec2) -> Vec4 {
+fn shared_off_frag(off: &Vec2) -> Vec4 {
     Vec4::new(off.x, off.y, 0.0, 1.0)
 }
 
 // mirrors fixture `arith_mix`: a horizontal ramp, live varying interpolation.
 #[quanta::fragment]
-fn horizontal_ramp_frag(uv: Vec2) -> Vec4 {
-    Vec4::new(uv.x, 1.0 - uv.x, 0.0, 1.0)
+fn horizontal_ramp_frag(s: QuadVary) -> Vec4 {
+    Vec4::new(s.uv.x, 1.0 - s.uv.x, 0.0, 1.0)
 }
 
 // Orientation-pinning fragment: a vertically ASYMMETRIC split driven by the
@@ -217,8 +231,8 @@ fn horizontal_ramp_frag(uv: Vec2) -> Vec4 {
 // so this shader paints the top red and the bottom green on EVERY backend.
 // This is the whole convention in one draw; see `draw_orientation_pinning`.
 #[quanta::fragment]
-fn vertical_split_frag(uv: Vec2) -> Vec4 {
-    if uv.y > 0.5 {
+fn vertical_split_frag(s: QuadVary) -> Vec4 {
+    if s.uv.y > 0.5 {
         Vec4::new(1.0, 0.0, 0.0, 1.0)
     } else {
         Vec4::new(0.0, 1.0, 0.0, 1.0)
@@ -232,7 +246,7 @@ fn vertical_split_frag(uv: Vec2) -> Vec4 {
 // their scalars in `.x` (the DSL exposes uniforms as vectors).
 #[quanta::fragment]
 fn dija_rect_frag(
-    corner: Vec2,
+    s: QuadVary,
     size: &Vec2,
     color: &Vec4,
     border_color: &Vec4,
@@ -241,8 +255,8 @@ fn dija_rect_frag(
 ) -> Vec4 {
     let sx = (*size).x;
     let sy = (*size).y;
-    let px = corner.x * sx;
-    let py = corner.y * sy;
+    let px = s.uv.x * sx;
+    let py = s.uv.y * sy;
     let half_x = sx * 0.5;
     let half_y = sy * 0.5;
     let cpx = px - half_x;
@@ -287,14 +301,14 @@ fn mvp_vertex(pos: Vec3, uv: Vec2, mvp: &Mat4) -> Vec4 {
 // bound with `.uniform(0, …)`. uv.x picks one of four stops → four vertical
 // colour bands. The bands are on uv.x only → orientation-free.
 #[quanta::fragment]
-fn gradient_stops_frag(uv: Vec2, stops: &[Vec4]) -> Vec4 {
-    let idx = if uv.x < 0.25 {
+fn gradient_stops_frag(s: QuadVary, stops: &[Vec4]) -> Vec4 {
+    let idx = if s.uv.x < 0.25 {
         0.0
     } else {
-        if uv.x < 0.5 {
+        if s.uv.x < 0.5 {
             1.0
         } else {
-            if uv.x < 0.75 { 2.0 } else { 3.0 }
+            if s.uv.x < 0.75 { 2.0 } else { 3.0 }
         }
     };
     stops[idx]
@@ -306,13 +320,13 @@ fn gradient_stops_frag(uv: Vec2, stops: &[Vec4]) -> Vec4 {
 // like the statement-level `if`, so `acc` reads 1.0 on the right half (uv.x >
 // 0.5) and stays 0.25 on the left. x-only banding → orientation-free.
 #[quanta::fragment]
-fn expr_if_outer_assign_frag(uv: Vec2) -> Vec4 {
+fn expr_if_outer_assign_frag(s: QuadVary) -> Vec4 {
     let mut acc = 0.25;
-    let v = if uv.x > 0.5 {
+    let v = if s.uv.x > 0.5 {
         acc = 1.0;
-        uv.x
+        s.uv.x
     } else {
-        uv.y
+        s.uv.y
     };
     Vec4::new(acc, v, 0.0, 1.0)
 }
@@ -324,11 +338,11 @@ fn expr_if_outer_assign_frag(uv: Vec2) -> Vec4 {
 // exact construct the statement-walker routing fixed on SPIR-V. A centred
 // ellipse is symmetric, so every probe is orientation-free.
 #[quanta::fragment]
-fn ellipse_branch_frag(corner: Vec2, size: &Vec2, shape_type: &Vec2) -> Vec4 {
+fn ellipse_branch_frag(s: QuadVary, size: &Vec2, shape_type: &Vec2) -> Vec4 {
     let sx = (*size).x;
     let sy = (*size).y;
-    let px = corner.x * sx;
-    let py = corner.y * sy;
+    let px = s.uv.x * sx;
+    let py = s.uv.y * sy;
     let half_x = sx * 0.5;
     let half_y = sy * 0.5;
     let cpx = px - half_x;

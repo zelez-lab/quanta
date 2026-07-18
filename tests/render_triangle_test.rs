@@ -13,6 +13,7 @@ use quanta::RenderGpu;
 
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, FieldUsage, Format, LoadOp, StoreOp};
+use quanta::{Vec2, Vec4};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -566,14 +567,25 @@ fn instanced_draw() {
 
 // ─── Test 5: Textured quad (varyings + texture sampling) ────────────────────
 
+// Shared vertex→fragment interface for the textured-quad pipelines.
+#[derive(quanta::Varyings)]
+struct UvVary {
+    #[position]
+    clip: Vec4,
+    uv: Vec2,
+}
+
 #[quanta::vertex]
-fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
-    Vec4::new(pos.x, pos.y, 0.0, 1.0)
+fn uv_vertex(pos: Vec3, uv: Vec2) -> UvVary {
+    UvVary {
+        clip: Vec4::new(pos.x, pos.y, 0.0, 1.0),
+        uv,
+    }
 }
 
 #[quanta::fragment]
-fn textured_frag(uv: Vec2) -> Vec4 {
-    sample(0, uv)
+fn textured_frag(s: UvVary) -> Vec4 {
+    sample(0, s.uv)
 }
 
 fn pos_uv_layout() -> Vec<quanta::VertexLayout> {
@@ -1148,8 +1160,8 @@ fn draw_indexed_without_indices_is_rejected() {
 // ─── Test: name-based texture params (`&Texture2D` + sample(name, uv)) ──────
 
 #[quanta::fragment]
-fn atlas_frag(uv: Vec2, atlas: &Texture2D) -> Vec4 {
-    sample(atlas, uv)
+fn atlas_frag(s: UvVary, atlas: &Texture2D) -> Vec4 {
+    sample(atlas, s.uv)
 }
 
 #[test]
@@ -1530,7 +1542,7 @@ fn two_textured_draws_rebind_mixed_formats() {
 // ─── Test: fragment uniform param (Metal fragment-stage buffer bind) ────────
 
 #[quanta::fragment]
-fn tinted_frag(uv: Vec2, tint: &Vec4) -> Vec4 {
+fn tinted_frag(tint: &Vec4) -> Vec4 {
     Vec4::new(tint.x, tint.y, tint.z, 1.0)
 }
 
@@ -1621,10 +1633,10 @@ fn fragment_uniform_is_visible_to_fragment_stage() {
 // per-half color assertions.
 
 #[quanta::fragment]
-fn branchy_frag(uv: Vec2, split: &Vec2) -> Vec4 {
+fn branchy_frag(s: UvVary, split: &Vec2) -> Vec4 {
     let mut r = 0.0;
     let mut g = 0.0;
-    if uv.x > (*split).x {
+    if s.uv.x > (*split).x {
         r = 1.0;
     } else {
         g = 1.0;

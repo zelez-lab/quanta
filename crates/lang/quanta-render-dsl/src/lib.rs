@@ -1,16 +1,51 @@
 //! Render-face proc macros for Quanta shaders.
 //!
 //! The graphics-stage attribute macros (`vertex`, `fragment`, the
-//! tessellation / mesh / ray-tracing stages) and the `Vertex` derive.
-//! Shared shader-compile plumbing (parameter parsing, compiler-binary
-//! invocation, MSL/WGSL emission) lives in `quanta-dsl-core`; this crate
-//! never depends on the compute stack (see the render-purity note on its
-//! `Cargo.toml` deps).
+//! tessellation / mesh / ray-tracing stages) and the `Vertex` / `Varyings`
+//! derives. Shared shader-compile plumbing (parameter parsing,
+//! compiler-binary invocation, MSL/WGSL emission) lives in
+//! `quanta-dsl-core`; this crate never depends on the compute stack (see
+//! the render-purity note on its `Cargo.toml` deps).
+//!
+//! # The vertex↔fragment interface
+//!
+//! Varyings are declared ONCE, in a `#[derive(Varyings)]` struct — the
+//! shared explicit interface between the two stages (the WGSL/HLSL model):
+//!
+//! ```ignore
+//! #[derive(quanta::Varyings)]
+//! struct Surface {
+//!     #[position] clip: Vec4, // gl_Position — the vertex writes it
+//!     uv: Vec2,               // Location 0 (field-declaration order)
+//!     kind: u32,              // Location 1, flat-interpolated
+//! }
+//!
+//! #[quanta::vertex]
+//! fn vs(pos: Vec3, in_uv: Vec2) -> Surface {
+//!     Surface { clip: Vec4::new(pos.x, pos.y, 0.0, 1.0), uv: in_uv, kind: 0u32 }
+//! }
+//!
+//! #[quanta::fragment]
+//! fn fs(s: Surface) -> Vec4 {
+//!     sample(0, s.uv)
+//! }
+//! ```
+//!
+//! Because a proc macro sees only its own item, the interface crosses from
+//! the struct to the shader macros through the derive-generated trampoline
+//! (`__quanta_varyings_<Name>!`): `#[quanta::vertex]` / `#[quanta::fragment]`
+//! expand to a trampoline invocation, which forwards the field metadata plus
+//! the function to the hidden second-stage macros ([`__vertex_varyings`] /
+//! [`__fragment_varyings`]) that run the real shader compile. Declare the
+//! struct before the shaders (or import its `__quanta_varyings_<Name>`
+//! re-export alongside it from another module).
 
 extern crate proc_macro;
 
 mod crate_path;
 mod shader_macro;
+mod varyings_derive;
+mod varyings_macro;
 mod vertex_derive;
 
 use proc_macro::TokenStream;
@@ -18,47 +53,73 @@ use syn::{ItemFn, parse_macro_input};
 
 /// Mark a function as a vertex shader.
 ///
-/// Compiles the function to MSL and WGSL at build time and embeds both as a
-/// `ShaderBinary` static. Value parameters become vertex attributes;
-/// reference parameters (`&T`) become uniform buffer bindings.
+/// Compiles the function at build time and embeds the backend binaries as a
+/// `ShaderBinary` static. Value parameters are vertex attributes (pure
+/// inputs — nothing is auto-forwarded); reference parameters (`&T`) become
+/// uniform buffer bindings, `&[T]` storage-buffer slices.
+///
+/// Two return forms:
+/// - `-> Vec4` — a position-only vertex: the body's tail expression is the
+///   clip-space position, and the shader has NO varyings.
+/// - `-> MyVaryings` (a `#[derive(Varyings)]` struct) — the shared-struct
+///   interface: the body ends in the struct literal, whose `#[position]`
+///   field becomes gl_Position and whose other fields are the varyings the
+///   paired fragment reads.
 ///
 /// ```ignore
 /// #[quanta::vertex]
-/// fn transform(
-///     pos: Vec3,
-///     normal: Vec3,
-///     mvp: &Mat4,
-/// ) -> Vec4 {
-///     mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+/// fn transform(pos: Vec3, in_uv: Vec2, mvp: &Mat4) -> Surface {
+///     Surface {
+///         clip: mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0),
+///         uv: in_uv,
+///     }
 /// }
 /// ```
 #[proc_macro_attribute]
 pub fn vertex(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let cp = crate_path::from_attr_args(attr);
-    shader_macro::expand_vertex(func, &cp)
+    let cp = crate_path::from_attr_args(attr.clone());
+    shader_macro::expand_vertex(func, attr.into(), &cp)
 }
 
 /// Mark a function as a fragment shader.
 ///
-/// Compiles the function to GPU binary at build time and embeds it as a
-/// `ShaderBinary` static. Value parameters become fragment stage inputs
-/// (interpolated varyings); reference parameters become uniform/texture bindings.
+/// Compiles the function at build time and embeds the backend binaries as a
+/// `ShaderBinary` static. Stage inputs come from the paired vertex's
+/// `#[derive(Varyings)]` struct, taken as a single param and read by field
+/// (`s.uv`); reading the `#[position]` field yields the interpolated window
+/// position. Reference parameters become uniform / texture / slice bindings.
+/// A fragment with no varyings simply omits the struct param.
 ///
 /// ```ignore
 /// #[quanta::fragment]
-/// fn shade(
-///     uv: Vec2,
-///     color: Vec4,
-/// ) -> Vec4 {
-///     color * Vec4::new(uv.x, uv.y, 0.0, 1.0)
+/// fn shade(s: Surface, atlas: &Texture2D) -> Vec4 {
+///     sample(atlas, s.uv)
 /// }
 /// ```
 #[proc_macro_attribute]
 pub fn fragment(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
-    let cp = crate_path::from_attr_args(attr);
-    shader_macro::expand_fragment(func, &cp)
+    let cp = crate_path::from_attr_args(attr.clone());
+    shader_macro::expand_fragment(func, attr.into(), &cp)
+}
+
+/// Hidden second stage of `#[quanta::vertex]` for the shared-struct varying
+/// model — invoked through a `#[derive(Varyings)]` struct's trampoline,
+/// never written by hand.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __vertex_varyings(input: TokenStream) -> TokenStream {
+    varyings_macro::expand_vertex_varyings(input)
+}
+
+/// Hidden second stage of `#[quanta::fragment]` for the shared-struct
+/// varying model — invoked through a `#[derive(Varyings)]` struct's
+/// trampoline, never written by hand.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __fragment_varyings(input: TokenStream) -> TokenStream {
+    varyings_macro::expand_fragment_varyings(input)
 }
 
 // === Tessellation shader macros (M4.1) ===
@@ -234,6 +295,37 @@ pub fn derive_vertex(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     let cp = crate_path::crate_from_container_attrs(&input.attrs);
     match vertex_derive::expand_vertex_derive(&input, &cp) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive the shared vertex↔fragment varying interface from a struct.
+///
+/// Exactly one field must carry the `#[position]` marker and be a `Vec4` —
+/// it becomes gl_Position / `[[position]]` (and, read from a fragment, the
+/// interpolated window position). Every other field is a varying, assigned
+/// Location 0, 1, … in FIELD-DECLARATION order; `u32` fields are
+/// flat-interpolated on both interface ends. Supported field types: `f32`,
+/// `u32`, `Vec2`, `Vec3`, `Vec4`.
+///
+/// ```ignore
+/// #[derive(quanta::Varyings)]
+/// struct Surface {
+///     #[position] clip: Vec4, // gl_Position
+///     uv: Vec2,               // Location 0
+///     kind: u32,              // Location 1, flat
+/// }
+/// ```
+///
+/// Generated: `Surface::POSITION_FIELD` / `Surface::VARYING_FIELDS`
+/// introspection consts, plus the hidden `__quanta_varyings_Surface!`
+/// trampoline the shader macros expand through (declare the struct before
+/// the shaders that use it, or import the trampoline alongside it).
+#[proc_macro_derive(Varyings, attributes(position))]
+pub fn derive_varyings(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    match varyings_derive::expand_varyings_derive(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

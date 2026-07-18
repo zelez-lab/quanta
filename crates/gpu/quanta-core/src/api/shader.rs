@@ -6,6 +6,45 @@
 //! Compute kernels compile to [`KernelBinary`](crate::KernelBinary)
 //! instead.
 
+/// Shader-interface vector types — the field types of a
+/// `#[derive(quanta::Varyings)]` struct (and the value types of the shader
+/// DSL: `Vec2`/`Vec3`/`Vec4` in a `#[quanta::vertex]` / `#[quanta::fragment]`
+/// signature name these).
+///
+/// The shader FUNCTIONS themselves are erased by the proc macros (their
+/// bodies compile to GPU binaries, never to host code), but a Varyings
+/// struct is a real Rust item — its field types must resolve. These are
+/// plain `#[repr(C)]` PODs so the struct is also usable as ordinary host
+/// data if a consumer wants to.
+macro_rules! shader_vec {
+    ($(#[$doc:meta] $name:ident { $($field:ident),+ })+) => {$(
+        #[$doc]
+        #[repr(C)]
+        #[derive(Debug, Clone, Copy, PartialEq, Default)]
+        pub struct $name {
+            $(pub $field: f32,)+
+        }
+
+        impl $name {
+            /// Component-wise constructor — the same spelling shader bodies
+            /// use (`Vec4::new(x, y, z, w)`).
+            #[allow(clippy::new_without_default)]
+            pub const fn new($($field: f32),+) -> Self {
+                Self { $($field),+ }
+            }
+        }
+    )+};
+}
+
+shader_vec! {
+    /// A 2-component `f32` vector (`float2` / `vec2<f32>`).
+    Vec2 { x, y }
+    /// A 3-component `f32` vector (`float3` / `vec3<f32>`).
+    Vec3 { x, y, z }
+    /// A 4-component `f32` vector (`float4` / `vec4<f32>`).
+    Vec4 { x, y, z, w }
+}
+
 /// Shader stage — which programmable pipeline stage this shader runs in.
 ///
 /// Marked `#[non_exhaustive]`: stages can be added — match with a

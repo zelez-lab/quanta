@@ -27,6 +27,7 @@ pub(crate) enum ShaderToken {
     Op(char),         // + - * /
     Cmp(ShaderCmpOp), // < > <= >= == !=
     Dot,              // .
+    Colon,            // : (struct-literal field separator)
     ColonColon,       // ::
     Comma,            // ,
     Open,             // (
@@ -51,6 +52,11 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
     match w {
         "::" => tokens.push(ShaderToken::ColonColon),
         "." => tokens.push(ShaderToken::Dot),
+        // The struct-literal field separator (`V { pos : expr , … }`). The
+        // token printer always spaces a literal's `:` as its own word; an
+        // ATTACHED colon (hand-written clean source) stays inside its Ident,
+        // which fails the parse — the same wire-form contract as `::`.
+        ":" => tokens.push(ShaderToken::Colon),
         "," => tokens.push(ShaderToken::Comma),
         "(" => tokens.push(ShaderToken::Open),
         ")" => tokens.push(ShaderToken::Close),

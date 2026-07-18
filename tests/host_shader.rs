@@ -11,6 +11,8 @@
 //!
 //! Run: cargo test --test host_shader
 
+use quanta::Vec4;
+
 // ===========================================================================
 // #[quanta::kernel] — produces KernelBinary
 // ===========================================================================
@@ -97,14 +99,22 @@ fn vertex_with_uniform_produces_shader() {
 // #[quanta::fragment] — produces ShaderBinary
 // ===========================================================================
 
+// Shared vertex→fragment interface for the color-passthrough fragment.
+#[derive(quanta::Varyings)]
+struct ColorVary {
+    #[position]
+    clip: Vec4,
+    color: Vec4,
+}
+
 #[quanta::fragment]
-fn frag_red(uv: Vec2) -> Vec4 {
+fn frag_red() -> Vec4 {
     Vec4::new(1.0, 0.0, 0.0, 1.0)
 }
 
 #[quanta::fragment]
-fn frag_color(color: Vec4) -> Vec4 {
-    color
+fn frag_color(s: ColorVary) -> Vec4 {
+    s.color
 }
 
 #[test]

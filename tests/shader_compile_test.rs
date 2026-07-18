@@ -4,6 +4,8 @@
 //!
 //! Run: cargo test --test shader_compile_test
 
+use quanta::{Vec2, Vec4};
+
 // === Vertex shaders ===
 
 #[quanta::vertex]
@@ -23,19 +25,35 @@ fn pos_only(pos: Vec2) -> Vec4 {
 
 // === Fragment shaders ===
 
+// Shared vertex→fragment varying interfaces the fragments below receive.
+#[derive(quanta::Varyings)]
+struct ColorVary {
+    #[position]
+    clip: Vec4,
+    color: Vec4,
+}
+
+#[derive(quanta::Varyings)]
+struct ShadeVary {
+    #[position]
+    clip: Vec4,
+    uv: Vec2,
+    color: Vec4,
+}
+
 #[quanta::fragment]
-fn solid_red(uv: Vec2) -> Vec4 {
+fn solid_red() -> Vec4 {
     Vec4::new(1.0, 0.0, 0.0, 1.0)
 }
 
 #[quanta::fragment]
-fn passthrough_color(color: Vec4) -> Vec4 {
-    color
+fn passthrough_color(s: ColorVary) -> Vec4 {
+    s.color
 }
 
 #[quanta::fragment]
-fn shade_uv(uv: Vec2, color: Vec4) -> Vec4 {
-    Vec4::new(uv.x, uv.y, color.z, 1.0)
+fn shade_uv(s: ShadeVary) -> Vec4 {
+    Vec4::new(s.uv.x, s.uv.y, s.color.z, 1.0)
 }
 
 // === Tests ===

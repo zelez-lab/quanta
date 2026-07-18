@@ -2,7 +2,7 @@
 
 use quanta_ir::{CompilerOutput, KernelDef};
 
-use super::shader_types::{ShaderParam, ShaderType};
+use super::shader_types::{ShaderParam, ShaderType, ShaderVaryings};
 
 /// Compile a KernelDef to all available targets.
 ///
@@ -455,16 +455,19 @@ pub struct ShaderCompileOutput {
 /// Compile a vertex or fragment shader via the quanta-compiler binary.
 ///
 /// Serializes the ShaderDef to the compiler's stdin, reads ShaderOutput
-/// from stdout. Returns `Ok(None)` if the compiler binary is not found
-/// (find_compiler_binary already printed its notice), and `Err` if the
-/// compiler was found but failed — the macro turns that into a compile
-/// error so a broken shader can never ship silently.
+/// from stdout. `varyings` carries the shared-struct vertex↔fragment
+/// interface when the shader uses it (`None` for a position-only vertex or
+/// an input-free fragment). Returns `Ok(None)` if the compiler binary is
+/// not found (find_compiler_binary already printed its notice), and `Err`
+/// if the compiler was found but failed — the macro turns that into a
+/// compile error so a broken shader can never ship silently.
 pub fn compile_shader(
     name: &str,
     stage: &str,
     params: &[ShaderParam],
     return_type: &ShaderType,
     body_source: &str,
+    varyings: Option<&ShaderVaryings>,
 ) -> Result<Option<ShaderCompileOutput>, String> {
     let Some(binary) = find_compiler_binary() else {
         return Ok(None);
@@ -505,6 +508,19 @@ pub fn compile_shader(
             .collect(),
         return_type: shader_type_to_ir(return_type),
         body_source: body_source.to_string(),
+        varyings: varyings.map(|v| quanta_ir::ShaderVaryings {
+            struct_name: v.struct_name.clone(),
+            position: v.position.clone(),
+            fields: v
+                .fields
+                .iter()
+                .map(|(name, ty)| quanta_ir::VaryingField {
+                    name: name.clone(),
+                    ty: shader_type_to_ir(ty),
+                })
+                .collect(),
+            binding: v.binding.clone(),
+        }),
     };
 
     let input = quanta_ir::serialize_shader(&shader_def);

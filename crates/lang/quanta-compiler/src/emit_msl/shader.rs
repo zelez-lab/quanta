@@ -13,7 +13,7 @@
 //! all three.
 
 use super::shader_ast;
-use super::shader_ast::MslType;
+use super::shader_ast::{BodyTail, MslType};
 
 /// The maximum number of combined uniform + slice storage-buffer params. Metal
 /// textures/samplers occupy their own index space, but the shared decl-index
@@ -155,6 +155,42 @@ fn varying_qualifier_msl(ty: quanta_ir::ShaderType) -> &'static str {
     }
 }
 
+/// Emit the shared Varyings interface struct — used as the vertex stage-out
+/// AND the fragment stage-in, under the user's own struct name. The
+/// `#[position]` field is the `[[position]]` member (always first); each
+/// varying takes `[[user(locN)]]` at its field-declaration-order Location
+/// (`[[flat]]` for integers), matching the SPIR-V Location/Flat decorations
+/// byte for byte.
+fn emit_varyings_struct_msl(out: &mut String, v: &quanta_ir::ShaderVaryings) {
+    out.push_str(&format!("struct {} {{\n", v.struct_name));
+    out.push_str(&format!("    float4 {} [[position]];\n", v.position));
+    for (i, f) in v.fields.iter().enumerate() {
+        out.push_str(&format!(
+            "    {} {} [[user(loc{})]]{};\n",
+            shader_type_msl(f.ty),
+            f.name,
+            i,
+            varying_qualifier_msl(f.ty),
+        ));
+    }
+    out.push_str("};\n\n");
+}
+
+/// A fragment `ShaderDef` may not declare plain value params: fragment stage
+/// inputs come from the shared `#[derive(Varyings)]` struct (read as
+/// `<receiver>.<field>` in the body). Structural rejection with the same
+/// wording as the SPIR-V and WGSL emitters.
+fn reject_fragment_value_params(shader: &quanta_ir::ShaderDef) -> Result<(), String> {
+    match shader.params.iter().find(|p| !p.is_uniform && !p.is_slice) {
+        Some(p) => Err(format!(
+            "fragment shader `{}` declares value param `{}`: fragment stage inputs \
+             come from the #[derive(Varyings)] struct",
+            shader.name, p.name
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Emit MSL for a vertex shader.
 ///
 /// Metal requires vertex attributes to be passed via a struct with `[[stage_in]]`.
@@ -190,11 +226,9 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         .filter_map(|(p, b)| b.map(|b| (p, b)))
         .collect();
 
-    // Varying params = all attr params except the first (position)
-    let varying_params: Vec<&quanta_ir::ShaderParam> =
-        attr_params.iter().skip(1).copied().collect();
-
-    // Emit vertex input struct with [[attribute(N)]] decorations
+    // Emit vertex input struct with [[attribute(N)]] decorations. Attributes
+    // are PURE inputs — nothing is auto-forwarded; every varying is written
+    // explicitly through the Varyings struct literal in the body tail.
     if !attr_params.is_empty() {
         out.push_str(&format!("struct {}_VertexIn {{\n", shader.name));
         for (i, p) in attr_params.iter().enumerate() {
@@ -208,22 +242,24 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         out.push_str("};\n\n");
     }
 
-    // Emit vertex output struct: [[position]] + varying members with [[user(locN)]]
-    out.push_str(&format!("struct {}_VertexOut {{\n", shader.name));
-    out.push_str(&format!(
-        "    {} position [[position]];\n",
-        shader_type_msl(shader.return_type),
-    ));
-    for (i, p) in varying_params.iter().enumerate() {
-        out.push_str(&format!(
-            "    {} {} [[user(loc{})]]{};\n",
-            shader_type_msl(p.ty),
-            p.name,
-            i,
-            varying_qualifier_msl(p.ty),
-        ));
-    }
-    out.push_str("};\n\n");
+    // The stage-out struct: the shared Varyings struct under the user's own
+    // name, or a position-only `{name}_VertexOut` when the shader has no
+    // varying interface (`-> Vec4`).
+    let out_struct = match &shader.varyings {
+        Some(v) => {
+            emit_varyings_struct_msl(&mut out, v);
+            v.struct_name.clone()
+        }
+        None => {
+            out.push_str(&format!("struct {}_VertexOut {{\n", shader.name));
+            out.push_str(&format!(
+                "    {} position [[position]];\n",
+                shader_type_msl(shader.return_type),
+            ));
+            out.push_str("};\n\n");
+            format!("{}_VertexOut", shader.name)
+        }
+    };
 
     // Build parameter list
     let mut param_lines = Vec::new();
@@ -259,8 +295,8 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     }
 
     out.push_str(&format!(
-        "vertex {}_VertexOut {}(\n{}\n) {{\n",
-        shader.name,
+        "vertex {} {}(\n{}\n) {{\n",
+        out_struct,
         shader.name,
         param_lines.join(",\n"),
     ));
@@ -275,23 +311,40 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
         ));
     }
 
-    // Declare the position result, then lower the body to assign it. The
-    // vertex tail is the clip-space position; varyings are forwarded raw from
-    // the inputs (below), matching the SPIR-V vertex path's varying model.
+    let param_types = shader_param_types(shader);
+    if let Some(v) = &shader.varyings {
+        // Shared-struct model: declare the stage-out struct up front; the
+        // body's tail struct literal lowers to one member assignment per
+        // field (position included) — nothing is forwarded implicitly.
+        out.push_str(&format!("    {} out;\n", v.struct_name));
+        let body = shader_ast::emit_body(
+            &shader.body_source,
+            BodyTail::StructOut("out"),
+            &param_types,
+            Some(v),
+        )?;
+        out.push_str(&body);
+        out.push_str("    return out;\n");
+        out.push_str("}\n");
+        return Ok(out);
+    }
+
+    // Position-only vertex: declare the position result, then lower the body
+    // to assign it — the vertex tail IS the clip-space position.
     out.push_str(&format!(
         "    {} pos_result;\n",
         shader_type_msl(shader.return_type),
     ));
-    let param_types = shader_param_types(shader);
-    let body = shader_ast::emit_body(&shader.body_source, Some("pos_result"), &param_types)?;
+    let body = shader_ast::emit_body(
+        &shader.body_source,
+        BodyTail::Assign("pos_result"),
+        &param_types,
+        None,
+    )?;
     out.push_str(&body);
 
-    // Build output struct
-    out.push_str(&format!("    {}_VertexOut out;\n", shader.name));
+    out.push_str(&format!("    {out_struct} out;\n"));
     out.push_str("    out.position = pos_result;\n");
-    for p in &varying_params {
-        out.push_str(&format!("    out.{} = {};\n", p.name, p.name));
-    }
     out.push_str("    return out;\n");
     out.push_str("}\n");
     Ok(out)
@@ -315,16 +368,15 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         }
     }
 
+    // A fragment's stage inputs come from the Varyings struct — a plain
+    // value param has no meaning here anymore (same structural rejection as
+    // the SPIR-V and WGSL emitters).
+    reject_fragment_value_params(shader)?;
+
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
 
     let buffer_indices = shared_buffer_indices(shader)?;
-    // Interpolated inputs are the plain value params (neither uniform nor slice).
-    let stage_in_params: Vec<&quanta_ir::ShaderParam> = shader
-        .params
-        .iter()
-        .filter(|p| !p.is_uniform && !p.is_slice)
-        .collect();
     let ssbo_params: Vec<(&quanta_ir::ShaderParam, u32)> = shader
         .params
         .iter()
@@ -332,20 +384,12 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         .filter_map(|(p, b)| b.map(|b| (p, b)))
         .collect();
 
-    // Stage-in struct for interpolated inputs; integer members are `[[flat]]`
-    // (see `varying_qualifier_msl`), matching the vertex-out struct.
-    if !stage_in_params.is_empty() {
-        out.push_str(&format!("struct {}_Input {{\n", shader.name));
-        for (i, p) in stage_in_params.iter().enumerate() {
-            out.push_str(&format!(
-                "    {} {} [[user(loc{})]]{};\n",
-                shader_type_msl(p.ty),
-                p.name,
-                i,
-                varying_qualifier_msl(p.ty),
-            ));
-        }
-        out.push_str("};\n\n");
+    // Stage-in struct: the shared Varyings struct under the user's own name —
+    // the same member list the vertex stage-out declares ([[user(locN)]] /
+    // [[flat]] matching), with the `[[position]]` member carrying the
+    // interpolated window position for `<receiver>.<position>` reads.
+    if let Some(v) = &shader.varyings {
+        emit_varyings_struct_msl(&mut out, v);
     }
 
     // Detect texture slots used in body (whitespace-tolerant `sample(N` scan).
@@ -356,8 +400,14 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         .unwrap_or(0);
 
     let mut param_lines = Vec::new();
-    if !stage_in_params.is_empty() {
-        param_lines.push(format!("    {}_Input in [[stage_in]]", shader.name));
+    if let Some(v) = &shader.varyings {
+        let recv = v.binding.as_deref().ok_or_else(|| {
+            format!(
+                "fragment shader `{}`: the varyings interface names no receiver param",
+                shader.name
+            )
+        })?;
+        param_lines.push(format!("    {} {recv} [[stage_in]]", v.struct_name));
     }
     // Window-space position builtin: declared only when the body calls
     // `frag_coord()` (whitespace-tolerant scan, like the texture slots). The
@@ -399,25 +449,21 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
         param_lines.join(",\n"),
     ));
 
-    // Unpack stage_in members
-    for p in &stage_in_params {
-        out.push_str(&format!(
-            "    {} {} = in.{};\n",
-            shader_type_msl(p.ty),
-            p.name,
-            p.name,
-        ));
-    }
-
     // Lower the body: the fragment tail is the output color, so route it
-    // through `return`. `sample(slot, uv)` is emitted verbatim by the AST
+    // through `return`. Varyings are read directly as `<receiver>.<field>` —
+    // no unpacking. `sample(slot, uv)` is emitted verbatim by the AST
     // walker, then rewritten to `tex_N.sample(smp_N, uv)` here — a targeted
     // rewrite on the already-structured MSL. The AST walker normalizes the slot
     // to a float literal (`sample(0.0, uv)`), but the rewrite tolerates
     // whitespace between `sample`, `(`, and the digit so it never depends on a
     // contiguous form.
     let param_types = shader_param_types(shader);
-    let mut body = shader_ast::emit_body(&shader.body_source, None, &param_types)?;
+    let mut body = shader_ast::emit_body(
+        &shader.body_source,
+        BodyTail::Return,
+        &param_types,
+        shader.varyings.as_ref(),
+    )?;
     for slot in 0..max_tex_slot {
         body = rewrite_sample_slot(&body, slot);
     }

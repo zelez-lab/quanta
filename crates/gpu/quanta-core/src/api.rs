@@ -108,7 +108,7 @@ pub use ray_tracing::*;
 #[cfg(feature = "render")]
 pub use render_pass::*;
 #[cfg(feature = "render")]
-pub use shader::{ShaderBinary, ShaderStage};
+pub use shader::{ShaderBinary, ShaderStage, Vec2, Vec3, Vec4};
 #[cfg(feature = "render")]
 pub use surface::{PresentMode, SurfaceConfig, SurfaceTarget};
 #[cfg(feature = "render")]

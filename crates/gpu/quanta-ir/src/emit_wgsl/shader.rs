@@ -9,7 +9,7 @@
 //! construct surface mirrors the SPIR-V shader walker: what SPIR-V accepts,
 //! this accepts; what SPIR-V rejects, this rejects with a clear error.
 
-use super::shader_walker::{ParamInfo, param_infos, walk_body};
+use super::shader_walker::{ParamInfo, param_infos, walk_body, walk_body_varyings};
 use crate::*;
 
 /// The maximum number of combined uniform + slice storage-buffer params.
@@ -42,16 +42,64 @@ fn shader_type_wgsl(ty: ShaderType) -> &'static str {
 /// would emit float-typed literals against it (WGSL has no implicit
 /// conversions, so `naga` rejects the module). Fail emission with a named gap
 /// — the shader ships with `wgsl: None` and a build-time note, like the other
-/// documented WGSL gaps — instead of emitting invalid WGSL.
+/// documented WGSL gaps — instead of emitting invalid WGSL. Varyings-struct
+/// fields are shader inputs/outputs the same way params are, so the gap
+/// covers them with the same wording.
 fn reject_u32_params(shader: &ShaderDef) -> Result<(), String> {
-    match shader.params.iter().find(|p| p.ty == ShaderType::U32) {
-        Some(p) => Err(format!(
+    if let Some(p) = shader.params.iter().find(|p| p.ty == ShaderType::U32) {
+        return Err(format!(
             "shader `{}` param `{}`: u32 shader params are not yet supported by \
              the WGSL emitter",
+            shader.name, p.name
+        ));
+    }
+    if let Some(v) = &shader.varyings
+        && let Some(f) = v.fields.iter().find(|f| f.ty == ShaderType::U32)
+    {
+        return Err(format!(
+            "shader `{}` varying field `{}`: u32 shader params are not yet supported \
+             by the WGSL emitter",
+            shader.name, f.name
+        ));
+    }
+    Ok(())
+}
+
+/// A fragment `ShaderDef` may not declare plain value params: fragment stage
+/// inputs come from the shared `#[derive(Varyings)]` struct (read as
+/// `<receiver>.<field>` in the body). Structural rejection with the same
+/// wording as the SPIR-V and MSL emitters.
+fn reject_fragment_value_params(shader: &ShaderDef) -> Result<(), String> {
+    match shader.params.iter().find(|p| !p.is_uniform && !p.is_slice) {
+        Some(p) => Err(format!(
+            "fragment shader `{}` declares value param `{}`: fragment stage inputs \
+             come from the #[derive(Varyings)] struct",
             shader.name, p.name
         )),
         None => Ok(()),
     }
+}
+
+/// Emit the shared varyings interface struct: the `#[position]` field as
+/// `@builtin(position)` (always first), then each varying at `@location(i)`
+/// in field-declaration order. The struct keeps the user's type name and is
+/// byte-identical between the vertex (output) and fragment (input) modules —
+/// the WGSL-native form of the shared-struct model.
+fn emit_varyings_struct(out: &mut String, v: &ShaderVaryings) {
+    out.push_str(&format!("struct {} {{\n", v.struct_name));
+    out.push_str(&format!(
+        "    @builtin(position) {}: vec4<f32>,\n",
+        v.position
+    ));
+    for (i, f) in v.fields.iter().enumerate() {
+        out.push_str(&format!(
+            "    @location({}) {}: {},\n",
+            i,
+            f.name,
+            shader_type_wgsl(f.ty)
+        ));
+    }
+    out.push_str("};\n\n");
 }
 
 /// The `array<ELEM>` element spelling for a `&[T]` slice param. Slice element
@@ -223,13 +271,14 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     let infos: Vec<ParamInfo> = param_infos(&shader.params);
 
     // Attributes are the plain value params (neither uniform nor slice); a
-    // slice binds a storage buffer, not a vertex attribute.
+    // slice binds a storage buffer, not a vertex attribute. Attributes are
+    // PURE inputs — nothing is auto-forwarded; every varying is written
+    // explicitly through the Varyings struct literal.
     let attr_params: Vec<&ShaderParam> = shader
         .params
         .iter()
         .filter(|p| !p.is_uniform && !p.is_slice)
         .collect();
-    let varying_params: Vec<&ShaderParam> = attr_params.iter().skip(1).copied().collect();
 
     // Slice/uniform/texture bindings precede the interface structs.
     emit_module_bindings(&mut out, shader, &bindings, tex_slots);
@@ -245,16 +294,28 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     }
     out.push_str("};\n\n");
 
+    if let Some(v) = &shader.varyings {
+        // Shared-struct model: the out struct IS the varyings struct, and the
+        // body's tail literal assigns every member explicitly.
+        emit_varyings_struct(&mut out, v);
+
+        out.push_str(&format!(
+            "@vertex\nfn main(in: VertexInput) -> {} {{\n",
+            v.struct_name
+        ));
+        for p in &attr_params {
+            out.push_str(&format!("    let {} = in.{};\n", p.name, p.name));
+        }
+        out.push_str(&format!("    var _vout: {};\n", v.struct_name));
+        walk_body_varyings(&shader.body_source, &infos, v, "_vout", "    ", &mut out)?;
+        out.push_str("    return _vout;\n");
+        out.push_str("}\n");
+        return Ok(out);
+    }
+
+    // Position-only vertex (`-> Vec4`): no varyings at all.
     out.push_str("struct VertexOutput {\n");
     out.push_str("    @builtin(position) position: vec4<f32>,\n");
-    for (i, p) in varying_params.iter().enumerate() {
-        out.push_str(&format!(
-            "    @location({}) {}: {},\n",
-            i,
-            p.name,
-            shader_type_wgsl(p.ty)
-        ));
-    }
     out.push_str("};\n\n");
 
     out.push_str("@vertex\nfn main(in: VertexInput) -> VertexOutput {\n");
@@ -263,12 +324,9 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     }
 
     // Lower the body; the vertex tail is the clip-space position.
-    let (pos_expr, _ty) = walk_body(&shader.body_source, &infos, "    ", &mut out)?;
+    let (pos_expr, _ty) = walk_body(&shader.body_source, &infos, None, "    ", &mut out)?;
     out.push_str("    var output: VertexOutput;\n");
     out.push_str(&format!("    output.position = {pos_expr};\n"));
-    for p in &varying_params {
-        out.push_str(&format!("    output.{} = {};\n", p.name, p.name));
-    }
     out.push_str("    return output;\n");
     out.push_str("}\n");
 
@@ -277,48 +335,43 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
 
 pub fn emit_fragment_shader(shader: &ShaderDef) -> Result<String, String> {
     reject_u32_params(shader)?;
+    reject_fragment_value_params(shader)?;
     let mut out = String::new();
 
     let bindings = shared_binding_indices(shader)?;
     let tex_slots = texture_slot_count(&shader.body_source);
     let infos: Vec<ParamInfo> = param_infos(&shader.params);
 
-    // Interpolated inputs are the plain value params (neither uniform nor
-    // slice); a slice binds a storage buffer, not a stage input.
-    let stage_in_params: Vec<&ShaderParam> = shader
-        .params
-        .iter()
-        .filter(|p| !p.is_uniform && !p.is_slice)
-        .collect();
-
     // Slice/uniform/texture bindings precede the interface struct.
     emit_module_bindings(&mut out, shader, &bindings, tex_slots);
 
-    if !stage_in_params.is_empty() {
-        out.push_str("struct FragmentInput {\n");
-        for (i, p) in stage_in_params.iter().enumerate() {
-            out.push_str(&format!(
-                "    @location({}) {}: {},\n",
-                i,
-                p.name,
-                shader_type_wgsl(p.ty)
-            ));
-        }
-        out.push_str("};\n\n");
+    if let Some(v) = &shader.varyings {
+        // Shared-struct model: the fragment takes the varyings struct as its
+        // single stage input, named by the receiver param; the body reads
+        // fields as `<receiver>.<field>` (the position member is the
+        // interpolated window position — WGSL FragCoord semantics).
+        emit_varyings_struct(&mut out, v);
+        let recv = v.binding.as_deref().ok_or_else(|| {
+            format!(
+                "fragment shader `{}`: the varyings interface names no receiver param",
+                shader.name
+            )
+        })?;
+        out.push_str(&format!(
+            "@fragment\nfn main({recv}: {}) -> @location(0) vec4<f32> {{\n",
+            v.struct_name
+        ));
+        let (color_expr, _ty) = walk_body(&shader.body_source, &infos, Some(v), "    ", &mut out)?;
+        out.push_str(&format!("    return {color_expr};\n"));
+        out.push_str("}\n");
+        return Ok(out);
     }
 
-    out.push_str("@fragment\nfn main(");
-    if !stage_in_params.is_empty() {
-        out.push_str("in: FragmentInput");
-    }
-    out.push_str(") -> @location(0) vec4<f32> {\n");
-
-    for p in &stage_in_params {
-        out.push_str(&format!("    let {} = in.{};\n", p.name, p.name));
-    }
+    // No varyings: the fragment reads only uniforms/slices/textures.
+    out.push_str("@fragment\nfn main() -> @location(0) vec4<f32> {\n");
 
     // Lower the body; the fragment tail is the output color.
-    let (color_expr, _ty) = walk_body(&shader.body_source, &infos, "    ", &mut out)?;
+    let (color_expr, _ty) = walk_body(&shader.body_source, &infos, None, "    ", &mut out)?;
     out.push_str(&format!("    return {color_expr};\n"));
     out.push_str("}\n");
 

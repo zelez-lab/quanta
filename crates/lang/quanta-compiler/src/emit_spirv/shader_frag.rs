@@ -1,8 +1,13 @@
 //! Fragment shader SPIR-V emission.
 //!
-//! Generates a fragment shader: each value parameter becomes an Input
-//! variable (interpolated varying) with Location decoration. The body
-//! expression is evaluated and written to Location(0) output.
+//! Fragment stage inputs come from the shared Varyings struct
+//! (`ShaderDef::varyings`): one Input variable per field, named by field
+//! name, at the Location given by field-declaration order (u32 fields Flat
+//! on both interface ends). The body reads them as `<receiver>.<field>`;
+//! reading the `#[position]` field yields the interpolated window position
+//! (`BuiltIn FragCoord` — WGSL semantics). Plain value params are rejected
+//! structurally: the positional varying model is gone. The body expression
+//! is evaluated and written to the Location(0) color output.
 
 use super::constants::*;
 use super::emitter::SpvEmitter;
@@ -30,6 +35,17 @@ impl SpvEmitter {
         self.vertex_index_var = None;
         self.instance_index_var = None;
 
+        // A fragment's stage inputs come from the Varyings struct — a plain
+        // value param has no meaning here anymore. Structural rejection
+        // (like the SSBO cap): the build fails rather than misrendering.
+        if let Some(p) = shader.params.iter().find(|p| !p.is_uniform && !p.is_slice) {
+            return Err(format!(
+                "fragment shader `{}` declares value param `{}`: fragment stage inputs \
+                 come from the #[derive(Varyings)] struct",
+                shader.name, p.name
+            ));
+        }
+
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,
@@ -42,38 +58,40 @@ impl SpvEmitter {
             &[ADDRESSING_MODEL_LOGICAL, MEMORY_MODEL_GLSL450],
         );
 
-        // 2. Declare Input variables for value params
-        let stage_in_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
-            .params
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| !p.is_uniform)
-            .collect();
-
         let mut interface_ids = Vec::new();
-        let mut input_vars: Vec<(u32, u32)> = Vec::new();
 
-        for (loc, (_, param)) in stage_in_params.iter().enumerate() {
-            let ty_id = self.shader_type_id(param.ty);
-            let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_INPUT, ty_id);
-            let var_id = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_global_var,
-                OP_VARIABLE,
-                &[ptr_ty, var_id, STORAGE_CLASS_INPUT],
-            );
-            self.emit_name(var_id, &param.name);
-            self.decorate(var_id, DECORATION_LOCATION, &[loc as u32]);
-            // An integer fragment Input MUST be Flat — integers cannot be
-            // interpolated, and spirv-val/drivers reject a non-Flat int
-            // interpolant (VUID-StandaloneSpirv-Flat-04744). Matches the Flat
-            // on the vertex emitter's u32 varying Output. Float inputs stay
-            // smooth (undecorated).
-            if param.ty == quanta_ir::ShaderType::U32 {
-                self.decorate(var_id, DECORATION_FLAT, &[]);
+        // 2. Declare one Input variable per varying FIELD of the shared
+        // interface struct, named by field name, at the Location given by
+        // field-declaration order — matching the vertex Outputs exactly. The
+        // whole interface is declared regardless of which fields the body
+        // reads (Vulkan allows a fragment to consume any subset, and a
+        // symmetric interface keeps the two modules matched by construction).
+        self.varying_inputs.clear();
+        self.varyings = shader.varyings.clone();
+        if let Some(v) = &shader.varyings {
+            for (loc, field) in v.fields.iter().enumerate() {
+                let ty_id = self.shader_type_id(field.ty);
+                let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_INPUT, ty_id);
+                let var_id = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_global_var,
+                    OP_VARIABLE,
+                    &[ptr_ty, var_id, STORAGE_CLASS_INPUT],
+                );
+                self.emit_name(var_id, &field.name);
+                self.decorate(var_id, DECORATION_LOCATION, &[loc as u32]);
+                // An integer fragment Input MUST be Flat — integers cannot be
+                // interpolated, and spirv-val/drivers reject a non-Flat int
+                // interpolant (VUID-StandaloneSpirv-Flat-04744). Matches the
+                // Flat on the vertex emitter's u32 varying Output. Float
+                // inputs stay smooth (undecorated).
+                if field.ty == quanta_ir::ShaderType::U32 {
+                    self.decorate(var_id, DECORATION_FLAT, &[]);
+                }
+                interface_ids.push(var_id);
+                self.varying_inputs
+                    .insert(field.name.clone(), (var_id, ty_id, field.ty));
             }
-            interface_ids.push(var_id);
-            input_vars.push((var_id, ty_id));
         }
 
         // 2b. Declare combined image samplers for texture sampling
@@ -121,12 +139,20 @@ impl SpvEmitter {
 
         // 2b'. FragCoord builtin: an Input vec4 decorated `BuiltIn FragCoord`
         // (the Input analogue of the vertex emitter's gl_Position Output),
-        // declared only when the body calls `frag_coord()` — an unused builtin
-        // input just bloats the interface. The scan is deterministic over the
-        // same body, so the real and passthrough calls declare it identically
-        // (the id-consistency contract in the doc comment above).
+        // declared only when the body calls `frag_coord()` OR reads the
+        // Varyings struct's `#[position]` field (`s.clip` — the interpolated
+        // window position, WGSL semantics; both spellings load this variable)
+        // — an unused builtin input just bloats the interface. Both scans are
+        // deterministic over the same body, so the real and passthrough calls
+        // declare it identically (the id-consistency contract in the doc
+        // comment above).
         self.frag_coord_var = None;
-        if super::body_calls(&shader.body_source, "frag_coord") {
+        let reads_position_field = shader.varyings.as_ref().is_some_and(|v| {
+            v.binding
+                .as_deref()
+                .is_some_and(|recv| super::body_reads_field(&shader.body_source, recv, &v.position))
+        });
+        if super::body_calls(&shader.body_source, "frag_coord") || reads_position_field {
             let ptr_input_vec4 = self.ensure_type_pointer(STORAGE_CLASS_INPUT, vec4_ty);
             let var_id = self.alloc_id();
             Self::emit_op(
@@ -212,14 +238,11 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_function, OP_LABEL, &[entry_label]);
         self.current_block = entry_label;
 
-        let mut param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = stage_in_params
-            .iter()
-            .zip(input_vars.iter())
-            .map(|((_, p), (var_id, type_id))| (p.name.clone(), *var_id, *type_id, p.ty))
-            .collect();
-
-        // Uniforms: pointer to member 0 of each block; the expression
-        // parser loads through it at use, exactly like an Input var.
+        // Body-visible named values: the uniforms (varyings resolve through
+        // `self.varying_inputs` by receiver-field access, not through
+        // param_info). Each uniform is a pointer to member 0 of its block;
+        // the expression parser loads through it at use.
+        let mut param_info: Vec<(String, u32, u32, quanta_ir::ShaderType)> = Vec::new();
         for (name, var_id, member_ty, sty) in &uniform_vars {
             let ptr_member = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, *member_ty);
             let zero = self.emit_constant_u32(0);
@@ -232,10 +255,11 @@ impl SpvEmitter {
             param_info.push((name.clone(), access, *member_ty, *sty));
         }
 
-        // Passthrough rebuild: skip the body, emit the interface-only result.
+        // Passthrough rebuild: skip the body, emit the interface-only result
+        // (a constant color — the fragment has no positional inputs to fall
+        // back on under the shared-struct model).
         if passthrough {
-            let result_id =
-                self.passthrough_first_input(&stage_in_params, &input_vars, f32_ty, vec4_ty);
+            let result_id = self.passthrough_first_input(&[], &[], f32_ty, vec4_ty);
             Self::emit_op(&mut self.sec_function, OP_STORE, &[color_var, result_id]);
             Self::emit_op(&mut self.sec_function, OP_RETURN, &[]);
             Self::emit_op(&mut self.sec_function, OP_FUNCTION_END, &[]);

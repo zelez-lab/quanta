@@ -276,21 +276,40 @@ proptest! {
         name in "[a-z]{1,8}",
         stage_tag in 0u8..2,
         ret_tag in 0u8..7,
+        // The appended varyings interface: absent, or a struct with 0..4
+        // varying fields (each any ShaderType tag) and an optional receiver.
+        varyings in proptest::option::of((
+            "[A-Z][a-z]{0,6}",
+            "[a-z]{1,6}",
+            proptest::collection::vec(("[a-z]{1,6}", 0u8..7), 0..4),
+            proptest::option::of("[a-z]{1,4}"),
+        )),
     ) {
         let stage = if stage_tag == 0 { ShaderStage::Vertex } else { ShaderStage::Fragment };
         let return_type = shader_type_from_tag(ret_tag);
+        let varyings = varyings.map(|(struct_name, position, fields, binding)| ShaderVaryings {
+            struct_name,
+            position,
+            fields: fields
+                .into_iter()
+                .map(|(name, tag)| VaryingField { name, ty: shader_type_from_tag(tag) })
+                .collect(),
+            binding,
+        });
         let shader = ShaderDef {
             name: name.clone(),
             stage,
             params: Vec::new(),
             return_type,
             body_source: String::from("return x;"),
+            varyings: varyings.clone(),
         };
         let bytes = serialize_shader(&shader);
         let s2 = deserialize_shader(&bytes).unwrap();
         assert_eq!(s2.name, name);
         assert_eq!(s2.stage, stage);
         assert_eq!(s2.return_type, return_type);
+        assert_eq!(s2.varyings, varyings);
     }
 }
 

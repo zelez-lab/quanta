@@ -202,6 +202,24 @@ pub(crate) fn write_shader_def(w: &mut Writer, s: &crate::ShaderDef) {
     }
     w.u8(s.return_type as u8);
     w.str(&s.body_source);
+    // varyings: Option<ShaderVaryings> — APPENDED after body_source, so a
+    // pre-varyings reader stops cleanly at the string and a new reader treats
+    // absence-of-bytes as None (same append-only growth as KernelDef's
+    // subgroup_size and the u32 ShaderType tag).
+    match &s.varyings {
+        None => w.u8(0),
+        Some(v) => {
+            w.u8(1);
+            w.str(&v.struct_name);
+            w.str(&v.position);
+            w.u32(v.fields.len() as u32);
+            for f in &v.fields {
+                w.str(&f.name);
+                w.u8(f.ty as u8);
+            }
+            w.option_str(&v.binding);
+        }
+    }
 }
 
 pub(crate) fn write_shader_output(w: &mut Writer, o: &crate::ShaderOutput) {

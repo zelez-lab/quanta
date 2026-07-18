@@ -68,8 +68,14 @@ impl WType {
 /// by every cloned branch context so a temporary name is unique across the
 /// WHOLE body — WGSL has no shadowing across nested `var` declarations, so
 /// `_wif0` must never be reused, even in a sibling branch.
+///
+/// `varyings` carries the shared-struct interface when the shader uses it: a
+/// fragment body reads varyings through the receiver param
+/// (`s.<field>` — resolved against the struct's fields), and the vertex body
+/// ends in the struct literal (handled by [`walk_body_varyings`]).
 struct Ctx<'a> {
     params: &'a [ParamInfo],
+    varyings: Option<&'a crate::ShaderVaryings>,
     locals: Vec<(String, WType)>,
     next_tmp: &'a core::cell::Cell<u32>,
 }
@@ -120,19 +126,16 @@ pub(super) fn param_infos(params: &[crate::ShaderParam]) -> Vec<ParamInfo> {
 pub(super) fn walk_body(
     body_source: &str,
     params: &[ParamInfo],
+    varyings: Option<&crate::ShaderVaryings>,
     pad: &str,
     out: &mut String,
 ) -> Result<(String, WType), String> {
-    let src = body_source.trim();
-    let src = if src.starts_with('{') && src.ends_with('}') {
-        &src[1..src.len() - 1]
-    } else {
-        src
-    };
+    let src = strip_outer_braces(body_source);
     let tokens = tokenize_shader_expr(src);
     let next_tmp = core::cell::Cell::new(0u32);
     let mut ctx = Ctx {
         params,
+        varyings,
         locals: Vec::new(),
         next_tmp: &next_tmp,
     };
@@ -141,6 +144,175 @@ pub(super) fn walk_body(
         Some(v) => Ok(v),
         None => Err("shader body has no trailing result expression".to_string()),
     }
+}
+
+fn strip_outer_braces(body_source: &str) -> &str {
+    let src = body_source.trim();
+    if src.starts_with('{') && src.ends_with('}') {
+        &src[1..src.len() - 1]
+    } else {
+        src
+    }
+}
+
+/// Walk a VERTEX body under the shared-struct varying model: zero or more
+/// statements, then — as the mandatory tail — the varyings struct literal
+/// (`Surface { pos : expr , uv : expr , … }`, any field order, shorthand
+/// `field` allowed). Each field's value is assigned to `{out_var}.{field}`;
+/// the caller declares `var {out_var}: Surface;` and returns it.
+///
+/// The literal must sit at statement depth 0 (never inside an `if` branch),
+/// every declared field must appear exactly once, the position field must be
+/// a `vec4<f32>` value, and nothing may follow the literal.
+pub(super) fn walk_body_varyings(
+    body_source: &str,
+    params: &[ParamInfo],
+    varyings: &crate::ShaderVaryings,
+    out_var: &str,
+    pad: &str,
+    out: &mut String,
+) -> Result<(), String> {
+    let src = strip_outer_braces(body_source);
+    let tokens = tokenize_shader_expr(src);
+    let lit_start = find_struct_literal(&tokens, &varyings.struct_name).ok_or_else(|| {
+        format!(
+            "the vertex body must end in a `{} {{ .. }}` struct literal \
+             (the Varyings interface is built exactly once, in tail position)",
+            varyings.struct_name
+        )
+    })?;
+
+    let next_tmp = core::cell::Cell::new(0u32);
+    let mut ctx = Ctx {
+        params,
+        varyings: Some(varyings),
+        locals: Vec::new(),
+        next_tmp: &next_tmp,
+    };
+
+    // Leading statements (up to the literal). A trailing VALUE there means
+    // the body's tail is not the struct literal — reject.
+    let mut pos = 0;
+    let lead = walk_statements(&tokens[..lit_start], &mut pos, &mut ctx, pad, out)?;
+    if lead.is_some() {
+        return Err(format!(
+            "the vertex body must end in a `{} {{ .. }}` struct literal",
+            varyings.struct_name
+        ));
+    }
+
+    // The literal itself: `Name { field [: expr] , … }`.
+    let mut pos = lit_start + 2; // past `Name` `{`
+    let mut seen: Vec<(String, String, WType)> = Vec::new();
+    loop {
+        if tokens.get(pos) == Some(&ShaderToken::BraceClose) {
+            pos += 1;
+            break;
+        }
+        let field = match tokens.get(pos) {
+            Some(ShaderToken::Ident(n)) => n.clone(),
+            other => {
+                return Err(format!(
+                    "expected a field name in the `{} {{ .. }}` literal, got {other:?}",
+                    varyings.struct_name
+                ));
+            }
+        };
+        pos += 1;
+        let (expr, ty) = match tokens.get(pos) {
+            // `field : expr`
+            Some(ShaderToken::Colon) => {
+                pos += 1;
+                walk_conditional(&tokens, &mut pos, &mut ctx, pad, out)?
+            }
+            // Field-init shorthand: `field` names a local/param of the same name.
+            Some(ShaderToken::Comma) | Some(ShaderToken::BraceClose) => {
+                walk_bare_ident(&field, &ctx)?
+            }
+            other => {
+                return Err(format!(
+                    "expected `:` or `,` after field `{field}` in the `{} {{ .. }}` literal, \
+                     got {other:?}",
+                    varyings.struct_name
+                ));
+            }
+        };
+        if seen.iter().any(|(n, _, _)| *n == field) {
+            return Err(format!(
+                "duplicate field `{field}` in the `{} {{ .. }}` literal",
+                varyings.struct_name
+            ));
+        }
+        seen.push((field, expr, ty));
+        if tokens.get(pos) == Some(&ShaderToken::Comma) {
+            pos += 1;
+        }
+    }
+    if pos != tokens.len() {
+        return Err(format!(
+            "unexpected tokens after the `{} {{ .. }}` struct literal",
+            varyings.struct_name
+        ));
+    }
+
+    // Validate the field set against the declared interface, then emit the
+    // member assignments in declaration order (position first).
+    for (name, _, _) in &seen {
+        if *name != varyings.position && varyings.field_type(name).is_none() {
+            return Err(format!(
+                "unknown field `{name}` in the `{} {{ .. }}` literal",
+                varyings.struct_name
+            ));
+        }
+    }
+    let mut ordered: Vec<&str> = Vec::with_capacity(1 + varyings.fields.len());
+    ordered.push(&varyings.position);
+    ordered.extend(varyings.fields.iter().map(|f| f.name.as_str()));
+    for name in ordered {
+        let Some((_, expr, ty)) = seen.iter().find(|(n, _, _)| n == name) else {
+            return Err(format!(
+                "missing field `{name}` in the `{} {{ .. }}` literal",
+                varyings.struct_name
+            ));
+        };
+        let declared = if *name == varyings.position {
+            WType::Vec4
+        } else {
+            WType::from_shader(varyings.field_type(name).expect("validated above"))
+        };
+        if *ty != declared {
+            return Err(format!(
+                "field `{name}` of `{}` expects {} but the literal provides {:?}",
+                varyings.struct_name,
+                wgsl_type_name(declared),
+                ty
+            ));
+        }
+        out.push_str(&format!("{pad}{out_var}.{name} = {expr};\n"));
+    }
+    Ok(())
+}
+
+/// Locate the tail struct literal: the token index of `Ident(name)` directly
+/// followed by `{`, at brace depth 0 (statement level — never inside an `if`
+/// or loop body). Returns `None` when the body has no such literal.
+fn find_struct_literal(tokens: &[ShaderToken], name: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for i in 0..tokens.len() {
+        match &tokens[i] {
+            ShaderToken::BraceOpen => depth += 1,
+            ShaderToken::BraceClose => depth -= 1,
+            ShaderToken::Ident(n)
+                if depth == 0
+                    && n == name
+                    && tokens.get(i + 1) == Some(&ShaderToken::BraceOpen) =>
+            {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Statement walker: `let [mut]` bindings, assignments to existing locals,
@@ -287,6 +459,7 @@ fn walk_if_statement(
     // trailing value before deciding the block's shape.
     let mut then_ctx = Ctx {
         params: ctx.params,
+        varyings: ctx.varyings,
         locals: ctx.locals.clone(),
         next_tmp: ctx.next_tmp,
     };
@@ -303,6 +476,7 @@ fn walk_if_statement(
     let (else_body, else_val) = if let Some(et) = &else_tokens {
         let mut else_ctx = Ctx {
             params: ctx.params,
+            varyings: ctx.varyings,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -396,6 +570,7 @@ fn walk_conditional(
         // Then branch → value.
         let mut then_ctx = Ctx {
             params: ctx.params,
+            varyings: ctx.varyings,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -414,6 +589,7 @@ fn walk_conditional(
         // conditional grammar).
         let mut else_ctx = Ctx {
             params: ctx.params,
+            varyings: ctx.varyings,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -639,6 +815,36 @@ fn walk_atom_inner(
         ShaderToken::Ident(name) => {
             let name = name.clone();
             *pos += 1;
+
+            // Varyings receiver: `s.<field>` reads a varying by NAME from the
+            // shared interface struct (or the position field — the
+            // interpolated window position, WGSL FragCoord semantics). The
+            // receiver itself is not a value; only field access is legal.
+            if let Some(v) = ctx.varyings
+                && v.binding.as_deref() == Some(name.as_str())
+            {
+                if tokens.get(*pos) == Some(&ShaderToken::Dot)
+                    && let Some(ShaderToken::Ident(field)) = tokens.get(*pos + 1)
+                {
+                    let ty = if *field == v.position {
+                        WType::Vec4
+                    } else if let Some(ty) = v.field_type(field) {
+                        WType::from_shader(ty)
+                    } else {
+                        return Err(format!(
+                            "no field `{field}` on the varyings struct `{}`",
+                            v.struct_name
+                        ));
+                    };
+                    let field = field.clone();
+                    *pos += 2;
+                    return Ok((format!("{name}.{field}"), ty));
+                }
+                return Err(format!(
+                    "the varyings struct `{name}` can only be read by field access \
+                     (`{name}.<field>`)"
+                ));
+            }
 
             // Vec{2,3,4}::new(args) → vecN<f32>(args). Tolerates the wrap that
             // splits `Vec4 ::` / `new(` across a newline (the tokenizer has

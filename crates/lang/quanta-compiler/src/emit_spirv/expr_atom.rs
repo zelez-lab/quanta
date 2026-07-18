@@ -486,10 +486,55 @@ impl SpvEmitter {
             let (val_id, val_ty) = (*val_id, *val_ty);
             return self.apply_swizzle(val_id, val_ty, &field);
         }
+        // Varyings receiver: `s.<field>` loads the fragment's named varying
+        // Input (Location by field-declaration order); `s.<position>` loads
+        // the FragCoord builtin — the interpolated window position (WGSL
+        // semantics). A postfix swizzle (`s.uv.x`) is applied by the caller's
+        // postfix loop on the returned value.
+        if self.varying_receiver_is(name) {
+            let position = self
+                .varyings
+                .as_ref()
+                .expect("receiver implies varyings")
+                .position
+                .clone();
+            if field == position {
+                let Some(var_id) = self.frag_coord_var else {
+                    return Err(format!(
+                        "the position field `{field}` is only readable in fragment bodies"
+                    ));
+                };
+                let f32_ty = self.ensure_type_f32();
+                let vec4_ty = self.ensure_type_vector(f32_ty, 4);
+                let loaded = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_LOAD, &[vec4_ty, loaded, var_id]);
+                return Ok((loaded, quanta_ir::ShaderType::Vec4));
+            }
+            if let Some(&(var_id, type_id, sty)) = self.varying_inputs.get(&field) {
+                let loaded = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_LOAD, &[type_id, loaded, var_id]);
+                return Ok((loaded, sty));
+            }
+            let struct_name = self
+                .varyings
+                .as_ref()
+                .map(|v| v.struct_name.clone())
+                .unwrap_or_default();
+            return Err(format!(
+                "no field `{field}` on the varyings struct `{struct_name}`"
+            ));
+        }
         Err(format!("unknown variable: {name}"))
     }
 
-    fn parse_bare_ident(
+    /// Whether `name` is the fragment body's Varyings receiver param.
+    fn varying_receiver_is(&self, name: &str) -> bool {
+        self.varyings
+            .as_ref()
+            .is_some_and(|v| v.binding.as_deref() == Some(name))
+    }
+
+    pub(crate) fn parse_bare_ident(
         &mut self,
         name: &str,
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
@@ -514,6 +559,12 @@ impl SpvEmitter {
                 &[*type_id, loaded, *var_id],
             );
             return Ok((loaded, *sty));
+        }
+        if self.varying_receiver_is(name) {
+            return Err(format!(
+                "the varyings struct `{name}` can only be read by field access \
+                 (`{name}.<field>`)"
+            ));
         }
         Err(format!("unknown identifier: {name}"))
     }

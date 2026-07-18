@@ -49,9 +49,14 @@
 extern crate alloc;
 
 // Re-export the render-stage shader macros so a render consumer pulls
-// them from `quanta_render` rather than reaching into the facade.
+// them from `quanta_render` rather than reaching into the facade. The
+// hidden `__vertex_varyings` / `__fragment_varyings` pair is the second
+// stage of the Varyings trampoline (`#[derive(Varyings)]` structs route
+// `#[vertex]`/`#[fragment]` through it) — re-exported so the emitted
+// `::quanta::__vertex_varyings` path resolves in consumer crates.
 pub use quanta_render_dsl::{
-    Vertex, closest_hit, fragment, mesh, miss, ray_gen, task, tess_control, tess_eval, vertex,
+    __fragment_varyings, __vertex_varyings, Varyings, Vertex, closest_hit, fragment, mesh, miss,
+    ray_gen, task, tess_control, tess_eval, vertex,
 };
 
 // The shared substrate, wholesale: the device line (`init`, `devices`,

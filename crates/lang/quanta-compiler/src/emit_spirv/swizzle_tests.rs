@@ -6,26 +6,37 @@
 //! body is the real glyph fragment shape that previously fell back to
 //! a passthrough module ("unexpected token: Dot").
 
-use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType};
+use quanta_ir::{ShaderDef, ShaderStage, ShaderType, ShaderVaryings, VaryingField};
 
 use crate::emit_spirv::emitter::SpvEmitter;
 use crate::emit_spirv::tokenizer::tokenize_shader_expr;
 
-fn frag(params: &[(&str, ShaderType)], body: &str) -> ShaderDef {
+/// A fragment consuming the given varyings through receiver `s` (the
+/// shared-struct model — bodies read `s . <field>`). No varying interface at
+/// all when `fields` is empty.
+fn frag(fields: &[(&str, ShaderType)], body: &str) -> ShaderDef {
     ShaderDef {
         name: "swizzle_test".to_string(),
         stage: ShaderStage::Fragment,
-        params: params
-            .iter()
-            .map(|(name, ty)| ShaderParam {
-                name: name.to_string(),
-                ty: *ty,
-                is_uniform: false,
-                is_slice: false,
-            })
-            .collect(),
+        params: vec![],
         return_type: ShaderType::Vec4,
         body_source: body.to_string(),
+        varyings: if fields.is_empty() {
+            None
+        } else {
+            Some(ShaderVaryings {
+                struct_name: "V".to_string(),
+                position: "pos".to_string(),
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| VaryingField {
+                        name: name.to_string(),
+                        ty: *ty,
+                    })
+                    .collect(),
+                binding: Some("s".to_string()),
+            })
+        },
     }
 }
 
@@ -61,11 +72,11 @@ fn sample_swizzle_glyph_body_translates() {
             ("uv_rect", ShaderType::Vec4),
             ("color", ShaderType::Vec4),
         ],
-        "let u = mix ( uv_rect . x , uv_rect . z , corner . x ) ; \
-         let v = mix ( uv_rect . y , uv_rect . w , corner . y ) ; \
+        "let u = mix ( s . uv_rect . x , s . uv_rect . z , s . corner . x ) ; \
+         let v = mix ( s . uv_rect . y , s . uv_rect . w , s . corner . y ) ; \
          let coverage = sample(0 , Vec2 :: new ( u , v ) ) . x ; \
-         Vec4 :: new ( color . x * coverage , color . y * coverage , \
-         color . z * coverage , color . w * coverage )",
+         Vec4 :: new ( s . color . x * coverage , s . color . y * coverage , \
+         s . color . z * coverage , s . color . w * coverage )",
     );
     let spirv = crate::emit_spirv::emit_fragment(&def).expect("glyph body must translate");
     let ops = opcodes(&spirv);
@@ -84,7 +95,7 @@ fn sample_swizzle_glyph_body_translates() {
 fn multi_component_swizzle_shuffles() {
     let def = frag(
         &[("uv_rect", ShaderType::Vec4)],
-        "let t = uv_rect . zw ; Vec4 :: new ( t . x , t . y , 0.0 , 1.0 )",
+        "let t = s . uv_rect . zw ; Vec4 :: new ( t . x , t . y , 0.0 , 1.0 )",
     );
     let spirv = crate::emit_spirv::emit_fragment(&def).expect("swizzle body must translate");
     assert!(opcodes(&spirv).contains(&OP_VECTOR_SHUFFLE));

@@ -47,7 +47,9 @@ pub use serial::{
     deserialize_kernel, deserialize_output, deserialize_shader, deserialize_shader_output,
     serialize_kernel, serialize_output, serialize_shader, serialize_shader_output,
 };
-pub use shader::{ShaderDef, ShaderOutput, ShaderParam, ShaderStage, ShaderType};
+pub use shader::{
+    ShaderDef, ShaderOutput, ShaderParam, ShaderStage, ShaderType, ShaderVaryings, VaryingField,
+};
 pub use types::{
     AtomicOp, BinOp, CmpOp, ConstValue, DeviceFnDef, KernelDef, KernelOp, KernelParam, MathFn,
     MatrixFrag, MemoryOrder, Reg, ScalarType, UnaryOp, is_f64_transcendental,

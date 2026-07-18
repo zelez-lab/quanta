@@ -1,8 +1,16 @@
 //! Vertex shader SPIR-V emission.
 //!
 //! Emits a vertex shader module with Input variables (vertex attributes),
-//! Output variables (varyings + gl_Position), push constant uniforms,
-//! and the body_source expression evaluated as gl_Position.
+//! Output variables (gl_Position + the explicit varyings), and uniform /
+//! slice storage blocks.
+//!
+//! Varyings follow the shared-struct model (`ShaderDef::varyings`): the body
+//! ends in the Varyings struct literal, and each field is stored to its named
+//! Output at the Location given by field-declaration order (u32 fields Flat).
+//! Nothing is auto-forwarded — a vertex without a varyings interface writes
+//! only gl_Position (its value params are pure attributes).
+
+use std::collections::HashMap;
 
 use super::constants::*;
 use super::emitter::SpvEmitter;
@@ -214,8 +222,12 @@ impl SpvEmitter {
     ) -> Result<super::ShaderEmit, String> {
         // FragCoord is a fragment-only builtin: never inherit one here, so a
         // vertex body calling `frag_coord()` errors in the body parser (and
-        // falls to the passthrough) instead of loading a stale id.
+        // falls to the passthrough) instead of loading a stale id. The
+        // fragment-side varying-input state is likewise reset — the vertex
+        // WRITES varyings (through the tail struct literal), never reads them.
         self.frag_coord_var = None;
+        self.varyings = None;
+        self.varying_inputs.clear();
 
         // 1. Capability + memory model
         Self::emit_op(
@@ -229,12 +241,15 @@ impl SpvEmitter {
             &[ADDRESSING_MODEL_LOGICAL, MEMORY_MODEL_GLSL450],
         );
 
-        // 2. Declare Input variables for value params
+        // 2. Declare Input variables for value params — the vertex
+        // attributes, Location by declaration order. Pure inputs: nothing is
+        // forwarded anywhere implicitly. (Slices bind storage buffers, not
+        // attributes, so they are excluded alongside uniforms.)
         let attr_params: Vec<(usize, &quanta_ir::ShaderParam)> = shader
             .params
             .iter()
             .enumerate()
-            .filter(|(_, p)| !p.is_uniform)
+            .filter(|(_, p)| !p.is_uniform && !p.is_slice)
             .collect();
 
         let mut interface_ids = Vec::new();
@@ -326,30 +341,36 @@ impl SpvEmitter {
             self.emit_slice_storage_blocks(&slice_params, &bindings.slice_bindings);
         }
 
-        // 2c. Declare Output variables for varyings
-        let mut varying_outputs: Vec<(u32, u32, u32)> = Vec::new();
-        for (i, (_, param)) in attr_params.iter().enumerate().skip(1) {
-            let varying_loc = (i - 1) as u32;
-            let ty_id = self.shader_type_id(param.ty);
-            let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_OUTPUT, ty_id);
-            let out_var = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_global_var,
-                OP_VARIABLE,
-                &[ptr_ty, out_var, STORAGE_CLASS_OUTPUT],
-            );
-            self.emit_name(out_var, &format!("out_{}", param.name));
-            self.decorate(out_var, DECORATION_LOCATION, &[varying_loc]);
-            // Integer varyings are Flat on BOTH ends of the interpolant (this
-            // Output and the fragment's matching Input): integers cannot be
-            // interpolated, and the fragment side is invalid without it. The
-            // u32 vertex-attribute INPUT above stays undecorated — Flat is
-            // never valid on vertex-stage Inputs. Float varyings stay smooth.
-            if param.ty == quanta_ir::ShaderType::U32 {
-                self.decorate(out_var, DECORATION_FLAT, &[]);
+        // 2c. Declare one Output variable per varying FIELD of the shared
+        // interface struct (`ShaderDef::varyings`), named by field name, at
+        // the Location given by field-declaration order. The body's tail
+        // struct literal stores each field explicitly — no auto-forwarding.
+        let mut varying_outputs: HashMap<String, (u32, u32, quanta_ir::ShaderType)> =
+            HashMap::new();
+        if let Some(v) = &shader.varyings {
+            for (loc, field) in v.fields.iter().enumerate() {
+                let ty_id = self.shader_type_id(field.ty);
+                let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_OUTPUT, ty_id);
+                let out_var = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_global_var,
+                    OP_VARIABLE,
+                    &[ptr_ty, out_var, STORAGE_CLASS_OUTPUT],
+                );
+                self.emit_name(out_var, &format!("out_{}", field.name));
+                self.decorate(out_var, DECORATION_LOCATION, &[loc as u32]);
+                // Integer varyings are Flat on BOTH ends of the interpolant
+                // (this Output and the fragment's matching Input): integers
+                // cannot be interpolated, and the fragment side is invalid
+                // without it. A u32 vertex-attribute INPUT stays undecorated —
+                // Flat is never valid on vertex-stage Inputs. Float varyings
+                // stay smooth.
+                if field.ty == quanta_ir::ShaderType::U32 {
+                    self.decorate(out_var, DECORATION_FLAT, &[]);
+                }
+                interface_ids.push(out_var);
+                varying_outputs.insert(field.name.clone(), (out_var, ty_id, field.ty));
             }
-            interface_ids.push(out_var);
-            varying_outputs.push((out_var, ty_id, input_vars[i].0));
         }
 
         // 3. Declare gl_Position
@@ -410,18 +431,10 @@ impl SpvEmitter {
             param_info.push((name.clone(), access, *member_ty, *sty));
         }
 
-        // Forward vertex attributes as varying outputs
-        for (out_var, type_id, in_var) in &varying_outputs {
-            let loaded = self.alloc_id();
-            Self::emit_op(
-                &mut self.sec_function,
-                OP_LOAD,
-                &[*type_id, loaded, *in_var],
-            );
-            Self::emit_op(&mut self.sec_function, OP_STORE, &[*out_var, loaded]);
-        }
-
         // Passthrough rebuild: skip the body, emit the interface-only result.
+        // Varying Outputs (if any) stay unwritten — a passthrough is already a
+        // declared misrender; the interface itself is identical to the real
+        // module by construction.
         if passthrough {
             let result_id =
                 self.passthrough_first_input(&attr_params, &input_vars, f32_ty, vec4_ty);
@@ -434,6 +447,35 @@ impl SpvEmitter {
         // Real attempt: translate the body. A failure interns ids into other
         // sections, so we abandon this emitter and let the caller rebuild the
         // passthrough on a fresh one rather than patching the id state here.
+        //
+        // Under the shared-struct model the body ends in the Varyings struct
+        // literal: the position field stores to gl_Position and every varying
+        // field to its named Output. Without varyings the tail expression IS
+        // the position (promoted to vec4).
+        if let Some(v) = &shader.varyings {
+            match self.eval_vertex_varyings_body(
+                &shader.body_source,
+                &param_info,
+                v,
+                position_var,
+                &varying_outputs,
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!(
+                        "[quanta] warning: vertex shader `{}` body failed SPIR-V translation ({e}); \
+                         emitting a passthrough SPIR-V shader — it will MISRENDER \
+                         on Vulkan (Metal/metallib is unaffected)",
+                        shader.name
+                    );
+                    return Ok(super::ShaderEmit::NeedsPassthrough);
+                }
+            }
+            Self::emit_op(&mut self.sec_function, OP_RETURN, &[]);
+            Self::emit_op(&mut self.sec_function, OP_FUNCTION_END, &[]);
+            return Ok(super::ShaderEmit::Real);
+        }
+
         let result_id = match self.eval_shader_body(&shader.body_source, &param_info) {
             Ok((id, ty)) => match self.promote_to_vec4(id, ty, f32_ty, vec4_ty) {
                 Some(id) => id,

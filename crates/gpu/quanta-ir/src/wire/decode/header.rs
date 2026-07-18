@@ -297,12 +297,42 @@ pub(crate) fn read_shader_def(r: &mut Reader) -> Result<crate::ShaderDef, &'stat
     }
     let return_type = read_shader_type(r.u8()?)?;
     let body_source = r.str()?;
+    // varyings: Option<ShaderVaryings> — appended after body_source; absent
+    // bytes (a pre-varyings producer) decode as None, mirroring KernelDef's
+    // appended-field guards.
+    let varyings = if r.remaining() > 0 {
+        match r.u8()? {
+            0 => None,
+            1 => {
+                let struct_name = r.str()?;
+                let position = r.str()?;
+                let field_count = r.u32()? as usize;
+                let mut fields = Vec::with_capacity(field_count);
+                for _ in 0..field_count {
+                    let fname = r.str()?;
+                    let ty = read_shader_type(r.u8()?)?;
+                    fields.push(crate::VaryingField { name: fname, ty });
+                }
+                let binding = r.option_str()?;
+                Some(crate::ShaderVaryings {
+                    struct_name,
+                    position,
+                    fields,
+                    binding,
+                })
+            }
+            _ => return Err("invalid ShaderDef varyings option tag"),
+        }
+    } else {
+        None
+    };
     Ok(crate::ShaderDef {
         name,
         stage,
         params,
         return_type,
         body_source,
+        varyings,
     })
 }
 

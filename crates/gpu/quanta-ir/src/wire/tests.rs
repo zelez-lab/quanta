@@ -524,6 +524,7 @@ fn roundtrip_shader_def_vertex() {
         ],
         return_type: ShaderType::Vec4,
         body_source: "mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)".to_string(),
+        varyings: None,
     };
     let bytes = serialize_shader(&s);
     let s2 = deserialize_shader(&bytes).unwrap();
@@ -554,6 +555,7 @@ fn roundtrip_shader_def_fragment() {
         }],
         return_type: ShaderType::Vec4,
         body_source: "Vec4::new(uv.x, uv.y, 0.0, 1.0)".to_string(),
+        varyings: None,
     };
     let bytes = serialize_shader(&s);
     let s2 = deserialize_shader(&bytes).unwrap();
@@ -655,6 +657,7 @@ fn roundtrip_shader_def_all_types() {
         ],
         return_type: ShaderType::Vec4,
         body_source: "return d;".to_string(),
+        varyings: None,
     };
     let bytes = serialize_shader(&s);
     let s2 = deserialize_shader(&bytes).unwrap();
@@ -902,6 +905,7 @@ fn roundtrip_shader_def_slice() {
         ],
         return_type: ShaderType::Vec4,
         body_source: "tint * stops[0]".to_string(),
+        varyings: None,
     };
     let bytes = serialize_shader(&s);
     let s2 = deserialize_shader(&bytes).unwrap();
@@ -909,4 +913,97 @@ fn roundtrip_shader_def_slice() {
     assert!(s2.params[1].is_slice);
     assert!(s2.params[0].is_uniform);
     assert!(!s2.params[1].is_uniform);
+}
+
+#[test]
+fn roundtrip_shader_def_varyings() {
+    use crate::*;
+    // A vertex carrying the shared-struct interface: position field + a float
+    // varying + a flat u32 varying, no receiver binding (vertex side).
+    let vertex = ShaderDef {
+        name: "vs".to_string(),
+        stage: ShaderStage::Vertex,
+        params: vec![ShaderParam {
+            name: "pos".to_string(),
+            ty: ShaderType::Vec3,
+            is_uniform: false,
+            is_slice: false,
+        }],
+        return_type: ShaderType::Vec4,
+        body_source: "Surface { clip : Vec4 :: new ( 0.0 , 0.0 , 0.0 , 1.0 ) , uv : \
+                      Vec2 :: new ( 0.0 , 0.0 ) , kind : 0u32 }"
+            .to_string(),
+        varyings: Some(ShaderVaryings {
+            struct_name: "Surface".to_string(),
+            position: "clip".to_string(),
+            fields: vec![
+                VaryingField {
+                    name: "uv".to_string(),
+                    ty: ShaderType::Vec2,
+                },
+                VaryingField {
+                    name: "kind".to_string(),
+                    ty: ShaderType::U32,
+                },
+            ],
+            binding: None,
+        }),
+    };
+    let bytes = serialize_shader(&vertex);
+    let v2 = deserialize_shader(&bytes).unwrap();
+    let vy = v2.varyings.expect("varyings survive the roundtrip");
+    assert_eq!(vy.struct_name, "Surface");
+    assert_eq!(vy.position, "clip");
+    assert_eq!(vy.fields.len(), 2);
+    assert_eq!(vy.fields[0].name, "uv");
+    assert_eq!(vy.fields[0].ty, ShaderType::Vec2);
+    assert_eq!(vy.fields[1].name, "kind");
+    assert_eq!(vy.fields[1].ty, ShaderType::U32);
+    assert_eq!(vy.binding, None);
+
+    // The fragment twin carries the receiver binding.
+    let fragment = ShaderDef {
+        name: "fs".to_string(),
+        stage: ShaderStage::Fragment,
+        params: vec![],
+        return_type: ShaderType::Vec4,
+        body_source: "Vec4 :: new ( s . uv . x , 0.0 , 0.0 , 1.0 )".to_string(),
+        varyings: Some(ShaderVaryings {
+            struct_name: "Surface".to_string(),
+            position: "clip".to_string(),
+            fields: vec![VaryingField {
+                name: "uv".to_string(),
+                ty: ShaderType::Vec2,
+            }],
+            binding: Some("s".to_string()),
+        }),
+    };
+    let bytes = serialize_shader(&fragment);
+    let f2 = deserialize_shader(&bytes).unwrap();
+    assert_eq!(
+        f2.varyings.expect("fragment varyings").binding.as_deref(),
+        Some("s")
+    );
+}
+
+#[test]
+fn shader_def_varyings_append_safety() {
+    use crate::*;
+    // A ShaderDef serialized WITHOUT the appended varyings bytes (the
+    // pre-varyings wire form) must still decode, with varyings = None. The
+    // None encoding appends exactly one 0 tag byte after body_source, so
+    // stripping it reconstructs the old producer's byte stream exactly.
+    let s = ShaderDef {
+        name: "old".to_string(),
+        stage: ShaderStage::Vertex,
+        params: vec![],
+        return_type: ShaderType::Vec4,
+        body_source: "Vec4 :: new ( 0.0 , 0.0 , 0.0 , 1.0 )".to_string(),
+        varyings: None,
+    };
+    let bytes = serialize_shader(&s);
+    let old_form = &bytes[..bytes.len() - 1];
+    let s2 = deserialize_shader(old_form).unwrap();
+    assert_eq!(s2.name, "old");
+    assert!(s2.varyings.is_none());
 }
