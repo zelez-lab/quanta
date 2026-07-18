@@ -108,6 +108,34 @@ impl SpvEmitter {
                     return Ok((loaded, quanta_ir::ShaderType::Vec4));
                 }
 
+                // Vertex-stage indices: vertex_id() / instance_id() → u32.
+                // Loads the `BuiltIn VertexIndex` / `BuiltIn InstanceIndex`
+                // Input declared by `emit_vertex_shader`; outside a vertex
+                // body the var is absent and the error routes the body to
+                // the passthrough fallback, mirroring the MSL fragment
+                // rejection — the stage polarity flip of `frag_coord()`.
+                if (name == "vertex_id" || name == "instance_id")
+                    && *pos < tokens.len()
+                    && tokens[*pos] == ShaderToken::Open
+                {
+                    *pos += 1; // '('
+                    consume_call_close(tokens, pos);
+                    let var = if name == "vertex_id" {
+                        self.vertex_index_var
+                    } else {
+                        self.instance_index_var
+                    };
+                    let Some(var_id) = var else {
+                        return Err(format!(
+                            "{name}() is only available in vertex shader bodies"
+                        ));
+                    };
+                    let u32_ty = self.ensure_type_u32();
+                    let loaded = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_LOAD, &[u32_ty, loaded, var_id]);
+                    return Ok((loaded, quanta_ir::ShaderType::U32));
+                }
+
                 // Screen-space derivatives — core fragment-stage ops.
                 if matches!(name.as_str(), "fwidth" | "dpdx" | "dpdy")
                     && *pos < tokens.len()

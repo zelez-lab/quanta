@@ -255,6 +255,47 @@ impl SpvEmitter {
             input_vars.push((var_id, ty_id));
         }
 
+        // 2a'. Vertex-index builtins: `vertex_id()` / `instance_id()` load
+        // u32 Input variables decorated `BuiltIn VertexIndex` /
+        // `BuiltIn InstanceIndex` — the Vulkan-flavoured pair (42/43), NOT
+        // the OpenGL VertexId(5)/InstanceId(6). Each is declared only when
+        // the body calls it (an unused builtin input just bloats the
+        // interface) and carries ONLY the BuiltIn decoration: no Location,
+        // and no Flat — Flat belongs to vertex→fragment interpolants, never
+        // vertex-stage Inputs. The scan is deterministic over the same body,
+        // so the real and passthrough calls declare identically (the
+        // id-consistency contract in the doc comment above).
+        self.vertex_index_var = None;
+        self.instance_index_var = None;
+        if super::body_calls(&shader.body_source, "vertex_id") {
+            let u32_ty = self.ensure_type_u32();
+            let ptr_input_u32 = self.ensure_type_pointer(STORAGE_CLASS_INPUT, u32_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_u32, var_id, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(var_id, "gl_VertexIndex");
+            self.decorate(var_id, DECORATION_BUILTIN, &[BUILTIN_VERTEX_INDEX]);
+            interface_ids.push(var_id);
+            self.vertex_index_var = Some(var_id);
+        }
+        if super::body_calls(&shader.body_source, "instance_id") {
+            let u32_ty = self.ensure_type_u32();
+            let ptr_input_u32 = self.ensure_type_pointer(STORAGE_CLASS_INPUT, u32_ty);
+            let var_id = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_u32, var_id, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(var_id, "gl_InstanceIndex");
+            self.decorate(var_id, DECORATION_BUILTIN, &[BUILTIN_INSTANCE_INDEX]);
+            interface_ids.push(var_id);
+            self.instance_index_var = Some(var_id);
+        }
+
         // 2b. Declare uniform + slice params as storage-buffer blocks, both
         // drawing from one shared decl-index binding space (see
         // super::shared_binding_indices); the combined-cap error surfaces here.

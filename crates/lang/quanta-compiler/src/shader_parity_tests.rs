@@ -991,6 +991,83 @@ fn fixtures() -> Vec<Fixture> {
                 err_contains: "frag_coord",
             },
         },
+        // ── BUILTINS: vertex_id() / instance_id() ─────────────────────────
+        // The vertex-stage index builtins, both u32. SPIR-V declares u32
+        // Inputs decorated `BuiltIn VertexIndex` (42) / `BuiltIn
+        // InstanceIndex` (43) — the Vulkan pair, NOT OpenGL's
+        // VertexId(5)/InstanceId(6) — and loads them per call; MSL declares
+        // `uint _vertex_id [[vertex_id]]` / `uint _instance_id
+        // [[instance_id]]` parameters the walker lowers the calls to. The
+        // body is the buffer-free fullscreen triangle (vid 0/1/2 →
+        // (-1,-1)/(3,-1)/(-1,3)) — the shape that deletes dija's 6-vertex
+        // unit-quad buffer — plus an instance-scaled z so `instance_id()`
+        // flows into the result. OpIEqual witnesses the unsigned compare;
+        // `instance_id ( ) * 0.25` rides the u32→f32 widening. WGSL: the
+        // walker does not know either builtin and rejects them as unknown
+        // functions (documented gap; `@builtin(vertex_index)` /
+        // `@builtin(instance_index)` are the analogues when they land). The
+        // `vertex_index_spirv_builtin_wiring` test below pins the exact
+        // decoration contract by decoding the module.
+        Fixture {
+            name: "vertex_index_fullscreen_tri",
+            stage: Vertex,
+            params: &[],
+            body: "{ let x = if vertex_id ( ) == 1u32 { 3.0 } else { - 1.0 } ; \
+                   let y = if vertex_id ( ) == 2u32 { 3.0 } else { - 1.0 } ; \
+                   let z = instance_id ( ) * 0.25 ; \
+                   Vec4 :: new ( x , y , z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_IEQUAL],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "uint _vertex_id [[vertex_id]]",
+                    "uint _instance_id [[instance_id]]",
+                    "_vertex_id == 1u",
+                    "_vertex_id == 2u",
+                    "_instance_id * 0.25",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "vertex_id",
+            },
+        },
+        // vertex_id() in a FRAGMENT body is a stage error — the polarity
+        // flip of `rej_frag_coord_in_vertex`: MSL rejects structurally (the
+        // walker would otherwise emit an undeclared `_vertex_id`
+        // identifier); SPIR-V errors in the body parser and falls to the
+        // passthrough. Both agree on not-accepted.
+        Fixture {
+            name: "rej_vertex_id_in_fragment",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ Vec4 :: new ( vertex_id ( ) * 0.1 , uv . x , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "vertex_id",
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "vertex_id",
+            },
+        },
+        // instance_id() gets its own fragment-rejection row so its guard is
+        // pinned independently of vertex_id's (the MSL check is per-builtin).
+        Fixture {
+            name: "rej_instance_id_in_fragment",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ Vec4 :: new ( instance_id ( ) * 0.1 , uv . y , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "instance_id",
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "instance_id",
+            },
+        },
         // ── U32 SCALARS (integer attribute → flat varying → comparison) ──
         // The dija `shape_type` shape: a u32 vertex attribute forwarded as a
         // u32 varying, branched on in the fragment with an integer compare —
@@ -2269,4 +2346,102 @@ fn u32_flat_wiring_spirv() {
         !ops.contains(&OP_FORD_EQUAL),
         "fragment: no float FOrdEqual may appear for a u32 comparison"
     );
+}
+
+/// The vertex-index fixture's SPIR-V must carry the builtin contract
+/// explicitly: exactly one id decorated `BuiltIn VertexIndex` (42) and
+/// exactly one `BuiltIn InstanceIndex` (43) — the Vulkan-flavoured pair,
+/// NOT OpenGL's VertexId(5)/InstanceId(6) — each an Input-storage
+/// OpVariable listed in the OpEntryPoint interface, and NEITHER Flat- nor
+/// Location-decorated (a builtin vertex Input takes only the BuiltIn
+/// decoration; Flat belongs to interpolants, Location to user attributes).
+/// spirv-val checks well-formedness (`spirv_validates` covers this fixture
+/// too); this pins the specific wiring so a regression to, say, the OpenGL
+/// builtin values cannot slip through while staying structurally "valid"
+/// under a laxer target. Mirrors `frag_coord_spirv_builtin_wiring`.
+#[test]
+fn vertex_index_spirv_builtin_wiring() {
+    const OP_ENTRY_POINT: u16 = 15;
+    const OP_VARIABLE: u16 = 59;
+    const OP_DECORATE: u16 = 71;
+    const DECORATION_BUILTIN: u32 = 11;
+    const DECORATION_FLAT: u32 = 14;
+    const DECORATION_LOCATION: u32 = 30;
+    const BUILTIN_VERTEX_INDEX: u32 = 42;
+    const BUILTIN_INSTANCE_INDEX: u32 = 43;
+    const STORAGE_CLASS_INPUT: u32 = 1;
+
+    let f = fixtures()
+        .into_iter()
+        .find(|f| f.name == "vertex_index_fullscreen_tri")
+        .expect("vertex_index_fullscreen_tri fixture present");
+    let d = def(&f);
+    let spirv = emit_spirv(&d).expect("vertex_index fixture must emit");
+    let words: Vec<u32> = spirv
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    // One instruction-walk collecting the facts.
+    let mut vertex_index_ids = Vec::new();
+    let mut instance_index_ids = Vec::new();
+    let mut flat_or_location_ids = Vec::new();
+    let mut input_var_ids = Vec::new();
+    let mut entry_operand_words: Vec<u32> = Vec::new();
+    let mut i = 5;
+    while i < words.len() {
+        let word_count = ((words[i] >> 16) as usize).max(1);
+        let op = (words[i] & 0xFFFF) as u16;
+        let operands = &words[i + 1..i + word_count];
+        match op {
+            OP_DECORATE if operands.len() == 3 && operands[1] == DECORATION_BUILTIN => {
+                match operands[2] {
+                    BUILTIN_VERTEX_INDEX => vertex_index_ids.push(operands[0]),
+                    BUILTIN_INSTANCE_INDEX => instance_index_ids.push(operands[0]),
+                    _ => {}
+                }
+            }
+            OP_DECORATE
+                if operands.len() >= 2
+                    && (operands[1] == DECORATION_FLAT || operands[1] == DECORATION_LOCATION) =>
+            {
+                flat_or_location_ids.push(operands[0]);
+            }
+            // OpVariable: [result_type, result_id, storage_class, (init)]
+            OP_VARIABLE if operands.len() >= 3 && operands[2] == STORAGE_CLASS_INPUT => {
+                input_var_ids.push(operands[1]);
+            }
+            OP_ENTRY_POINT => entry_operand_words.extend_from_slice(operands),
+            _ => {}
+        }
+        i += word_count;
+    }
+
+    for (builtin, ids) in [
+        ("VertexIndex", &vertex_index_ids),
+        ("InstanceIndex", &instance_index_ids),
+    ] {
+        assert_eq!(
+            ids.len(),
+            1,
+            "expected exactly one BuiltIn {builtin} decoration, found {ids:?}"
+        );
+        let id = ids[0];
+        assert!(
+            input_var_ids.contains(&id),
+            "{builtin} id %{id} is not an Input-storage OpVariable (Input vars: {input_var_ids:?})"
+        );
+        // Interface ids trail the packed entry-point name; the id values are
+        // tiny next to ASCII-packed name words, so a plain contains is
+        // unambiguous.
+        assert!(
+            entry_operand_words.contains(&id),
+            "{builtin} id %{id} missing from the OpEntryPoint interface"
+        );
+        assert!(
+            !flat_or_location_ids.contains(&id),
+            "{builtin} id %{id} must carry ONLY the BuiltIn decoration — \
+             never Flat (interpolants only) or Location (user attributes only)"
+        );
+    }
 }

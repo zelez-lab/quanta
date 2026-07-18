@@ -97,24 +97,25 @@ fn body_samples_slot(body: &str, slot: u32) -> bool {
     false
 }
 
-/// Whether `body` calls the `frag_coord()` builtin, tolerating whitespace
-/// between `frag_coord` and `(` (the same scan contract as
-/// `body_samples_slot`). Only the call form counts: the DSL has no
-/// user-defined functions, so an identifier followed by `(` can only be a
-/// builtin call, and a param whose NAME contains the substring is never
-/// followed by `(`.
-fn body_uses_frag_coord(body: &str) -> bool {
+/// Whether `body` calls the argument-free builtin `name` (`frag_coord`,
+/// `vertex_id`, `instance_id`), tolerating whitespace between the name and
+/// `(` (the same scan contract as `body_samples_slot`). Only the call form
+/// counts: the DSL has no user-defined functions, so an identifier followed
+/// by `(` can only be a builtin call, and a param whose NAME contains the
+/// substring is never followed by `(`. The SPIR-V tree carries its own copy
+/// (`emit_spirv::body_calls`), like `body_samples_slot`.
+fn body_calls(body: &str, name: &str) -> bool {
     let bytes = body.as_bytes();
     let mut i = 0;
-    while let Some(rel) = body[i..].find("frag_coord") {
-        let mut j = i + rel + "frag_coord".len();
+    while let Some(rel) = body[i..].find(name) {
+        let mut j = i + rel + name.len();
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
         if j < bytes.len() && bytes[j] == b'(' {
             return true;
         }
-        i += rel + "frag_coord".len();
+        i += rel + name.len();
     }
     false
 }
@@ -164,7 +165,7 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     // signature declares — invalid MSL that only fails at metallib compile.
     // Reject structurally instead (the SPIR-V vertex path errors in its body
     // parser and falls to a passthrough — the same not-accepted verdict).
-    if body_uses_frag_coord(&shader.body_source) {
+    if body_calls(&shader.body_source, "frag_coord") {
         return Err(format!(
             "vertex shader `{}` calls frag_coord(), which is only available in fragment shaders",
             shader.name
@@ -229,6 +230,16 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
     if !attr_params.is_empty() {
         param_lines.push(format!("    {}_VertexIn in [[stage_in]]", shader.name));
     }
+    // Vertex-index builtins: each declared only when the body calls it
+    // (whitespace-tolerant scan, like the texture slots). The AST walker
+    // lowers `vertex_id()` / `instance_id()` to these exact identifiers —
+    // see `emit_call` in `shader_ast.rs`.
+    if body_calls(&shader.body_source, "vertex_id") {
+        param_lines.push("    uint _vertex_id [[vertex_id]]".to_string());
+    }
+    if body_calls(&shader.body_source, "instance_id") {
+        param_lines.push("    uint _instance_id [[instance_id]]".to_string());
+    }
     for (p, buffer) in &ssbo_params {
         if p.is_slice {
             param_lines.push(format!(
@@ -288,6 +299,22 @@ pub fn emit_vertex_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Strin
 
 /// Emit MSL for a fragment shader.
 pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, String> {
+    // `vertex_id()` / `instance_id()` are vertex-only: without this guard
+    // the AST walker would lower the call to the `_vertex_id` /
+    // `_instance_id` identifier, which no fragment signature declares —
+    // invalid MSL that only fails at metallib compile. Reject structurally
+    // instead (the SPIR-V fragment path errors in its body parser and falls
+    // to a passthrough — the same not-accepted verdict), mirroring the
+    // vertex emitter's `frag_coord()` rejection with the polarity flipped.
+    for builtin in ["vertex_id", "instance_id"] {
+        if body_calls(&shader.body_source, builtin) {
+            return Err(format!(
+                "fragment shader `{}` calls {builtin}(), which is only available in vertex shaders",
+                shader.name
+            ));
+        }
+    }
+
     let mut out = String::new();
     out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
 
@@ -336,7 +363,7 @@ pub fn emit_fragment_shader(shader: &quanta_ir::ShaderDef) -> Result<String, Str
     // `frag_coord()` (whitespace-tolerant scan, like the texture slots). The
     // AST walker lowers the call to this exact identifier — see `emit_call`
     // in `shader_ast.rs`.
-    if body_uses_frag_coord(&shader.body_source) {
+    if body_calls(&shader.body_source, "frag_coord") {
         param_lines.push("    float4 _frag_coord [[position]]".to_string());
     }
     for (p, buffer) in &ssbo_params {

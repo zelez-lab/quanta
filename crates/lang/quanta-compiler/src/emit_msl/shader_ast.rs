@@ -571,6 +571,9 @@ fn infer_call_type(c: &syn::ExprCall, env: &TypeEnv) -> MslType {
         // `sample()` returns a full Vec4; so does `frag_coord()` (xyzw =
         // window x, window y, depth, 1/w).
         "sample" | "frag_coord" => MslType::Vec4,
+        // The vertex-index builtins are uint — comparisons against them stay
+        // integer (`== 1u`), mirroring the SPIR-V unsigned opcode family.
+        "vertex_id" | "instance_id" => MslType::Uint,
         // Reductions to a scalar.
         "length" | "distance" | "dot" => MslType::Float,
         // Component-wise intrinsics take the type of their first argument.
@@ -852,6 +855,20 @@ fn emit_call(c: &syn::ExprCall, env: &TypeEnv) -> Result<String, String> {
             return Err("frag_coord() takes no arguments".to_string());
         }
         return Ok("_frag_coord".to_string());
+    }
+
+    // `vertex_id()` / `instance_id()` — the vertex-index builtins. The
+    // vertex emitter declares `uint _vertex_id [[vertex_id]]` /
+    // `uint _instance_id [[instance_id]]` parameters whenever the body calls
+    // them, so each call lowers directly to its identifier (argument-free
+    // static-name builtins, like `frag_coord` — no post-pass rewrite).
+    // Fragment bodies never reach here — `emit_fragment_shader` rejects both
+    // before body lowering.
+    if name == "vertex_id" || name == "instance_id" {
+        if !c.args.is_empty() {
+            return Err(format!("{name}() takes no arguments"));
+        }
+        return Ok(format!("_{name}"));
     }
 
     if let Some(msl_name) = intrinsic_msl_name(&name) {

@@ -22,6 +22,14 @@ impl SpvEmitter {
         shader: &quanta_ir::ShaderDef,
         passthrough: bool,
     ) -> Result<super::ShaderEmit, String> {
+        // VertexIndex/InstanceIndex are vertex-only builtins: never inherit
+        // one here, so a fragment body calling `vertex_id()` /
+        // `instance_id()` errors in the body parser (and falls to the
+        // passthrough) instead of loading a stale id — the stage polarity
+        // mirror of the vertex emitter's `frag_coord_var` reset.
+        self.vertex_index_var = None;
+        self.instance_index_var = None;
+
         // 1. Capability + memory model
         Self::emit_op(
             &mut self.sec_capability,
@@ -118,7 +126,7 @@ impl SpvEmitter {
         // same body, so the real and passthrough calls declare it identically
         // (the id-consistency contract in the doc comment above).
         self.frag_coord_var = None;
-        if body_uses_frag_coord(&shader.body_source) {
+        if super::body_calls(&shader.body_source, "frag_coord") {
             let ptr_input_vec4 = self.ensure_type_pointer(STORAGE_CLASS_INPUT, vec4_ty);
             let var_id = self.alloc_id();
             Self::emit_op(
@@ -273,29 +281,8 @@ impl SpvEmitter {
 /// `sample`, `(`, and the slot digit (`sample ( 0`, `sample( 0`, …). Real macro
 /// output keeps `sample(N` contiguous, but any other ShaderDef producer (or a
 /// future printer change) could space them apart, so the slot scan must not
-/// depend on a contiguous form.
-/// Whether `body` calls the `frag_coord()` builtin, tolerating whitespace
-/// between `frag_coord` and `(` — the same scan contract as
-/// [`body_samples_slot`]. Only the call form counts: the DSL has no
-/// user-defined functions, so an identifier followed by `(` can only be a
-/// builtin call, and a param or local whose NAME contains the substring is
-/// never followed by `(` and does not trigger a declaration.
-fn body_uses_frag_coord(body: &str) -> bool {
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while let Some(rel) = body[i..].find("frag_coord") {
-        let mut j = i + rel + "frag_coord".len();
-        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        if j < bytes.len() && bytes[j] == b'(' {
-            return true;
-        }
-        i += rel + "frag_coord".len();
-    }
-    false
-}
-
+/// depend on a contiguous form. The argument-free builtins (`frag_coord`,
+/// `vertex_id`, `instance_id`) use the shared [`super::body_calls`] scan.
 fn body_samples_slot(body: &str, slot: u32) -> bool {
     let digit = char::from_digit(slot, 10).unwrap() as u8;
     let bytes = body.as_bytes();

@@ -204,6 +204,11 @@ pub const BUILTIN_NUM_WORKGROUPS: u32 = 24;
 pub const BUILTIN_WORKGROUP_ID: u32 = 26;
 pub const BUILTIN_LOCAL_INVOCATION_ID: u32 = 27;
 pub const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
+// Vulkan's vertex-stage index builtins. NOT the OpenGL-flavoured
+// VertexId(5)/InstanceId(6), which spirv-val rejects under a Vulkan
+// target environment.
+pub const BUILTIN_VERTEX_INDEX: u32 = 42;
+pub const BUILTIN_INSTANCE_INDEX: u32 = 43;
 
 // ── Execution model / mode ──────────────────────────────────────────────────
 

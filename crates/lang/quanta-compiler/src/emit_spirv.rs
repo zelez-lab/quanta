@@ -95,6 +95,30 @@ pub(crate) fn shared_binding_indices(
     })
 }
 
+/// Whether `body` calls the argument-free builtin `name` (`frag_coord`,
+/// `vertex_id`, `instance_id`), tolerating whitespace between the name and
+/// `(` — the same scan contract as the emitters' `body_samples_slot`. Only
+/// the call form counts: the DSL has no user-defined functions, so an
+/// identifier followed by `(` can only be a builtin call, and a param or
+/// local whose NAME contains the substring is never followed by `(` and does
+/// not trigger a declaration. Shared by the vertex and fragment emitters,
+/// which declare each stage's builtin Input only when its body uses it.
+pub(crate) fn body_calls(body: &str, name: &str) -> bool {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = body[i..].find(name) {
+        let mut j = i + rel + name.len();
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] == b'(' {
+            return true;
+        }
+        i += rel + name.len();
+    }
+    false
+}
+
 /// Emit Vulkan SPIR-V binary from a KernelDef.
 ///
 /// Returns the SPIR-V module as bytes, ready for `vkCreateShaderModule`.

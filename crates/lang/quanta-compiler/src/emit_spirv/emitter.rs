@@ -69,6 +69,15 @@ pub(crate) struct SpvEmitter {
     // `frag_coord()` outside a fragment body.
     pub(crate) frag_coord_var: Option<u32>,
 
+    // The `BuiltIn VertexIndex` / `BuiltIn InstanceIndex` Input variable ids,
+    // declared by `emit_vertex_shader` when the body calls `vertex_id()` /
+    // `instance_id()`. `None` everywhere else (fragment/compute emission
+    // resets them), so a stale id can never leak between shaders and the body
+    // parser errors cleanly on a call outside a vertex body — the stage
+    // polarity mirror of `frag_coord_var`.
+    pub(crate) vertex_index_var: Option<u32>,
+    pub(crate) instance_index_var: Option<u32>,
+
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
@@ -165,6 +174,8 @@ impl SpvEmitter {
             texture_image_types: HashMap::new(),
             texture_storage_slots: std::collections::HashSet::new(),
             frag_coord_var: None,
+            vertex_index_var: None,
+            instance_index_var: None,
             loop_merge_stack: Vec::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
