@@ -208,14 +208,25 @@ let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescrip
 ```rust
 use quanta::RenderGpu; // render methods on Gpu come from this trait
 
+// WGSL's shader-I/O struct becomes a #[derive(quanta::Varyings)] struct:
+// one #[position] field (@builtin(position)), the rest @location in order.
+#[derive(quanta::Varyings)]
+struct VsOut {
+    #[position] clip: Vec4, // @builtin(position)
+    color: Vec4,            // @location(0)
+}
+
 #[quanta::vertex]
-fn vs_main(pos: Vec3, mvp: &Mat4) -> Vec4 {
-    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+fn vs_main(pos: Vec3, in_color: Vec4, mvp: &Mat4) -> VsOut {
+    VsOut {
+        clip: mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0),
+        color: in_color,
+    }
 }
 
 #[quanta::fragment]
-fn fs_main(color: Vec4) -> Vec4 {
-    color
+fn fs_main(v: VsOut) -> Vec4 {
+    v.color
 }
 
 let pipeline = gpu.pipeline(&PipelineDesc::new(ShaderSource::Binaries {
@@ -223,6 +234,29 @@ let pipeline = gpu.pipeline(&PipelineDesc::new(ShaderSource::Binaries {
     fragment: fs_main(),
 }))?;
 ```
+
+**Shader I/O maps almost 1:1 to WGSL.** The vertex↔fragment varying interface
+is a shared struct on both sides -- the same model WGSL uses, minus the manual
+attribute annotations (Quanta assigns `@location` from field order):
+
+| WGSL | Quanta shader DSL |
+|------|-------------------|
+| `struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32> }` | `#[derive(quanta::Varyings)] struct VOut { #[position] p: Vec4, uv: Vec2 }` |
+| `@builtin(position)` output | the one `#[position]` field (a `Vec4`) |
+| `@location(n)` varying | struct field `n` (field-declaration order) |
+| integer varying + `@interpolate(flat)` | a `u32` field (flat applied automatically) |
+| `fn vs(..) -> VOut` | `#[quanta::vertex] fn vs(..) -> VOut` |
+| `fn fs(in: VOut) -> @location(0) vec4<f32>` | `#[quanta::fragment] fn fs(in: VOut) -> Vec4` |
+| `@builtin(position)` read in the fragment | `frag_coord()`, or read the `#[position]` field |
+| `@builtin(vertex_index)` | `vertex_id()` |
+| `@builtin(instance_index)` | `instance_id()` |
+| `textureSample(t, s, uv)` | `sample(t, in.uv)` (`t: &Texture2D` param) |
+
+> The Quanta **WebGPU/WGSL backend does not yet emit** `frag_coord`, `u32`
+> varyings, `vertex_id`/`instance_id`, or shader `for` loops -- a shader using
+> them ships with `wgsl: None` and a build-time note (Metal and Vulkan still
+> emit natively). This matches the `NotSupported` posture in [v0.1 advanced
+> features](#v01-advanced-features) below.
 
 **Coordinate convention — nothing to change.** Quanta uses WebGPU's
 convention on every backend: NDC **+Y up**, framebuffer origin **top-left**,

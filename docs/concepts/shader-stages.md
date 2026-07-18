@@ -87,8 +87,13 @@ Vertex A: color = red       Vertex B: color = blue
     Vertex C: color = green
 ```
 
-The GPU does this interpolation automatically. You just declare what the vertex
-stage outputs, and the fragment stage receives smoothly blended values.
+The GPU does this interpolation automatically. You declare *what* is
+interpolated once, as a shared struct that both stages name -- a
+`#[derive(quanta::Varyings)]` struct with one `#[position]` field (the
+clip-space position) and one field per varying. The vertex returns it, the
+fragment reads it back by field. See [Vertex and Fragment
+Shaders](../rendering/tutorials/vertex-fragment.md#varyings-the-shared-vertexfragment-interface)
+for the full model.
 
 ## How textures work
 
@@ -97,9 +102,10 @@ texture coordinates (UVs) -- two numbers between 0.0 and 1.0 that map a pixel
 to a point on the image.
 
 ```rust
+// `Surface` is the varying struct (declared by the vertex) carrying `uv`.
 #[quanta::fragment]
-fn textured(uv: Vec2, texture: &Texture) -> Vec4 {
-    texture.sample(uv)    // look up the color at this UV coordinate
+fn textured(s: Surface, texture: &Texture2D) -> Vec4 {
+    sample(texture, s.uv)    // look up the color at this UV coordinate
 }
 ```
 
@@ -114,15 +120,24 @@ and sampling.
 ```rust
 use quanta::RenderGpu; // render methods on Gpu come from this trait
 
-// 1. Define vertex and fragment shaders
+// 1. Declare the varying interface, then the two shaders.
+#[derive(quanta::Varyings)]
+struct Lit {
+    #[position] clip: Vec4, // gl_Position
+    normal: Vec3,           // Location 0
+}
+
 #[quanta::vertex]
-fn transform(pos: Vec3, mvp: &Mat4) -> Vec4 {
-    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+fn transform(pos: Vec3, in_normal: Vec3, mvp: &Mat4) -> Lit {
+    Lit {
+        clip: mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0),
+        normal: in_normal,
+    }
 }
 
 #[quanta::fragment]
-fn shade(normal: Vec3, light_dir: &Vec3) -> Vec4 {
-    let brightness = dot(normal, *light_dir).max(0.0);
+fn shade(s: Lit, light_dir: &Vec3) -> Vec4 {
+    let brightness = max(dot(s.normal, *light_dir), 0.0);
     Vec4::new(brightness, brightness, brightness, 1.0)
 }
 

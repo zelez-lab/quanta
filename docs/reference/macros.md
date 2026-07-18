@@ -1,7 +1,8 @@
 # Macro Reference
 
-All proc macros and derive macros in Quanta. The three derive macros
-(`Fields`, `Vertex`, `Uniforms`) are the recommended entry point for new code.
+All proc macros and derive macros in Quanta. The four derive macros
+(`Fields`, `Vertex`, `Uniforms`, `Varyings`) are the recommended entry point
+for new code.
 
 ---
 
@@ -243,6 +244,71 @@ assert_eq!(Light::GPU_FIELDS[0], ("position", "[f32; 3]", 0));
 assert_eq!(Light::GPU_FIELDS[1], ("intensity", "f32", 12));
 assert_eq!(Light::GPU_FIELDS[2], ("color", "[f32; 4]", 16));
 ```
+
+---
+
+### `#[derive(quanta::Varyings)]`
+
+Declare the **shared vertex↔fragment varying interface** as a struct. This is
+the single explicit contract between the two render stages (the WGSL/HLSL
+model): the vertex returns it, the fragment takes it, and both name the same
+struct. There is no positional "auto-forward".
+
+#### Syntax
+
+```rust
+#[derive(quanta::Varyings)]
+struct Surface {
+    #[position] clip: Vec4, // gl_Position — the vertex writes it
+    uv: Vec2,               // Location 0 (field-declaration order)
+    kind: u32,              // Location 1, flat-interpolated
+}
+```
+
+#### Rules
+
+- **Exactly one `#[position]` field**, of type `Vec4`. It becomes
+  `gl_Position` (`[[position]]` on Metal, `@builtin(position)` on WGSL). Read
+  from a fragment it yields the interpolated **window-space** position.
+- **Every other field is a varying.** Supported types: `f32`, `u32`, `Vec2`,
+  `Vec3`, `Vec4`. Each is assigned `Location 0, 1, …` in **field-declaration
+  order**.
+- **`u32` varyings are flat-interpolated automatically** (integers cannot be
+  perspective-interpolated).
+- **Named-field structs only**; no generics, no tuple structs.
+
+#### What it generates
+
+| Generated item | Type | Description |
+|----------------|------|-------------|
+| `POSITION_FIELD` | `&'static str` | Name of the `#[position]` field |
+| `VARYING_FIELDS` | `[(&'static str, &'static str); N]` | `(name, type-name)` per varying, in Location order |
+| `__quanta_varyings_<Name>!` | hidden `macro_rules!` | The trampoline the shader macros expand through (re-exported beside the struct) |
+
+Because a proc macro sees only its own item, the field metadata reaches
+`#[quanta::vertex]` / `#[quanta::fragment]` through the generated trampoline.
+**Declare the struct before the shaders that use it** (normal macro-scoping); if
+it lives in another module, import it *and* its `__quanta_varyings_<Name>`
+re-export together.
+
+#### Example
+
+```rust
+#[derive(quanta::Varyings)]
+struct Surface {
+    #[position] clip: Vec4,
+    uv: Vec2,
+    kind: u32,
+}
+
+// Compile-time introspection:
+assert_eq!(Surface::POSITION_FIELD, "clip");
+assert_eq!(Surface::VARYING_FIELDS, [("uv", "Vec2"), ("kind", "u32")]);
+```
+
+A *position-only* interface (`struct P { #[position] clip: Vec4 }`, no
+varyings) is legal, but a position-only vertex can simply return `-> Vec4`
+without a struct.
 
 ---
 
@@ -528,11 +594,25 @@ fn name(attributes..., uniforms: &T) -> OutputType { body }
 
 #### Parameters
 
-- Value params: vertex attributes (per-vertex data from vertex buffers)
+- Value params: vertex attributes (per-vertex data from vertex buffers). They
+  are **pure inputs** -- nothing is auto-forwarded to the fragment stage.
 - `&T` reference params: uniform buffer bindings
 - `&[T]` slice params (`&[f32]`, `&[Vec2]`, `&[Vec4]` only): storage-buffer
   arrays, indexed in the body with `name[index]`. They share the uniform
   binding index space and bind the same way -- see the fragment table below.
+- A `&Texture2D` param is a **compile error** in a vertex (textures are
+  fragment-only).
+
+#### Return type
+
+Two forms:
+
+- `-> Vec4` -- a **position-only** vertex: the body's tail expression is the
+  clip-space position, and the shader has no varyings.
+- `-> MyVaryings` -- a [`#[derive(quanta::Varyings)]`](#derivequantavaryings)
+  struct: the body ends in the struct literal, whose `#[position]` field
+  becomes `gl_Position` and whose other fields are the varyings the paired
+  fragment reads.
 
 #### Produces
 
@@ -542,9 +622,19 @@ fn name(attributes..., uniforms: &T) -> OutputType { body }
 #### Example
 
 ```rust
+// The shared interface, declared before the shader.
+#[derive(quanta::Varyings)]
+struct Surface {
+    #[position] clip: Vec4,
+    uv: Vec2,
+}
+
 #[quanta::vertex]
-fn transform(position: Vec3, color: Vec4, mvp: &Mat4) -> Vec4 {
-    mvp * vec4(position.x, position.y, position.z, 1.0)
+fn transform(position: Vec3, in_uv: Vec2, mvp: &Mat4) -> Surface {
+    Surface {
+        clip: mvp * Vec4::new(position.x, position.y, position.z, 1.0),
+        uv: in_uv,
+    }
 }
 ```
 
@@ -558,12 +648,17 @@ Compile a function into a fragment shader.
 
 ```rust
 #[quanta::fragment]
-fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
+fn name(s: MyVaryings, textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 ```
 
 #### Parameters
 
-- Value params: interpolated varyings from the vertex shader (matched by name)
+- The **varying struct**: a single parameter typed as the paired vertex's
+  [`#[derive(quanta::Varyings)]`](#derivequantavaryings) struct. Read each
+  varying by field (`s.uv`); reading the `#[position]` field yields the
+  interpolated window position. A fragment with no varyings simply omits this
+  parameter. A **plain value param** (e.g. `uv: Vec2`) is a compile error --
+  stage inputs come from the struct, not from positional params.
 - `&Texture2D` reference params: sampled textures. Slots follow declaration
   order among texture params -- the first texture param is slot 0, bound at
   draw time with `.texture(0, &tex).sampler(0, desc)`. Sample with the
@@ -591,17 +686,21 @@ fn name(varyings..., textures: &Texture2D, uniforms: &T) -> Vec4 { body }
 Shader bodies are a Rust subset compiled by quanta's own emitters (SPIR-V
 and MSL from one grammar): `let` / `let mut` bindings, assignments to
 mutable locals, statement and expression `if`/`else` (both branches
-required), arithmetic and comparisons, `VecN::new`, swizzle field access
-(`.x`/`.rgba`, incl. on parenthesized expressions), uniform deref
-(`*viewport`, `(*viewport).x`), `sample(texture_param, uv)`, the GLSL-style
-math intrinsics (`sin`, `mix`, `smoothstep`, `clamp`, `inverse_sqrt`, ...),
-the fragment-stage derivatives `fwidth` / `dpdx` / `dpdy`, and `&[T]` slice
-indexing `name[index]` (see below). Both emitters accept the artifacts
-rustfmt and the token printer produce in real builds: a trailing comma
-before `)` in a call, a call wrapped and split across lines
-(`Vec4 ::\nnew(`), and a `let` declared inside an `if`/`else` branch.
-Anything outside this surface is a compile error naming the construct --
-nothing silently miscompiles.
+required), **bounded `for i in 0..N` loops** (constant integer bound, `u32`
+counter), arithmetic and comparisons (including `u32` integer comparisons),
+`VecN::new`, swizzle field access (`.x`/`.rgba`, incl. on parenthesized
+expressions), uniform deref (`*viewport`, `(*viewport).x`),
+`sample(texture_param, uv)`, the window builtins `frag_coord()` (fragment) and
+`vertex_id()` / `instance_id()` (vertex), the GLSL-style math intrinsics
+(`sin`, `mix`, `smoothstep`, `clamp`, `inverse_sqrt`, ...), the fragment-stage
+derivatives `fwidth` / `dpdx` / `dpdy`, and `&[T]` slice indexing `name[index]`
+(see below). Both emitters accept the artifacts rustfmt and the token printer
+produce in real builds: a trailing comma before `)` in a call, a call wrapped
+and split across lines (`Vec4 ::\nnew(`), and a `let` declared inside an
+`if`/`else` branch. Anything outside this surface is a compile error naming the
+construct -- nothing silently miscompiles. The full body grammar, the `u32`
+type, the builtins, and the loop rules are the [Shader Language
+reference](shader-language.md).
 
 **Slice indexing.** `name[index]` reads element `index` of a `&[T]` slice
 param. `index` is any scalar expression the grammar accepts; it is f32 in
@@ -612,9 +711,10 @@ that is not a slice param (a value, a uniform, an unknown name) is a compile
 error.
 
 ```rust,ignore
+// `Surface` is the paired vertex's #[derive(Varyings)] struct; `s.uv` is a varying.
 #[quanta::fragment]
-fn gradient(uv: Vec2, stops: &[Vec4]) -> Vec4 {
-    let i = uv.x * 4.0;      // 0.0 .. 4.0 across the quad
+fn gradient(s: Surface, stops: &[Vec4]) -> Vec4 {
+    let i = s.uv.x * 4.0;    // 0.0 .. 4.0 across the quad
     stops[i]                 // truncates to stop 0/1/2/3
 }
 ```
@@ -643,8 +743,8 @@ let v = if uv.x > 0.5 { c = 1.0; uv.x } else { uv.y };
 
 ```rust
 #[quanta::fragment]
-fn shade(uv: Vec2, albedo: &Texture2D) -> Vec4 {
-    sample(albedo, uv)
+fn shade(s: Surface, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, s.uv)
 }
 ```
 

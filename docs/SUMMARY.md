@@ -71,6 +71,7 @@
 - [API](reference/api.md)
 - [Macros](reference/macros.md)
 - [Kernel Ops](reference/kernel-ops.md)
+- [Shader Language](reference/shader-language.md)
 - [Formats](reference/formats.md)
 - [Errors](reference/errors.md)
 - [Environment Variables](reference/environment.md)

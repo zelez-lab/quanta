@@ -134,9 +134,10 @@ gpu.write_texture(&texture, &pixel_data)?;
 Inside a fragment shader, sample a texture with UV coordinates:
 
 ```rust
+// `s` is the varying struct (declared by the vertex) carrying `uv`.
 #[quanta::fragment]
-fn textured(uv: Vec2, tex: &Texture) -> Vec4 {
-    tex.sample(uv)
+fn textured(s: Surface, tex: &Texture2D) -> Vec4 {
+    sample(tex, s.uv)
 }
 ```
 

@@ -56,10 +56,19 @@ fn transform(pos: Vec3, mvp: &Mat4) -> Vec4 {
 ```
 
 **Parameters**:
-- Value parameters (`pos: Vec3`) are vertex attributes, read from vertex buffers.
+- Value parameters (`pos: Vec3`) are vertex attributes, read from vertex
+  buffers. They are pure inputs -- nothing is auto-forwarded to the fragment
+  stage.
 - Reference parameters (`mvp: &Mat4`) are uniform buffer bindings.
 
-**Return type**: Must be `Vec4` -- the clip-space position.
+**Return type**: two forms.
+- `-> Vec4` -- a *position-only* vertex: the tail expression is the clip-space
+  position and the shader has **no** varyings (pair it with a fragment that
+  takes no varying struct).
+- `-> MyVaryings` -- to hand interpolated data to the fragment stage, return a
+  [`#[derive(quanta::Varyings)]`](#varyings-the-shared-vertexfragment-interface)
+  struct instead. Its `#[position]` field becomes the clip-space position; its
+  other fields are the varyings.
 
 The macro generates a `ShaderBinary` static and a function that returns a
 reference to it:
@@ -77,42 +86,89 @@ A fragment shader computes the color of each pixel. Mark with
 
 ```rust
 #[quanta::fragment]
-fn shade(uv: Vec2, color: Vec4) -> Vec4 {
-    color * Vec4::new(uv.x, uv.y, 0.0, 1.0)
+fn solid(tint: &Vec4) -> Vec4 {
+    *tint
 }
 ```
 
-**Parameters**: Interpolated values from the rasterizer (varyings). What the
-vertex shader outputs, the fragment shader receives interpolated across the
-triangle surface.
+**Parameters**:
+- The interpolated **varyings** arrive as a single
+  [`#[derive(quanta::Varyings)]`](#varyings-the-shared-vertexfragment-interface)
+  struct parameter (the same struct the vertex returns); read each varying by
+  field, `s.uv`. A fragment with no varyings, like `solid` above, omits the
+  struct.
+- `&T` / `&Texture2D` / `&[T]` reference parameters are uniforms, sampled
+  textures, and storage-buffer slices -- they stay separate parameters, they
+  are **not** part of the varying struct.
+
+A plain value parameter (e.g. `uv: Vec2`) is now a compile error -- fragment
+stage inputs come from the varying struct, not from positional parameters.
 
 **Return type**: Must be `Vec4` -- the output color (RGBA).
 
-## Varyings: vertex outputs to fragment inputs
+## Varyings: the shared vertex↔fragment interface
 
-The first vertex parameter is always the position (goes to clip-space output).
-All remaining parameters are automatically forwarded to the fragment shader as
-interpolated varyings, matched **by name**:
+The vertex stage outputs values; the rasterizer interpolates them across the
+triangle; the fragment stage reads them back. Quanta makes that contract
+**explicit and shared**: you declare it once, in a struct that carries
+`#[derive(quanta::Varyings)]`, and both stages name that one struct. This is
+the WGSL / HLSL model -- there is no positional "auto-forward".
 
 ```rust
-#[quanta::vertex]
-fn my_vertex(pos: Vec3, uv: Vec2, color: Vec3) -> Vec4 {
-    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+use quanta::{Vec2, Vec3, Vec4};
+
+// Declare the interface ONCE, before the shaders that use it.
+#[derive(quanta::Varyings)]
+struct Surface {
+    #[position] clip: Vec4, // gl_Position — the vertex writes it
+    uv: Vec2,               // Location 0 (field-declaration order)
+    color: Vec3,            // Location 1
 }
 
-// Fragment receives uv and color, interpolated across the triangle surface.
-// Names must match the vertex shader's non-position parameters.
+#[quanta::vertex]
+fn my_vertex(pos: Vec3, in_uv: Vec2, in_color: Vec3) -> Surface {
+    Surface {
+        clip: Vec4::new(pos.x, pos.y, pos.z, 1.0),
+        uv: in_uv,
+        color: in_color,
+    }
+}
+
 #[quanta::fragment]
-fn my_fragment(uv: Vec2, color: Vec3) -> Vec4 {
-    Vec4::new(color.x * uv.x, color.y * uv.y, color.z, 1.0)
+fn my_fragment(s: Surface) -> Vec4 {
+    Vec4::new(s.color.x * s.uv.x, s.color.y * s.uv.y, s.color.z, 1.0)
 }
 ```
 
-Convention:
-- Vertex param 0 = position (not forwarded)
-- Vertex param 1 = fragment input at Location 0
-- Vertex param 2 = fragment input at Location 1
-- ...
+The rules the derive enforces:
+
+- **Exactly one `#[position]` field**, of type `Vec4`. It becomes
+  `gl_Position` (`[[position]]` on Metal, `@builtin(position)` on WGSL). The
+  vertex writes it; it is not a varying.
+- **Every other field is a varying.** Supported types: `f32`, `u32`, `Vec2`,
+  `Vec3`, `Vec4`. Each is assigned `Location 0, 1, …` in **field-declaration
+  order** -- reorder the fields and you reorder the locations.
+- **`u32` varyings are flat-interpolated automatically** (integers cannot be
+  perspective-interpolated). See the [`u32` shader
+  type](../../reference/shader-language.md#the-u32-scalar-type).
+- **A fragment may read the `#[position]` field** -- it yields the interpolated
+  **window-space** position (WGSL semantics: `x`/`y` in pixels), the same value
+  [`frag_coord()`](../../reference/shader-language.md#frag_coord) returns.
+- **Declaration order matters:** the `#[derive(quanta::Varyings)]` struct must
+  appear **before** the shader functions that use it (a proc macro can only see
+  its own item, so the interface reaches the shader macros through a generated
+  trampoline that follows normal name scoping). If the struct lives in another
+  module, import it *and* its generated `__quanta_varyings_<Name>` macro
+  together.
+
+A *position-only* vertex needs no struct: return `-> Vec4` and pair it with a
+fragment that takes no varying struct (see [Your first
+triangle](first-triangle.md)).
+
+The derive also emits two introspection consts on the struct --
+`Surface::POSITION_FIELD` and `Surface::VARYING_FIELDS` (the `(name, type)`
+pairs in Location order) -- so host code and tests can see the interface
+without re-parsing it.
 
 ## Coordinate conventions
 
@@ -138,12 +194,13 @@ convention above and every backend matches.
 ## Texture parameters
 
 A fragment shader samples textures through `&Texture2D` parameters and the
-`sample` intrinsic:
+`sample` intrinsic. The UV comes from the varying struct (`s.uv`); the texture
+stays a separate parameter (reusing the `Surface` interface from above):
 
 ```rust
 #[quanta::fragment]
-fn glyph(uv: Vec2, atlas: &Texture2D) -> Vec4 {
-    let texel = sample(atlas, uv);
+fn glyph(s: Surface, atlas: &Texture2D) -> Vec4 {
+    let texel = sample(atlas, s.uv);
     Vec4::new(1.0, 1.0, 1.0, texel.x)
 }
 ```
@@ -199,7 +256,7 @@ Or in the vertex shader as a reference parameter:
 
 ```rust
 #[quanta::vertex]
-fn animated(pos: Vec3, normal: Vec3, mvp: &Mat4, time: &f32) -> Vec4 {
+fn animated(pos: Vec3, mvp: &Mat4, time: &f32) -> Vec4 {
     let offset = Vec3::new(0.0, sin(*time) * 0.1, 0.0);
     mvp * Vec4::new(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z, 1.0)
 }
@@ -213,12 +270,13 @@ parameter instead. The element type is `&[f32]`, `&[Vec2]`, or `&[Vec4]`,
 and the body reads it with `name[index]`:
 
 ```rust
+// `s.uv` is a varying (from the `Surface` interface above); `stops` is the slice.
 #[quanta::fragment]
-fn gradient(uv: Vec2, stops: &[Vec4]) -> Vec4 {
+fn gradient(s: Surface, stops: &[Vec4]) -> Vec4 {
     // Pick one of four colour stops by the horizontal coordinate.
-    let idx = if uv.x < 0.25 { 0.0 }
-              else { if uv.x < 0.5 { 1.0 }
-              else { if uv.x < 0.75 { 2.0 } else { 3.0 } } };
+    let idx = if s.uv.x < 0.25 { 0.0 }
+              else { if s.uv.x < 0.5 { 1.0 }
+              else { if s.uv.x < 0.75 { 2.0 } else { 3.0 } } };
     stops[idx]
 }
 ```
@@ -245,8 +303,8 @@ gpu.render(&target)?
     .wait()?;
 ```
 
-The index is truncated to an integer, so `stops[uv.x * 4.0]` selects stop
-`floor(uv.x * 4.0)`. Bounds are unchecked (the GPU storage-buffer contract),
+The index is truncated to an integer, so `stops[s.uv.x * 4.0]` selects stop
+`floor(s.uv.x * 4.0)`. Bounds are unchecked (the GPU storage-buffer contract),
 and at most 8 combined uniform + slice params are allowed -- texture bindings
 occupy the slots above that.
 
@@ -259,11 +317,21 @@ occupy the slots above that.
 | `Vec3` | 3         | 3D vector (x, y, z)           |
 | `Vec4` | 4         | 4D vector (x, y, z, w)        |
 | `Mat4` | 16        | 4x4 matrix (column-major)     |
-| `u32`  | 1         | Unsigned integer               |
+| `u32`  | 1         | Unsigned integer (attribute, uniform, or flat varying) |
 | `i32`  | 1         | Signed integer                 |
 | `&Texture2D` | -   | Sampled texture (fragment param only) |
 
-## Example: rotating triangle with MVP
+`u32` is a real unsigned-integer scalar: use it for integer vertex attributes,
+flat-interpolated varyings, and real comparisons (`kind == 3u32`, `k < 2`) --
+no more smuggling an integer through an `f32` and testing `> 0.5`. The window
+builtins (`frag_coord`, `vertex_id`, `instance_id`) and bounded `for` loops
+also live in the shader body -- all of them are documented in the [shader
+language reference](../../reference/shader-language.md).
+
+## Example: coloured triangle with MVP
+
+The vertex feeds a per-vertex colour to the fragment through the shared
+`Tri` varying interface:
 
 ```rust
 use quanta::*;
@@ -275,14 +343,24 @@ struct ColorVertex {
     color: [f32; 3],
 }
 
+// The vertex↔fragment interface, declared before both shaders.
+#[derive(quanta::Varyings)]
+struct Tri {
+    #[position] clip: Vec4, // gl_Position
+    color: Vec3,            // Location 0
+}
+
 #[quanta::vertex]
-fn vertex_main(pos: Vec3, color: Vec3, mvp: &Mat4) -> Vec4 {
-    mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0)
+fn vertex_main(pos: Vec3, in_color: Vec3, mvp: &Mat4) -> Tri {
+    Tri {
+        clip: mvp * Vec4::new(pos.x, pos.y, pos.z, 1.0),
+        color: in_color,
+    }
 }
 
 #[quanta::fragment]
-fn fragment_main(color: Vec3) -> Vec4 {
-    Vec4::new(color.x, color.y, color.z, 1.0)
+fn fragment_main(s: Tri) -> Vec4 {
+    Vec4::new(s.color.x, s.color.y, s.color.z, 1.0)
 }
 
 fn render_frame(gpu: &Gpu, angle: f32) -> Result<(), QuantaError> {
@@ -384,12 +462,24 @@ gpu.render(&target)?
 Fragment shaders sample textures through a `&Texture2D` parameter and
 `sample(param, uv)`. The macro rewrites the parameter to the texture slot
 it occupies (declaration order among texture params), so the shader body
-never names a raw slot number:
+never names a raw slot number. The UV is a varying read from the interface
+struct (`s.uv`); the texture is a separate parameter:
 
 ```rust
+#[derive(quanta::Varyings)]
+struct Uv {
+    #[position] clip: Vec4,
+    uv: Vec2,               // Location 0
+}
+
+#[quanta::vertex]
+fn uv_vertex(pos: Vec3, in_uv: Vec2) -> Uv {
+    Uv { clip: Vec4::new(pos.x, pos.y, pos.z, 1.0), uv: in_uv }
+}
+
 #[quanta::fragment]
-fn textured(uv: Vec2, albedo: &Texture2D) -> Vec4 {
-    sample(albedo, uv)
+fn textured(s: Uv, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, s.uv)
 }
 ```
 
@@ -459,6 +549,29 @@ if uv.x > 0.5 { acc = 1.0; }
 
 `if`-expressions used for a value must have an `else` branch (both backends
 require it, so code stays portable).
+
+## Builtins, `u32`, and loops
+
+The shader body has a few more tools, all covered in depth in the [shader
+language reference](../../reference/shader-language.md):
+
+- **`frag_coord()`** (fragment only) -- the window-space position `Vec4`
+  (`x`/`y` in pixels, `z` = depth, `w` = `1/w`). Equivalent to reading the
+  `#[position]` field of the varying struct.
+- **`vertex_id()` / `instance_id()`** (vertex only) -- the current vertex and
+  instance index as `u32`. They let a shader **synthesize geometry with no
+  vertex buffer** -- e.g. a fullscreen triangle from three vertices.
+- **The `u32` scalar** -- unsigned attributes, flat varyings, and real integer
+  comparisons.
+- **Bounded `for` loops** -- `for i in 0..N { … }` where `N` is a compile-time
+  constant integer literal and the counter `i` is `u32`. A non-constant bound
+  is a hard error (a shader loop must always terminate).
+
+> The WebGPU/WGSL backend does not yet emit these four (`frag_coord`, `u32`
+> varyings, `vertex_id`/`instance_id`, shader `for` loops): a shader using them
+> ships with `wgsl: None` and a build-time note, matching Quanta's "WebGPU is
+> largely `NotSupported`" posture. Metal and Vulkan are the supported render
+> backends.
 
 ## Other shader stages
 

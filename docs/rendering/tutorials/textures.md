@@ -133,12 +133,14 @@ back to a whole-texture `write`.
 
 ## Sampling in shaders
 
-A DSL fragment samples a texture through a `&Texture2D` parameter:
+A DSL fragment samples a texture through a `&Texture2D` parameter. The UV is a
+varying read from the interface struct (`s.uv`); the texture stays a separate
+parameter:
 
 ```rust
 #[quanta::fragment]
-fn shade(uv: Vec2, image: &Texture2D) -> Vec4 {
-    sample(image, uv)
+fn shade(s: Surface, image: &Texture2D) -> Vec4 {
+    sample(image, s.uv)
 }
 ```
 
@@ -196,14 +198,21 @@ texture slot it occupies (declaration order among texture params), so the
 body never names a raw slot:
 
 ```rust
+// The vertex↔fragment interface: one #[position] field plus the uv varying.
+#[derive(quanta::Varyings)]
+struct Surface {
+    #[position] clip: Vec4,
+    uv: Vec2,               // Location 0
+}
+
 #[quanta::vertex]
-fn uv_vertex(pos: Vec3, uv: Vec2) -> Vec4 {
-    Vec4::new(pos.x, pos.y, pos.z, 1.0)
+fn uv_vertex(pos: Vec3, in_uv: Vec2) -> Surface {
+    Surface { clip: Vec4::new(pos.x, pos.y, pos.z, 1.0), uv: in_uv }
 }
 
 #[quanta::fragment]
-fn textured(uv: Vec2, albedo: &Texture2D) -> Vec4 {
-    sample(albedo, uv)  // returns Vec4 (RGBA)
+fn textured(s: Surface, albedo: &Texture2D) -> Vec4 {
+    sample(albedo, s.uv)  // returns Vec4 (RGBA)
 }
 ```
 
