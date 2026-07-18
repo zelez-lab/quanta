@@ -13,8 +13,10 @@
 //! The construct surface mirrors `emit_spirv`'s recursive-descent shader
 //! parser (`expr.rs` / `expr_atom.rs` / `tokenizer.rs`): the same Vec
 //! constructors, GLSL.std.450 intrinsic set, `dot`, `sample(slot, uv)`,
-//! swizzle/field access, arithmetic, comparisons, `if/else`, and `let`
-//! bindings. Anything outside that surface is rejected here with a clear
+//! swizzle/field access, arithmetic, comparisons, `if/else`, `let`
+//! bindings, and bounded `for i in A .. N` loops (compile-time-constant
+//! bounds, `uint` counter — a native MSL `for`, the twin of the SPIR-V
+//! structured loop). Anything outside that surface is rejected here with a clear
 //! `Err(String)` naming the construct — the caller (`shader_pipeline`) turns
 //! that into a build error, so an unsupported shape fails loudly rather than
 //! miscompiling.
@@ -221,6 +223,9 @@ fn emit_stmts(
                         }
                         // `name = expr;` — assignment to a `let mut` local.
                         Expr::Assign(assign) => emit_assign(assign, indent, env, out)?,
+                        // `for i in A .. N { … }` — a bounded counted loop
+                        // (block-like, so syn records no trailing semi).
+                        Expr::ForLoop(for_loop) => emit_for(for_loop, indent, env, out)?,
                         // Any other non-tail expression statement has no
                         // effect in a shader body.
                         other => {
@@ -275,6 +280,90 @@ fn emit_assign(
     Ok(())
 }
 
+/// Emit `for i in A .. N { … }` as a native MSL `for` over a `uint` counter.
+///
+/// The bounds must be compile-time integer literals (the SPIR-V twin enforces
+/// the same — an unbounded shader loop is invalid), the range half-open
+/// ascending (`..=` rejected), and the counter a fresh name (the SPIR-V
+/// parser's scope rule; enforcing it here keeps the accept/reject verdicts in
+/// lockstep). The body is a statement block: assignments to outer `let mut`
+/// locals, nested `if`s/loops, branch-local `let`s — no value tail.
+fn emit_for(
+    for_loop: &syn::ExprForLoop,
+    indent: usize,
+    env: &mut TypeEnv,
+    out: &mut String,
+) -> Result<(), String> {
+    let pad = "    ".repeat(indent);
+    if for_loop.label.is_some() {
+        return Err("labeled `for` loops are not supported in shaders".to_string());
+    }
+    let counter = match for_loop.pat.as_ref() {
+        syn::Pat::Ident(pi) => pi.ident.to_string(),
+        _ => return Err("the for-loop counter must be a plain identifier".to_string()),
+    };
+    if env.contains_key(&counter) {
+        return Err(format!(
+            "for-loop counter `{counter}` shadows an existing binding"
+        ));
+    }
+    let Expr::Range(range) = for_loop.expr.as_ref() else {
+        return Err("for-loop iterable must be a literal range `A .. N`".to_string());
+    };
+    if matches!(range.limits, syn::RangeLimits::Closed(_)) {
+        return Err(
+            "inclusive `..=` ranges are not supported in shader for-loops (use `A .. N`)"
+                .to_string(),
+        );
+    }
+    let start = const_loop_bound(range.start.as_deref())?;
+    let end = const_loop_bound(range.end.as_deref())?;
+    writeln!(
+        out,
+        "{pad}for (uint {counter} = {start}u; {counter} < {end}u; ++{counter}) {{"
+    )
+    .unwrap();
+    env.insert(counter.clone(), MslType::Uint);
+    emit_stmts(
+        &for_loop.body.stmts,
+        TailMode::Statement,
+        indent + 1,
+        env,
+        out,
+    )?;
+    // The counter is scoped to the loop (the MSL for-init declares it);
+    // dropping it from the env keeps post-loop uses a named error, matching
+    // the SPIR-V parser popping its counter local.
+    env.remove(&counter);
+    writeln!(out, "{pad}}}").unwrap();
+    Ok(())
+}
+
+/// Extract a compile-time u32 loop bound from a range endpoint: an integer
+/// literal, bare (`8`) or `u32`-suffixed (`8u32`). Anything else — a param, a
+/// local, an expression — is rejected so an unbounded shader loop can never
+/// be emitted. (Const-expression bounds like `2 * 4` are deferred.)
+fn const_loop_bound(endpoint: Option<&Expr>) -> Result<u32, String> {
+    let Some(mut e) = endpoint else {
+        return Err("for-loop range must spell both bounds (`A .. N`)".to_string());
+    };
+    loop {
+        match e {
+            Expr::Paren(p) => e = &p.expr,
+            Expr::Group(g) => e = &g.expr,
+            _ => break,
+        }
+    }
+    if let Expr::Lit(l) = e
+        && let Lit::Int(i) = &l.lit
+        && (i.suffix().is_empty() || i.suffix() == "u32")
+        && let Ok(v) = i.base10_parse::<u32>()
+    {
+        return Ok(v);
+    }
+    Err("for-loop bound must be a compile-time constant integer literal (`A .. N`)".to_string())
+}
+
 /// Emit the block's tail expression, routed to a return or an assignment.
 ///
 /// A tail `if/else` is lowered structurally: each arm emits its own
@@ -297,6 +386,17 @@ fn emit_tail(
         // A trailing assignment (no `;` on the last statement) still
         // yields no value — treat as a statement.
         return emit_assign(assign, indent, env, out);
+    }
+    if let Expr::ForLoop(for_loop) = expr {
+        // A `for` yields no value: fine as the last statement of a
+        // statement-position branch, never as the body's result value.
+        if matches!(mode, TailMode::Statement) {
+            return emit_for(for_loop, indent, env, out);
+        }
+        return Err(
+            "a `for` loop yields no value; the shader body must end in a value expression"
+                .to_string(),
+        );
     }
     let code = emit_expr(expr, env)?;
     match mode {

@@ -80,6 +80,27 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
                 if rest.len() > 1 {
                     tokenize_word(&rest[1..], tokens);
                 }
+            } else if let Some(idx) = w.find("..") {
+                // A range word (`0..8u32`, `0..=4`): rustc's token printer
+                // keeps `..`/`..=` attached to its operands, so the split must
+                // happen here — a digit-leading word would otherwise fall
+                // through the float parse into one garbage `Ident`. The `..=`
+                // tail becomes `Dot Dot Eq` so the for-loop parser can reject
+                // inclusive ranges by name.
+                let (before, after) = (&w[..idx], &w[idx + 2..]);
+                if !before.is_empty() {
+                    tokenize_word(before, tokens);
+                }
+                tokens.push(ShaderToken::Dot);
+                tokens.push(ShaderToken::Dot);
+                if let Some(rest) = after.strip_prefix('=') {
+                    tokens.push(ShaderToken::Eq);
+                    if !rest.is_empty() {
+                        tokenize_word(rest, tokens);
+                    }
+                } else if !after.is_empty() {
+                    tokenize_word(after, tokens);
+                }
             } else if w.contains('.') && !w.starts_with(|c: char| c.is_ascii_digit()) {
                 if let Some(dot_pos) = w.find('.') {
                     let (before, rest) = w.split_at(dot_pos);

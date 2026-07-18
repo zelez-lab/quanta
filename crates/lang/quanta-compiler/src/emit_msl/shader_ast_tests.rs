@@ -188,12 +188,64 @@ fn rejects_method_call() {
 }
 
 #[test]
-fn rejects_for_loop() {
+fn for_loop_lowers_to_native_msl_for() {
+    // Bounded `for i in 0 .. 4` over a `let mut` accumulator — the loop
+    // becomes a native MSL `for` with a `uint` counter, and the counter
+    // participates in float arithmetic inside the body.
+    let body =
+        "{ let mut a = 0.0 ; for i in 0 .. 4 { a = a + i * 0.5 ; } Vec4 :: new (a, a, a, 1.0) }";
+    let msl = emit_body(body, None, &[]).unwrap();
+    assert!(
+        msl.contains("for (uint i = 0u; i < 4u; ++i) {"),
+        "got: {msl}"
+    );
+    assert!(msl.contains("a = a + i * 0.5;"), "got: {msl}");
+}
+
+#[test]
+fn for_loop_suffixed_and_nonzero_start_bounds() {
+    // `2u32 .. 8u32` — the suffixed spelling and a non-zero start.
+    let body =
+        "{ let mut a = 0.0 ; for k in 2u32 .. 8u32 { a = a + 1.0 ; } Vec4 :: new (a, a, a, 1.0) }";
+    let msl = emit_body(body, None, &[]).unwrap();
+    assert!(
+        msl.contains("for (uint k = 2u; k < 8u; ++k) {"),
+        "got: {msl}"
+    );
+}
+
+#[test]
+fn rejects_for_loop_nonconst_bound() {
     let err = emit_body(
-        "{ for i in 0 .. 4 { } Vec4 :: new (1.0, 1.0, 1.0, 1.0) }",
+        "{ let mut a = 0.0 ; for i in 0 .. n { a = a + 1.0 ; } Vec4 :: new (a, a, a, 1.0) }",
         None,
         &[],
     )
     .unwrap_err();
-    assert!(!err.is_empty(), "for-loop must be rejected");
+    assert!(
+        err.contains("compile-time constant"),
+        "err should demand a constant bound: {err}"
+    );
+}
+
+#[test]
+fn rejects_for_loop_inclusive_range() {
+    let err = emit_body(
+        "{ let mut a = 0.0 ; for i in 0 ..= 4 { a = a + 1.0 ; } Vec4 :: new (a, a, a, 1.0) }",
+        None,
+        &[],
+    )
+    .unwrap_err();
+    assert!(err.contains("..="), "err should name ..=: {err}");
+}
+
+#[test]
+fn rejects_for_loop_counter_shadowing() {
+    let err = emit_body(
+        "{ let i = 1.0 ; for i in 0 .. 4 { } Vec4 :: new (i, i, i, 1.0) }",
+        None,
+        &[],
+    )
+    .unwrap_err();
+    assert!(err.contains("shadows"), "err: {err}");
 }

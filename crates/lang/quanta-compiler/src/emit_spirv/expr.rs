@@ -3,8 +3,10 @@
 //! Parses tokenized Rust shader body into SPIR-V instructions.
 //! Supports: Vec constructors, field access, arithmetic, float literals,
 //! let bindings, math functions (GLSL.std.450), matrix-vector multiply,
-//! if/else, comparisons, uniform parameter access via storage buffers, and
-//! `&[T]` slice indexing (`name[index]`).
+//! if/else, comparisons, uniform parameter access via storage buffers,
+//! `&[T]` slice indexing (`name[index]`), and bounded `for i in A .. N`
+//! loops with compile-time-constant bounds (a real structured SPIR-V loop
+//! with loop-carried OpPhi — see `parse_for_statement`).
 //!
 //! `locals` threads as `&mut Vec` through the whole descent so that BOTH the
 //! statement-level `if` and the expression-`if` can rebind outer locals at
@@ -102,6 +104,16 @@ impl SpvEmitter {
                     *pos += 1;
                     last_value = None;
                 }
+                continue;
+            }
+            // `for i in A .. N { … }` — a bounded counted loop (yields no
+            // value; a trailing `;` is tolerated but unnecessary).
+            if tokens.get(*pos) == Some(&ShaderToken::Ident("for".to_string())) {
+                self.parse_for_statement(tokens, pos, params, locals)?;
+                if tokens.get(*pos) == Some(&ShaderToken::Semi) {
+                    *pos += 1;
+                }
+                last_value = None;
                 continue;
             }
             // plain expression: trailing result, or discarded if `;`
@@ -270,6 +282,271 @@ impl SpvEmitter {
             }
             _ => Ok(None),
         }
+    }
+
+    /// A compile-time u32 loop bound: an integer literal (`8`, a bare `8`
+    /// arrives f32-tokenized, or the suffixed `8u32`). Anything else — a
+    /// param, a local, an expression — is rejected: the trip count must be
+    /// known at compile time so an unbounded shader loop can never be
+    /// emitted. (Const-expression bounds like `2 * 4` are deferred.)
+    fn parse_const_loop_bound(tokens: &[ShaderToken], pos: &mut usize) -> Result<u32, String> {
+        match tokens.get(*pos) {
+            Some(ShaderToken::UInt(v)) => {
+                *pos += 1;
+                Ok(*v)
+            }
+            Some(ShaderToken::Float(f))
+                if *f >= 0.0 && f.fract() == 0.0 && *f <= u32::MAX as f32 =>
+            {
+                *pos += 1;
+                Ok(*f as u32)
+            }
+            _ => Err(
+                "for-loop bound must be a compile-time constant integer literal (`A .. N`)"
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// Indices into `locals` of the outer locals the loop body assigns — the
+    /// loop-carried set that needs a header `OpPhi`. Assignment (`name = expr
+    /// ;`) is the statement grammar's ONLY mutation primitive, including
+    /// inside nested `if`s/loops, so a flat token scan for `Ident Eq` is
+    /// complete; `let`/`let mut` bindings and `.field =` shapes (which the
+    /// grammar rejects anyway) are skipped. A body-`let` of an outer name
+    /// does NOT shadow in this parser (lookups find the first, outer slot),
+    /// so assignments after such a `let` still target the outer local —
+    /// which is exactly what the scan reports. Assigning the counter itself
+    /// is an error (the Rust loop binding is immutable).
+    fn loop_carried_locals(
+        body: &[ShaderToken],
+        locals: &[(String, u32, quanta_ir::ShaderType)],
+        counter: &str,
+    ) -> Result<Vec<usize>, String> {
+        let mut out: Vec<usize> = Vec::new();
+        for j in 0..body.len() {
+            let ShaderToken::Ident(name) = &body[j] else {
+                continue;
+            };
+            if body.get(j + 1) != Some(&ShaderToken::Eq) {
+                continue;
+            }
+            if j > 0 {
+                match &body[j - 1] {
+                    ShaderToken::Ident(prev) if prev == "let" || prev == "mut" => continue,
+                    ShaderToken::Dot => continue,
+                    _ => {}
+                }
+            }
+            if name == counter {
+                return Err(format!("cannot assign to the for-loop counter `{counter}`"));
+            }
+            if let Some(idx) = locals.iter().position(|(n, _, _)| n == name)
+                && !out.contains(&idx)
+            {
+                out.push(idx);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `for i in A .. N { … }` — a BOUNDED counted loop. `A`/`N` must be
+    /// compile-time integer literals (see [`Self::parse_const_loop_bound`]);
+    /// the counter is a u32 local scoped to the body. Lowers to the canonical
+    /// SPIR-V structured loop:
+    ///
+    /// ```text
+    ///   preheader:  OpBranch %header
+    ///   %header:    %i   = OpPhi u32  [A, preheader] [%i_next, %continue]
+    ///               %acc = OpPhi T    [pre, preheader] [body-final, %continue]
+    ///               %c   = OpULessThan %i N
+    ///               OpLoopMerge %merge %continue None
+    ///               OpBranchConditional %c %body %merge
+    ///   %body:      … statements … → OpBranch %continue
+    ///   %continue:  %i_next = OpIAdd %i 1 ; OpBranch %header   (back edge)
+    ///   %merge:     (execution resumes; carried locals read the header phis)
+    /// ```
+    ///
+    /// SSA wiring: the header phis must name each carried local's body-FINAL
+    /// value id, which only exists after the body walk — so the phi result
+    /// ids are pre-allocated (the body reads through them), the body is
+    /// parsed into a scratch buffer, and the header is emitted afterwards
+    /// before splicing the body back in. Ids are module-global and a phi may
+    /// forward-reference, so the out-of-order emission is valid SPIR-V. A
+    /// carried local left unassigned on some path simply phis its own header
+    /// value around the back edge. After the merge the carried locals stay
+    /// bound to their header phis — the header dominates the merge, and on
+    /// exit the phi holds the final iteration's value.
+    fn parse_for_statement(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(), String> {
+        *pos += 1; // `for`
+        let counter = match tokens.get(*pos) {
+            Some(ShaderToken::Ident(n)) => n.clone(),
+            _ => return Err("expected an identifier after `for`".to_string()),
+        };
+        *pos += 1;
+        if tokens.get(*pos) != Some(&ShaderToken::Ident("in".to_string())) {
+            return Err("expected `in` after the for-loop counter".to_string());
+        }
+        *pos += 1;
+        let start = Self::parse_const_loop_bound(tokens, pos)?;
+        if tokens.get(*pos) != Some(&ShaderToken::Dot)
+            || tokens.get(*pos + 1) != Some(&ShaderToken::Dot)
+        {
+            return Err("expected `..` in the for-loop range".to_string());
+        }
+        *pos += 2;
+        if tokens.get(*pos) == Some(&ShaderToken::Eq) {
+            return Err(
+                "inclusive `..=` ranges are not supported in shader for-loops (use `A .. N`)"
+                    .to_string(),
+            );
+        }
+        let end = Self::parse_const_loop_bound(tokens, pos)?;
+        let body_tokens = Self::take_braced(tokens, pos)?;
+
+        // The counter must be a fresh name: local/param lookups find the
+        // FIRST match, so a shadowed outer binding would win over the counter.
+        if locals.iter().any(|(n, _, _)| *n == counter)
+            || params.iter().any(|(n, _, _, _)| *n == counter)
+        {
+            return Err(format!(
+                "for-loop counter `{counter}` shadows an existing binding"
+            ));
+        }
+
+        let base_len = locals.len();
+        let carried = Self::loop_carried_locals(&body_tokens, locals, &counter)?;
+
+        // Types and constants intern into sec_type_const — safe to create
+        // before the function-section scratch swap below.
+        let u32_ty = self.ensure_type_u32();
+        let bool_ty = self.ensure_type_bool();
+        let start_c = self.emit_constant_u32(start);
+        let end_c = self.emit_constant_u32(end);
+        let one_c = self.emit_constant_u32(1);
+
+        let preheader = self.current_block;
+        let header = self.alloc_id();
+        let body_label = self.alloc_id();
+        let continue_label = self.alloc_id();
+        let merge_label = self.alloc_id();
+        let counter_phi = self.alloc_id();
+        let counter_next = self.alloc_id();
+        let carried_phi: Vec<u32> = carried.iter().map(|_| self.alloc_id()).collect();
+        let pre_vals: Vec<(u32, quanta_ir::ShaderType)> = carried
+            .iter()
+            .map(|&idx| (locals[idx].1, locals[idx].2))
+            .collect();
+
+        // Rebind: inside (and after) the loop, carried locals read their
+        // header phi; the counter is a new u32 local scoped to the body.
+        for (k, &idx) in carried.iter().enumerate() {
+            locals[idx].1 = carried_phi[k];
+        }
+        locals.push((counter.clone(), counter_phi, quanta_ir::ShaderType::U32));
+
+        // Close the preheader, then parse the body into a scratch buffer.
+        Self::emit_op(&mut self.sec_function, OP_BRANCH, &[header]);
+        let saved = std::mem::take(&mut self.sec_function);
+        Self::emit_op(&mut self.sec_function, OP_LABEL, &[body_label]);
+        self.current_block = body_label;
+        let mut body_locals = locals.clone();
+        let mut bp = 0;
+        // The body is a statement block; `for` yields no value, so a trailing
+        // expression (a Rust type error in the source) is simply discarded.
+        let body_parse = self.parse_statements(&body_tokens, &mut bp, params, &mut body_locals);
+        // Close the body's last block (a nested if leaves us in its merge
+        // block); carried values flow to the header THROUGH the continue
+        // block, so the back-edge phi parent below is `continue_label`.
+        Self::emit_op(&mut self.sec_function, OP_BRANCH, &[continue_label]);
+        let body_words = std::mem::replace(&mut self.sec_function, saved);
+        body_parse?; // propagate only after the function buffer is restored
+
+        // Back-edge values: each carried local's body-final id (must keep its
+        // type across the iteration for the phi to be well-typed).
+        let mut back_vals = Vec::with_capacity(carried.len());
+        for (k, &idx) in carried.iter().enumerate() {
+            let (ref name, b_id, b_ty) = body_locals[idx];
+            if b_ty != pre_vals[k].1 {
+                return Err(format!(
+                    "loop-carried local `{name}` changes type across iterations"
+                ));
+            }
+            back_vals.push(b_id);
+        }
+
+        // Header: phis first, then the bound check, then the mandatory
+        // OpLoopMerge as second-to-last instruction before the branch.
+        Self::emit_op(&mut self.sec_function, OP_LABEL, &[header]);
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_PHI,
+            &[
+                u32_ty,
+                counter_phi,
+                start_c,
+                preheader,
+                counter_next,
+                continue_label,
+            ],
+        );
+        for (k, &phi_id) in carried_phi.iter().enumerate() {
+            let ty_id = self.shader_type_id(pre_vals[k].1);
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_PHI,
+                &[
+                    ty_id,
+                    phi_id,
+                    pre_vals[k].0,
+                    preheader,
+                    back_vals[k],
+                    continue_label,
+                ],
+            );
+        }
+        let cond = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_ULESS_THAN,
+            &[bool_ty, cond, counter_phi, end_c],
+        );
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_LOOP_MERGE,
+            &[merge_label, continue_label, LOOP_CONTROL_NONE],
+        );
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_BRANCH_CONDITIONAL,
+            &[cond, body_label, merge_label],
+        );
+
+        // Body (parsed above; ends with its OpBranch to the continue block).
+        self.sec_function.extend_from_slice(&body_words);
+
+        // Continue block: increment, back edge.
+        Self::emit_op(&mut self.sec_function, OP_LABEL, &[continue_label]);
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_IADD,
+            &[u32_ty, counter_next, counter_phi, one_c],
+        );
+        Self::emit_op(&mut self.sec_function, OP_BRANCH, &[header]);
+
+        // Merge: the counter goes out of scope; carried locals keep their
+        // header-phi bindings (valid after the loop — the header dominates
+        // the merge block).
+        Self::emit_op(&mut self.sec_function, OP_LABEL, &[merge_label]);
+        self.current_block = merge_label;
+        locals.truncate(base_len);
+        Ok(())
     }
 
     /// An if-EXPRESSION. Its branches run the statement grammar over CLONED

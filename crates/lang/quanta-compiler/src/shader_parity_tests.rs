@@ -56,11 +56,16 @@
 //!   Statement-`if`/`else` is native WGSL; a value-`if` (`let x = if a { b }
 //!   else { c }`) lowers to a fresh `var` assigned in each arm; `let mut` →
 //!   `var`. Every construct the SPIR-V walker rejects — a method call, a
-//!   `for`/`while` loop, an unknown intrinsic, an `if`-expression without
+//!   `while` loop, an unknown intrinsic, an `if`-expression without
 //!   `else`, an out-of-range swizzle, indexing a non-slice — the WGSL walker
 //!   `Reject`s with the same error substring MSL uses. So each fixture is
 //!   `Translates` (with substrings the walker genuinely emits, all validated
 //!   by `naga` in `wgsl_validates`) or `Reject` — no `KnownBroken` remains.
+//!   Bounded `for i in A .. N` loops now translate on SPIR-V (a real
+//!   structured loop with loop-carried OpPhi) and MSL (a native `for` over a
+//!   `uint` counter); the WGSL walker still rejects them — a documented gap
+//!   like `frag_coord()` and u32 params, so the loop fixtures carry a WGSL
+//!   `Reject` verdict rather than a divergence entry.
 
 use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType};
 
@@ -92,6 +97,7 @@ const OP_FORD_GREATER_THAN: u16 = 186;
 const OP_DPDX: u16 = 207;
 const OP_FWIDTH: u16 = 209;
 const OP_PHI: u16 = 245;
+const OP_LOOP_MERGE: u16 = 246;
 
 // ─── Fixture model ───────────────────────────────────────────────────────────
 
@@ -1491,17 +1497,139 @@ fn fixtures() -> Vec<Fixture> {
                 err_contains: "method",
             },
         },
+        // ── BOUNDED FOR LOOPS (`for i in A .. N`, compile-time bounds) ────
+        // The counted-loop accumulator: a `let mut` carried across iterations
+        // and the u32 counter joining float arithmetic. SPIR-V lowers to the
+        // canonical structured loop — header with the counter and accumulator
+        // OpPhi, OpLoopMerge, OpULessThan bound check — witnessed by
+        // OP_ULESS_THAN (nothing else in this float body compares unsigned);
+        // `for_loop_spirv_structured_wiring` below pins the block shape by
+        // decoding the module. MSL emits a native `for` over a `uint`
+        // counter. The clean-source twin pins MSL spacing-blindness; on
+        // SPIR-V the clean form still falls to a passthrough (at the
+        // unspaced `Vec4::new`, as everywhere). WGSL: documented gap — the
+        // walker has no loops and rejects the `for` construct.
         Fixture {
-            name: "rej_for_loop",
+            name: "for_loop_accum",
             stage: Fragment,
             params: &[("uv", Vec2, ParamKind::Attr)],
-            body: "{ let mut a = 0.0 ; for i in 0 .. 4 { a = a + 1.0 ; } Vec4 :: new ( a , 0.0 , 0.0 , 1.0 ) }",
+            body: "{ let mut a = 0.0 ; for i in 0 .. 4 { a = a + uv . x + i * 0.5 ; } \
+                   Vec4 :: new ( a * 0.25 , 0.0 , 0.0 , 1.0 ) }",
+            alt: Some(
+                "{ let mut a = 0.0; for i in 0..4 { a = a + uv.x + i * 0.5; } \
+                 Vec4::new(a * 0.25, 0.0, 0.0, 1.0) }",
+            ),
+            spirv: SpirvExpect::Real {
+                witness: &[OP_ULESS_THAN],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "for (uint i = 0u; i < 4u; ++i) {",
+                    "a = a + uv.x + i * 0.5;",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "for",
+            },
+        },
+        // The dija gradient stop-search shape this feature exists for: a
+        // loop-carried Vec4 (`c`), a nested statement-`if` whose then-branch
+        // reassigns it, and the u32 counter indexing a `&[Vec4]` slice
+        // directly (no f32 round-trip — `stops[i]` uses the counter as-is;
+        // the literal `stops[0]` still truncates via OpConvertFToU). The
+        // range is deliberately the CONTIGUOUS printer form `0..8u32` —
+        // rustc's token printer keeps `..` attached to its operands, so this
+        // is the shape the macro actually ships; the SPIR-V tokenizer splits
+        // it (the spaced `0 .. 4` twin is `for_loop_accum`).
+        Fixture {
+            name: "for_loop_stop_search",
+            stage: Fragment,
+            params: &[
+                ("uv", Vec2, ParamKind::Attr),
+                ("stops", Vec4, ParamKind::Slice),
+            ],
+            body: "{ let mut c = stops [ 0 ] ; \
+                   for i in 0..8u32 { if uv . x > stops [ i ] . w { c = stops [ i ] ; } else { } } \
+                   Vec4 :: new ( c . x , c . y , c . z , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_ULESS_THAN],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "for (uint i = 0u; i < 8u; ++i) {",
+                    "if (uv.x > stops[(uint)(i)].w) {",
+                    "c = stops[(uint)(i)];",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "for",
+            },
+        },
+        // NESTED loops — the 13-tap-blur-in-two-axes shape, and the stress
+        // case for the SPIR-V emitter's scratch-buffer wiring: the inner
+        // loop's structured construct nests inside the outer body, the inner
+        // accumulator `b` re-initializes from the OUTER body block each
+        // outer iteration (its header phi's preheader edge), the inner body
+        // reads the outer counter, and the outer carry `a` picks up the
+        // inner loop's exit phi.
+        Fixture {
+            name: "for_loop_nested",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ let mut a = 0.0 ; \
+                   for i in 0 .. 3 { let mut b = uv . y ; \
+                   for j in 0 .. 2 { b = b + i * 1.0 + j * 0.5 ; } \
+                   a = a + b ; } \
+                   Vec4 :: new ( a * 0.1 , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_ULESS_THAN],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "for (uint i = 0u; i < 3u; ++i) {",
+                    "for (uint j = 0u; j < 2u; ++j) {",
+                    "b = b + i * 1.0 + j * 0.5;",
+                    "a = a + b;",
+                ],
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "for",
+            },
+        },
+        // A RUNTIME loop bound (`0 .. t`, `t` an attribute) must be refused
+        // everywhere: an unbounded shader loop is invalid. SPIR-V's body
+        // parser errors ("compile-time constant") and falls to the
+        // passthrough — the loop is never emitted; MSL rejects the build
+        // outright with the same wording.
+        Fixture {
+            name: "rej_for_nonconst_bound",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr), ("t", F32, ParamKind::Attr)],
+            body: "{ let mut a = 0.0 ; for i in 0 .. t { a = a + 1.0 ; } Vec4 :: new ( a , 0.0 , 0.0 , 1.0 ) }",
             alt: None,
             spirv: SpirvExpect::Passthrough,
             msl: MslExpect::Reject {
+                err_contains: "compile-time constant",
+            },
+            wgsl: WgslExpect::Reject {
                 err_contains: "for",
             },
-            // The grammar has no loops; `for` is not a recognized construct.
+        },
+        // The inclusive range `0 ..= 4` is rejected (only half-open ascending
+        // ranges are supported; `..=` is one off-by-one trap the DSL refuses
+        // to inherit).
+        Fixture {
+            name: "rej_for_inclusive_range",
+            stage: Fragment,
+            params: &[("uv", Vec2, ParamKind::Attr)],
+            body: "{ let mut a = 0.0 ; for i in 0 ..= 4 { a = a + 1.0 ; } Vec4 :: new ( a , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "inclusive",
+            },
             wgsl: WgslExpect::Reject {
                 err_contains: "for",
             },
@@ -2444,4 +2572,136 @@ fn vertex_index_spirv_builtin_wiring() {
              never Flat (interpolants only) or Location (user attributes only)"
         );
     }
+}
+
+/// The for-loop fixture's SPIR-V must carry the structured-loop contract
+/// explicitly, pinned by decoding the module (spirv-val checks
+/// well-formedness in `spirv_validates`; this pins the SPECIFIC shape so a
+/// regression — say, an unrolled body or a merge-less branch cycle — cannot
+/// slip through while staying "valid" somewhere laxer):
+///
+/// - exactly one `OpLoopMerge merge continue` in the module;
+/// - it sits in a header block terminated by `OpBranchConditional cond body
+///   merge` (the bound check exits to the merge block);
+/// - the header opens with OpPhi instructions — the u32 counter AND the
+///   loop-carried accumulator — each naming the continue block as its
+///   back-edge predecessor;
+/// - the continue block ends with `OpBranch header` (the back edge);
+/// - the bound check is the UNSIGNED OpULessThan (u32 counter, never float).
+#[test]
+fn for_loop_spirv_structured_wiring() {
+    const OP_LABEL: u16 = 248;
+    const OP_BRANCH: u16 = 249;
+    const OP_BRANCH_CONDITIONAL: u16 = 250;
+
+    /// A decoded instruction: (opcode, operand words).
+    type Inst = (u16, Vec<u32>);
+
+    /// Decode a module into (opcode, operands) instructions.
+    fn instrs(spirv: &[u8]) -> Vec<Inst> {
+        let words: Vec<u32> = spirv
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let mut out = Vec::new();
+        let mut i = 5;
+        while i < words.len() {
+            let word_count = ((words[i] >> 16) as usize).max(1);
+            out.push((
+                (words[i] & 0xFFFF) as u16,
+                words[i + 1..i + word_count].to_vec(),
+            ));
+            i += word_count;
+        }
+        out
+    }
+
+    let f = fixtures()
+        .into_iter()
+        .find(|f| f.name == "for_loop_accum")
+        .expect("for_loop_accum fixture present");
+    let spirv = emit_spirv(&def(&f)).expect("for_loop fixture must emit");
+    let all = instrs(&spirv);
+
+    // Group the function's instructions into blocks by their OpLabel.
+    let mut blocks: Vec<(u32, Vec<&Inst>)> = Vec::new();
+    for inst in &all {
+        if inst.0 == OP_LABEL {
+            blocks.push((inst.1[0], Vec::new()));
+        } else if let Some((_, body)) = blocks.last_mut() {
+            body.push(inst);
+        }
+    }
+    let block_of = |label: u32| -> &Vec<&Inst> {
+        &blocks
+            .iter()
+            .find(|(l, _)| *l == label)
+            .unwrap_or_else(|| panic!("no block labeled %{label}"))
+            .1
+    };
+
+    // Exactly one loop in the module; its merge/continue targets.
+    let loop_merges: Vec<&Vec<u32>> = all
+        .iter()
+        .filter(|(op, _)| *op == OP_LOOP_MERGE)
+        .map(|(_, a)| a)
+        .collect();
+    assert_eq!(
+        loop_merges.len(),
+        1,
+        "expected exactly one OpLoopMerge, found {}",
+        loop_merges.len()
+    );
+    let (merge_label, continue_label) = (loop_merges[0][0], loop_merges[0][1]);
+
+    // The header block: the one containing the OpLoopMerge.
+    let (header_label, header) = blocks
+        .iter()
+        .find(|(_, body)| body.iter().any(|(op, _)| *op == OP_LOOP_MERGE))
+        .expect("a block contains the OpLoopMerge");
+
+    // Terminator: OpBranchConditional whose FALSE target is the merge block
+    // (the bound check exits the loop).
+    let (term_op, term_args) = header.last().expect("header has a terminator");
+    assert_eq!(
+        *term_op, OP_BRANCH_CONDITIONAL,
+        "the loop header must end in OpBranchConditional"
+    );
+    assert_eq!(
+        term_args[2], merge_label,
+        "the bound check's false edge must exit to the merge block"
+    );
+
+    // Header phis: they open the block, and BOTH the counter and the carried
+    // accumulator `a` are present — each phi's back-edge parent is the
+    // continue block. OpPhi operands: [ty, result, v1, blk1, v2, blk2].
+    let phis: Vec<&&Inst> = header.iter().take_while(|(op, _)| *op == OP_PHI).collect();
+    assert!(
+        phis.len() >= 2,
+        "expected >= 2 leading header phis (counter + carried local), found {}",
+        phis.len()
+    );
+    for (_, args) in &phis {
+        let parents: Vec<u32> = args[2..].chunks(2).map(|p| p[1]).collect();
+        assert!(
+            parents.contains(&continue_label),
+            "each loop phi must name the continue block %{continue_label} as a \
+             predecessor, got parents {parents:?}"
+        );
+    }
+
+    // The bound check is unsigned and feeds the terminator from this block.
+    assert!(
+        header.iter().any(|(op, _)| *op == OP_ULESS_THAN),
+        "the loop bound check must be the unsigned OpULessThan in the header"
+    );
+
+    // The continue block ends with the back edge to the header.
+    let continue_block = block_of(continue_label);
+    let (back_op, back_args) = continue_block.last().expect("continue has a terminator");
+    assert_eq!(*back_op, OP_BRANCH, "continue must end in OpBranch");
+    assert_eq!(
+        back_args[0], *header_label,
+        "the continue block's branch must be the back edge to the header"
+    );
 }
