@@ -794,9 +794,14 @@ attempted.
 > pipelines.** `#[quanta::tess_control]`, `tess_eval`, `task`, `mesh`,
 > `ray_gen`, `closest_hit`, and `miss` compile — each expands to a valid
 > `ShaderBinary` carrying the correct `ShaderStage`, with `wgsl: None`
-> and **all binary payloads `None`** (no SPIR-V, no metallib). The
-> function body is **not** lowered to a shader; the examples below show
-> the intended stage signature, not code that runs today. The compiled
+> and **all binary payloads `None`** (no SPIR-V, no metallib). The macro
+> captures only the entry-point name and **discards the function body** —
+> nothing is lowered to a shader — so the examples below illustrate the
+> intended stage *signature*, not code that runs today. Their bodies are
+> deliberately illustrative pseudocode (hence the `ignore` on each fence):
+> calls like `vec4(...)`, `texture_sample(...)`, `set_vertex(...)`, and
+> `trace_ray(...)` are **not** the real shader DSL — contrast `Vec4::new`
+> and `sample` in a live `#[quanta::fragment]`. The compiled
 > render stages are `#[quanta::vertex]` and `#[quanta::fragment]`; the
 > tessellation / mesh / ray-tracing *pipelines* are driven through the
 > typed render API (`gpu.tessellation_pipeline`, `gpu.mesh_pipeline`,
@@ -815,7 +820,7 @@ fn name(patch_id: u32, ...) -> TessFactors { body }
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::tess_control]
 fn adaptive_tess(patch_id: u32, camera_dist: f32) -> TessFactors {
     let level = clamp(10.0 / camera_dist, 1.0, 64.0);
@@ -838,7 +843,7 @@ fn name(uv: Vec2, patch: &[Vec3; N]) -> Vec4 { body }
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::tess_eval]
 fn terrain_eval(uv: Vec2, patch: &[Vec3; 4], heightmap: &Texture2D<f32>) -> Vec4 {
     let pos = bilinear(patch, uv);
@@ -856,7 +861,7 @@ threadgroups.
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::task]
 fn frustum_cull(group_id: u32, bounds: &[BoundingSphere], frustum: &Frustum) {
     if sphere_in_frustum(bounds[group_id], frustum) {
@@ -874,7 +879,7 @@ input assembly.
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::mesh]
 fn procedural_quad(group_id: u32) {
     set_vertex(0, vec4(-1.0, -1.0, 0.0, 1.0));
@@ -894,7 +899,7 @@ Ray generation shader. Entry point for ray tracing -- launched once per pixel/ra
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::ray_gen]
 fn camera_rays(pixel: UVec2, scene: &AccelerationStructure, output: &mut Texture2D<f32>) {
     let ray = compute_camera_ray(pixel);
@@ -911,7 +916,7 @@ Closest-hit shader. Invoked when a ray intersects the nearest surface.
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::closest_hit]
 fn pbr_shade(hit: HitInfo, ray: Ray) -> Vec4 {
     let albedo = sample_texture(hit.uv);
@@ -928,7 +933,7 @@ Miss shader. Invoked when a ray hits no geometry.
 
 #### Example
 
-```rust
+```rust,ignore
 #[quanta::miss]
 fn sky_gradient(ray: Ray) -> Vec4 {
     let t = 0.5 * (ray.direction.y + 1.0);
