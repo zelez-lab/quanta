@@ -25,12 +25,23 @@ mod compute;
 #[derive(Clone)]
 pub struct Gpu {
     inner: Arc<dyn GpuDevice>,
+    /// Pool of builder-managed MSAA intermediates (`RenderBuilder::
+    /// msaa`), living beside the device like the driver registries do:
+    /// one pool per device, shared by every `Gpu` clone, dropped —
+    /// destroying every pooled texture — with the last clone. See
+    /// [`crate::msaa_pool`] for the keying/lifetime story.
+    #[cfg(all(feature = "render", feature = "std"))]
+    msaa_pool: Arc<crate::MsaaPool>,
 }
 
 impl Gpu {
     #[allow(dead_code)]
     pub(crate) fn new(inner: Arc<dyn GpuDevice>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            #[cfg(all(feature = "render", feature = "std"))]
+            msaa_pool: Arc::new(crate::MsaaPool::default()),
+        }
     }
 
     /// Internal device-handle accessor for the `quanta-render` extension
@@ -41,6 +52,15 @@ impl Gpu {
     #[doc(hidden)]
     pub fn device_handle(&self) -> &Arc<dyn GpuDevice> {
         &self.inner
+    }
+
+    /// Internal accessor for the builder-managed MSAA intermediate
+    /// pool, for the `quanta-render` extension crate (same role as
+    /// [`Gpu::device_handle`]). Not part of the stable public surface.
+    #[cfg(all(feature = "render", feature = "std"))]
+    #[doc(hidden)]
+    pub fn __msaa_pool(&self) -> &Arc<crate::MsaaPool> {
+        &self.msaa_pool
     }
 
     /// Test-support: snapshot of the driver's resource-registry sizes.

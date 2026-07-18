@@ -144,8 +144,9 @@ let pipe = gpu.pipeline(&desc)?;
 |--------|---------|-------------|
 | `pipeline(&desc)` | `Result<Pipeline>` | Create render pipeline (`PipelineDesc::new(shader).with_*(…)`) |
 | `render(&target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
+| `render_into(&target, f)` | `Result<R>` | Closure form of `render`: hands the builder to `f`, releasing the target borrow when it returns — for call sites where `&self.target` collides with other `&mut self` state |
 | `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
-| `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target |
+| `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target (manual MSAA path; the builder path is `.msaa(n)` below) |
 | `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample |
 | `stencil_read(&tex)` | `Result<Vec<u8>>` | Read stencil buffer contents |
 | `render_bundle(max_commands)` | `Result<IndirectRenderBundle>` | Render-path indirect command bundle |
@@ -401,6 +402,46 @@ collide. For a DSL fragment, `&Texture2D` params take texture slots in
 declaration order (first texture param ↔ `.texture(0, …)`/`.sampler(0, …)`),
 and uniform params take buffer slots in declaration order among uniforms
 (first uniform ↔ `.uniform(0, …)`).
+
+### Backend-managed MSAA
+
+| Method | Description |
+|--------|-------------|
+| `.msaa(n)` | Render the pass at n× MSAA into a **pooled intermediate** (created on first use, keyed by the target's handle, reused across passes); the pass's target stays the single-sample resolve destination |
+| `.msaa_resolve()` | End THIS pass with a subpass resolve of the intermediate into the target; without it the pass ends with `Store` and the samples survive into the next `.msaa(n)` pass |
+| `.load()` | Explicitly mark the pass as loading the intermediate (the default when no `.clear()` is recorded) |
+
+The builder owns the whole MSAA lifecycle — no hand-managed
+intermediate, no `Store`-vs-`Resolve` bookkeeping, no trailing
+`resolve_texture`:
+
+```rust
+let target = gpu.render_target(w, h, Format::RGBA8)?; // 1x, sampleable
+gpu.render(&target)?
+    .msaa(4)
+    .clear(Color::BLACK)          // clears the MSAA intermediate
+    .pipeline(&p4x) /* …draws… */
+    .pulse()?;                    // samples STORED — no resolve yet
+gpu.render(&target)?
+    .msaa(4)                      // SAME pooled intermediate, LOADed
+    /* …draws… */
+    .msaa_resolve()               // subpass-resolve → target at pass end
+    .pulse()?;
+// `target` now holds the resolved image and can be sampled as usual.
+```
+
+`.clear()`/`.load()` apply to the intermediate; pipelines must be built
+`with_sample_count(n)` (the intermediate carries the count, so the
+standard pass-shape validation catches a mismatch at `pulse()`). Guard
+rails, all `InvalidParam` at `pulse()`: `.msaa_resolve()` or `.load()`
+without `.msaa(n)`; `.msaa(n)` on a target that is itself multisampled;
+combining `.msaa(n)` with explicit `.color_targets()`. Changing `n`
+between passes over one target evicts and recreates the intermediate.
+Pool lifetime: intermediates live until the device drops (dropping the
+target does not evict its entry) — apps that churn short-lived targets
+should prefer the manual `msaa_target()`/`resolve_texture` path.
+WebGPU's render path cannot subpass-resolve yet and fails `.msaa()`
+passes with `NotSupported`.
 
 ### Draw commands
 

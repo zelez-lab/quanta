@@ -8,6 +8,7 @@ use crate::{LoadOp, Pulse, QuantaError, RenderPass, StoreOp, Texture};
 
 use super::super::VulkanDevice;
 use super::super::ffi;
+use super::super::sample_count_to_vk;
 
 /// The distinct texture handles a pass binds as SAMPLED sources (every
 /// `SetTexture` slot), deduped in first-bind order. Used to transition
@@ -485,10 +486,17 @@ impl VulkanDevice {
                 attachments.push(ffi::VkAttachmentDescription {
                     flags: 0,
                     format: ct_tex.format,
-                    // Must match the pipeline's rasterization samples
-                    // for render-pass compatibility (an MSAA pipeline
-                    // draws into MSAA color attachments).
-                    samples: attachment_samples,
+                    // The attachment carries the TARGET's real sample
+                    // count. When a pipeline is bound this equals its
+                    // rasterization samples — `validate_pass_shape`
+                    // already rejected any disagreement — preserving
+                    // render-pass compatibility (an MSAA pipeline draws
+                    // into MSAA color attachments). When NO pipeline is
+                    // bound (a clear-only pass over an MSAA target) the
+                    // old pipeline-derived fallback of 1 sample was
+                    // simply wrong: the framebuffer's image view is
+                    // multisampled and the attachment must say so.
+                    samples: sample_count_to_vk(ct.samples),
                     load_op,
                     store_op,
                     stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -563,7 +571,17 @@ impl VulkanDevice {
             let color_attachment = ffi::VkAttachmentDescription {
                 flags: 0,
                 format: target_tex.format,
-                samples: attachment_samples,
+                // The target's real sample count (same reasoning as the
+                // MRT arm above: equal to the pipeline's rasterization
+                // samples whenever one is bound — validated — and the
+                // only correct answer for a pipeline-less clear-only
+                // pass over an MSAA target). Falls back to the
+                // pipeline-derived count if the wrapper could not stamp
+                // `primary_samples`.
+                samples: pass
+                    .primary_samples
+                    .map(sample_count_to_vk)
+                    .unwrap_or(attachment_samples),
                 load_op,
                 store_op: ffi::VK_ATTACHMENT_STORE_OP_STORE,
                 stencil_load_op: ffi::VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -850,6 +868,66 @@ impl VulkanDevice {
                 1,
                 &barrier,
             );
+
+            // A LOADing NON-primary color target needs the same
+            // write→attachment dependency the primary got above. Its
+            // contents were stored by an earlier submission, and the
+            // transient pass declares initial layout
+            // COLOR_ATTACHMENT_OPTIMAL for it (no implicit transition,
+            // hence no implicit availability) — without an explicit
+            // barrier nothing makes those prior writes visible to this
+            // pass's load. The builder-managed MSAA intermediate reads
+            // its preserved samples through exactly this edge (pass 2
+            // of the clear→store / load→resolve flow). Virgin targets
+            // (tracked layout UNDEFINED) were downgraded to DONT_CARE
+            // when the attachment was declared: nothing to order.
+            for ct in &pass.color_targets {
+                if ct.texture == pass.handle || !matches!(ct.load_op, LoadOp::Load) {
+                    continue;
+                }
+                let Some(ct_tex) = textures.get(&ct.texture) else {
+                    continue;
+                };
+                let old_layout = ct_tex
+                    .current_layout
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if old_layout == ffi::VK_IMAGE_LAYOUT_UNDEFINED {
+                    continue;
+                }
+                let load_barrier = ffi::VkImageMemoryBarrier {
+                    s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    p_next: core::ptr::null(),
+                    src_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                        | ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    dst_access_mask: ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                        | ffi::VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                    old_layout,
+                    new_layout: ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    image: ct_tex.image,
+                    subresource_range: ffi::VkImageSubresourceRange {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+                ffi::vkCmdPipelineBarrier(
+                    cmd,
+                    ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                        | ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    1,
+                    &load_barrier,
+                );
+            }
 
             // Transition every SAMPLED source texture to
             // SHADER_READ_ONLY_OPTIMAL before the pass. `write_render_

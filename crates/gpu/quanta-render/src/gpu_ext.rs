@@ -70,6 +70,49 @@ pub trait RenderGpu: sealed::Sealed {
     /// ```
     fn render(&self, target: &Texture) -> Result<RenderBuilder, QuantaError>;
 
+    /// Begin a render pass targeting a texture and hand the
+    /// [`RenderBuilder`] to a closure — sugar over
+    /// [`render`](RenderGpu::render) for callers whose target borrow
+    /// collides with other `&mut self` state.
+    ///
+    /// `gpu.render(&target)?` borrows the target for as long as the
+    /// builder expression runs, so a method that draws into a texture
+    /// it owns while also mutating other fields of `self` cannot
+    /// spell the chain without laundering the borrow through a raw
+    /// pointer:
+    ///
+    /// ```ignore
+    /// impl Layer {
+    ///     fn redraw(&mut self, gpu: &Gpu) -> Result<(), QuantaError> {
+    ///         // let b = gpu.render(&self.target)?;   // borrows self…
+    ///         // self.dirty = false;                  // …conflict!
+    ///         let mut pulse = gpu.render_into(&self.target, |b| {
+    ///             b.clear(Color::BLACK)
+    ///                 .pipeline(&self.pipeline)
+    ///                 .vertices(0, &self.vertices)
+    ///                 .draw(self.count)
+    ///                 .pulse()
+    ///         })?;
+    ///         self.dirty = false; // target borrow already released
+    ///         pulse.wait()
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The closure returns whatever it likes (typically the
+    /// [`Pulse`](quanta_core::Pulse) from `.pulse()`); the target
+    /// borrow ends when `render_into` returns.
+    fn render_into<R>(
+        &self,
+        target: &Texture,
+        f: impl FnOnce(RenderBuilder) -> Result<R, QuantaError>,
+    ) -> Result<R, QuantaError>
+    where
+        Self: Sized,
+    {
+        f(self.render(target)?)
+    }
+
     /// Create a render target texture (can be drawn to and read from
     /// shaders).
     fn render_target(
@@ -207,7 +250,15 @@ impl RenderGpu for quanta_core::Gpu {
     fn render(&self, target: &Texture) -> Result<RenderBuilder, QuantaError> {
         let device = self.device_handle();
         let pass = device.render_begin(target)?;
-        Ok(RenderBuilder::new(device.clone(), pass))
+        // The std builder additionally carries the device's MSAA
+        // intermediate pool and a snapshot of `target`, so `.msaa(n)`
+        // can size/key the pooled intermediate and aim the resolve
+        // without re-borrowing the texture.
+        #[cfg(feature = "std")]
+        let builder = RenderBuilder::new(device.clone(), pass, self.__msaa_pool().clone(), target);
+        #[cfg(not(feature = "std"))]
+        let builder = RenderBuilder::new(device.clone(), pass);
+        Ok(builder)
     }
 
     fn render_target(

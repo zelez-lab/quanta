@@ -331,9 +331,39 @@ on Vulkan and Metal. Resident pages persist until you unmap them or drop the
 See [Expert: Sparse textures](../../expert/sparse-textures.md) for the lowering
 details and per-driver caveats.
 
-## MSAA resolve
+## MSAA
 
-After rendering to an MSAA target, resolve to a single-sample texture:
+The easy path: let the **builder manage the MSAA lifecycle**. Keep a
+single-sample target and ask each pass for `.msaa(n)` — the builder
+renders into a pooled n-sample intermediate (created on first use,
+reused across passes, samples preserved between them) and the pass
+that ends with `.msaa_resolve()` resolves into your target:
+
+```rust
+let target = gpu.render_target(1920, 1080, Format::RGBA8)?; // 1x, sampleable
+
+gpu.render(&target)?
+    .msaa(4)
+    .clear(Color::BLACK)          // clears the MSAA intermediate
+    .pipeline(&p4x) /* …draws… */
+    .pulse()?;                    // samples stored — no resolve yet
+
+gpu.render(&target)?
+    .msaa(4)                      // same pooled intermediate, loaded
+    /* …more draws… */
+    .msaa_resolve()               // resolve → target at pass end
+    .pulse()?;
+// `target` holds the resolved image; sample it as usual.
+```
+
+Pipelines used under `.msaa(n)` must be built `with_sample_count(n)`.
+See the [`RenderBuilder` reference](../../reference/api.md#renderbuilder)
+for the guard rails and the pool's lifetime.
+
+### Manual resolve
+
+For full control, own the MSAA target yourself and resolve explicitly
+to a single-sample texture:
 
 ```rust
 let msaa = gpu.msaa_target(1920, 1080, Format::RGBA8, 4)?;

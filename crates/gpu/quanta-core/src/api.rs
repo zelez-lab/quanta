@@ -61,6 +61,11 @@ pub mod icb;
 // surface configuration, shading rates, ray-tracing descriptors).
 // The typed wrappers and the `RenderGpu` extension trait live in the
 // `quanta-render` crate.
+// The builder-managed MSAA intermediate pool (`RenderBuilder::msaa`)
+// needs `std` for its lock; every backend feature implies `std`, so
+// the gate only prunes the pure type-check no_std configuration.
+#[cfg(all(feature = "render", feature = "std"))]
+pub mod msaa_pool;
 #[cfg(feature = "render")]
 pub mod pipeline;
 #[cfg(feature = "render")]
@@ -101,6 +106,8 @@ pub use wave::Wave;
 // Render data-model re-exports — gated with the `render` feature.
 #[cfg(feature = "render")]
 pub use icb::IndirectRenderBundle;
+#[cfg(all(feature = "render", feature = "std"))]
+pub use msaa_pool::MsaaPool;
 #[cfg(feature = "render")]
 pub use pipeline::*;
 #[cfg(feature = "render")]

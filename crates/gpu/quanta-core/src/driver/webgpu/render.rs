@@ -289,6 +289,27 @@ impl WebgpuDevice {
         // (which surfaces only in the JS console, invisible to Rust).
         pass.validate_pass_shape()?;
 
+        // Declared color targets beyond the primary are not wired on
+        // this backend: the encoder below binds `pass.handle` as the
+        // sole CLEAR/STORE color attachment and never reads
+        // `pass.color_targets`. A pass that declares anything else —
+        // MRT, a builder-managed MSAA intermediate (`.msaa(n)`), or a
+        // subpass resolve (`StoreOp::Resolve`) — would be silently
+        // misdrawn into the wrong texture; fail loudly instead.
+        // (WebGPU has native `resolveTarget` machinery; wiring it is a
+        // documented deferral.)
+        if pass.color_targets.len() > 1
+            || pass.color_targets.first().is_some_and(|ct| {
+                ct.texture != pass.handle || !matches!(ct.store_op, crate::StoreOp::Store)
+            })
+        {
+            return Err(QuantaError::not_supported(
+                "WebGPU render passes bind only the primary target: MRT, \
+                 builder-managed MSAA (.msaa) and subpass resolve are not \
+                 wired on this backend",
+            ));
+        }
+
         let textures = self.state.textures.0.borrow();
         let target = textures
             .get(&pass.handle)
