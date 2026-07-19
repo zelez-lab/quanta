@@ -283,14 +283,31 @@ impl VulkanDevice {
                     layer_count: 1,
                 },
             };
+            // The conversion temp is fully overwritten by the resolve —
+            // discard from UNDEFINED like the destination. Built longhand
+            // (not struct-update): VkImageMemoryBarrier is not Copy, and
+            // barrier_dst still has to move into the barrier list.
+            let temp_barrier = temp.map(|t| ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: 0,
+                dst_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                old_layout: ffi::VK_IMAGE_LAYOUT_UNDEFINED,
+                new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: t.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            });
             let mut barriers = vec![barrier_src, barrier_dst];
-            if let Some(t) = temp {
-                // The conversion temp is fully overwritten by the
-                // resolve — discard from UNDEFINED like the destination.
-                barriers.push(ffi::VkImageMemoryBarrier {
-                    image: t.image,
-                    ..barrier_dst
-                });
+            if let Some(b) = temp_barrier {
+                barriers.push(b);
             }
             ffi::vkCmdPipelineBarrier(
                 cmd,

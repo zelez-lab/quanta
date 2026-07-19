@@ -23,6 +23,7 @@
 //! advances — leaking handles on a dead device beats freeing memory the
 //! GPU may still touch.
 
+use alloc::vec::Vec;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
