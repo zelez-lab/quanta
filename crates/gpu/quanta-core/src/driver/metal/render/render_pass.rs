@@ -87,7 +87,12 @@ impl MetalDevice {
             let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
 
             if pass.color_targets.is_empty() {
-                // Legacy single-target path: use pass.handle as the target
+                // Legacy single-target path: use pass.handle as the target.
+                // The clear COLOR honors the pass's `RenderOp::Clear` op
+                // (defaulting to black), exactly like the Vulkan encoder —
+                // this lane used to hard-code black, silently ignoring
+                // `builder.clear(color)` on plain passes while Vulkan
+                // applied it.
                 let color_attach =
                     ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
                 ffi::msg_void_id(color_attach, b"setTexture:\0", target);
@@ -101,7 +106,20 @@ impl MetalDevice {
                     b"setStoreAction:\0",
                     ffi::MTL_STORE_ACTION_STORE,
                 );
-                ffi::msg_set_clear_color(color_attach, ffi::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+                let clear = pass
+                    .ops
+                    .iter()
+                    .find_map(|op| {
+                        if let RenderOp::Clear(c) = op {
+                            Some(ffi::MTLClearColor::new(
+                                c.r as f64, c.g as f64, c.b as f64, c.a as f64,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(ffi::MTLClearColor::new(0.0, 0.0, 0.0, 1.0));
+                ffi::msg_set_clear_color(color_attach, clear);
             } else {
                 // MRT path: configure each color target with load/store ops
                 for (i, ct) in pass.color_targets.iter().enumerate() {
