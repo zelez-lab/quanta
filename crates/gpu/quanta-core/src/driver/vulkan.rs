@@ -33,7 +33,7 @@ use device::VkRenderPipeline;
 use device::{VkBuffer, VkQueryPool, VkTexture};
 use helpers::{
     address_to_vk, compare_op_to_vk, filter_to_vk, format_bytes_per_pixel_vk, format_to_vulkan,
-    sample_count_to_vk,
+    image_rest_state, sample_count_to_vk,
 };
 #[cfg(feature = "render")]
 use helpers::{blend_factor_to_vk, blend_op_to_vk, sampler_create_info};

@@ -145,6 +145,12 @@ pub(super) struct VkSurfaceEntry {
     pub height: u32,
     pub format: crate::Format,
     pub vk_format: u32,
+    /// `VkImageUsageFlags` the swapchain images were created with —
+    /// COLOR_ATTACHMENT plus whichever TRANSFER bits the surface
+    /// capabilities offered. Recorded on each acquired frame's
+    /// `VkTexture` so transitions and transfer ops can check what the
+    /// image actually licenses.
+    pub usage: u32,
     pub present_mode: PresentMode,
     /// Set when a frame was discarded un-presented: Vulkan has no
     /// un-present, so the image only returns through a swapchain
@@ -154,8 +160,12 @@ pub(super) struct VkSurfaceEntry {
     /// surface, matching the Metal drawable model).
     pub acquire_fence: ffi::VkFence,
     /// Signaled by the pre-present transition submit; waited by
-    /// `vkQueuePresentKHR`.
-    pub present_sem: ffi::VkSemaphore,
+    /// `vkQueuePresentKHR`. One semaphore PER SWAPCHAIN IMAGE, indexed
+    /// by the acquired image: a present's semaphore wait is only known
+    /// complete once that image comes back through acquire, so a
+    /// single shared semaphore could be re-signaled while its previous
+    /// wait was still pending (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+    pub present_sems: Vec<ffi::VkSemaphore>,
     /// One dedicated transition command buffer + fence, recycled with
     /// a bounded wait on the PREVIOUS frame's transition (depth-1
     /// pipelining — present never CPU-waits the current frame).
@@ -306,7 +316,7 @@ impl VulkanDevice {
         // 3. Build the swapchain + per-surface objects. The negotiated
         // format may differ from `config.format` (a preference on
         // Vulkan) — it is what acquired frames must report.
-        let (swapchain, images, views, vk_format, format, extent) =
+        let (swapchain, images, views, vk_format, format, extent, usage) =
             self.build_swapchain(procs, surface, config, ffi::null_handle())?;
 
         let fence_info = ffi::VkFenceCreateInfo {
@@ -323,12 +333,6 @@ impl VulkanDevice {
             flags: ffi::VK_FENCE_CREATE_SIGNALED_BIT,
         };
         let mut present_fence = ffi::null_handle();
-        let sem_info = ffi::VkSemaphoreCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: 0,
-        };
-        let mut present_sem = ffi::null_handle();
         unsafe {
             if ffi::vkCreateFence(
                 self.device,
@@ -342,16 +346,11 @@ impl VulkanDevice {
                     core::ptr::null(),
                     &mut present_fence,
                 ) != ffi::VK_SUCCESS
-                || ffi::vkCreateSemaphore(
-                    self.device,
-                    &sem_info,
-                    core::ptr::null(),
-                    &mut present_sem,
-                ) != ffi::VK_SUCCESS
             {
                 return Err(QuantaError::out_of_memory());
             }
         }
+        let present_sems = self.create_present_sems(images.len())?;
         let present_cb = self.alloc_command_buffer()?;
 
         let handle = self.alloc_handle();
@@ -369,10 +368,11 @@ impl VulkanDevice {
                     height: extent.1,
                     format,
                     vk_format,
+                    usage,
                     present_mode: config.present_mode,
                     needs_rebuild: false,
                     acquire_fence,
-                    present_sem,
+                    present_sems,
                     present_cb,
                     present_fence,
                 },
@@ -380,13 +380,40 @@ impl VulkanDevice {
         Ok(handle)
     }
 
+    /// One present semaphore per swapchain image (see the field doc on
+    /// [`VkSurfaceEntry::present_sems`]). Created at swapchain build and
+    /// rebuilt with it — the image count can change across rebuilds.
+    fn create_present_sems(&self, count: usize) -> Result<Vec<ffi::VkSemaphore>, QuantaError> {
+        let sem_info = ffi::VkSemaphoreCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+        };
+        let mut sems = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut sem = ffi::null_handle();
+            let r = unsafe {
+                ffi::vkCreateSemaphore(self.device, &sem_info, core::ptr::null(), &mut sem)
+            };
+            if r != ffi::VK_SUCCESS {
+                for &s in &sems {
+                    unsafe { ffi::vkDestroySemaphore(self.device, s, core::ptr::null()) };
+                }
+                return Err(QuantaError::out_of_memory());
+            }
+            sems.push(sem);
+        }
+        Ok(sems)
+    }
+
     /// Create the swapchain and per-image views for `surface`.
     ///
     /// Returns the swapchain, its images and views, the negotiated
     /// `VkFormat`, the quanta [`Format`](crate::Format) that format maps
-    /// to (the value acquired frames report), and the extent. The
-    /// negotiated format is chosen by [`Self::negotiate_surface_format`]
-    /// and is not necessarily `config.format` — see that method.
+    /// to (the value acquired frames report), the extent, and the image
+    /// usage flags the swapchain was created with. The negotiated format
+    /// is chosen by [`Self::negotiate_surface_format`] and is not
+    /// necessarily `config.format` — see that method.
     #[allow(clippy::type_complexity)]
     fn build_swapchain(
         &self,
@@ -402,6 +429,7 @@ impl VulkanDevice {
             u32,
             crate::Format,
             (u32, u32),
+            u32,
         ),
         QuantaError,
     > {
@@ -468,6 +496,14 @@ impl VulkanDevice {
         let mut usage = ffi::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if caps.supported_usage_flags & ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT != 0 {
             usage |= ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        }
+        // TRANSFER_DST lets `vkCmdResolveImage` target a swapchain image
+        // (the explicit-resolve path of an MSAA effect frame). Without
+        // it that resolve is invalid — VUID-vkCmdResolveImage-dstImage-
+        // 06764, a real device-loss on Intel — so take the bit whenever
+        // the surface offers it and let the resolve path check.
+        if caps.supported_usage_flags & ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT != 0 {
+            usage |= ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         }
         let composite_alpha =
             if caps.supported_composite_alpha & ffi::VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR != 0 {
@@ -543,7 +579,7 @@ impl VulkanDevice {
             views.push(view);
         }
 
-        Ok((swapchain, images, views, vk_format, format, extent))
+        Ok((swapchain, images, views, vk_format, format, extent, usage))
     }
 
     /// Choose the swapchain's pixel format from what the surface offers,
@@ -654,15 +690,45 @@ impl VulkanDevice {
             .get_mut(&surface)
             .ok_or_else(|| QuantaError::not_found("surface handle not found"))?;
 
-        // Drain in-flight work referencing the old images, then rebuild.
+        // Drain in-flight work referencing the old images, then build
+        // the replacement BEFORE destroying anything old: both fallible
+        // steps (the swapchain build and the per-image semaphores) run
+        // while the entry still owns intact objects, so an error leaves
+        // it fully valid — no destroyed handle ever stays behind in a
+        // live entry for a retry or teardown to double-destroy.
         unsafe { ffi::vkQueueWaitIdle(self.queue) };
-        for &view in &entry.views {
-            unsafe { ffi::vkDestroyImageView(self.device, view, core::ptr::null()) };
-        }
-        let (swapchain, images, views, vk_format, format, extent) =
+        let (swapchain, images, views, vk_format, format, extent, usage) =
             self.build_swapchain(procs, entry.surface, config, entry.swapchain)?;
-        unsafe { (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null()) };
+        // The rebuilt swapchain may have a different image count; the
+        // per-image present semaphores are recreated to match. On
+        // failure, unwind the fresh objects — the entry is untouched.
+        let present_sems = match self.create_present_sems(images.len()) {
+            Ok(sems) => sems,
+            Err(e) => {
+                unsafe {
+                    for &view in &views {
+                        ffi::vkDestroyImageView(self.device, view, core::ptr::null());
+                    }
+                    (procs.destroy_swapchain)(self.device, swapchain, core::ptr::null());
+                }
+                return Err(e);
+            }
+        };
 
+        // Infallible from here: retire the old objects (idle queue, and
+        // the old swapchain was retired by `old_swapchain` above) and
+        // swap the entry's fields.
+        unsafe {
+            for &view in &entry.views {
+                ffi::vkDestroyImageView(self.device, view, core::ptr::null());
+            }
+            (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null());
+            for &sem in &entry.present_sems {
+                ffi::vkDestroySemaphore(self.device, sem, core::ptr::null());
+            }
+        }
+
+        entry.present_sems = present_sems;
         entry.swapchain = swapchain;
         entry.images = images;
         entry.views = views;
@@ -670,6 +736,7 @@ impl VulkanDevice {
         entry.width = extent.0;
         entry.height = extent.1;
         entry.format = format;
+        entry.usage = usage;
         entry.present_mode = config.present_mode;
         entry.needs_rebuild = false;
         Ok(())
@@ -773,6 +840,7 @@ impl VulkanDevice {
                     current_layout: core::sync::atomic::AtomicU32::new(
                         ffi::VK_IMAGE_LAYOUT_UNDEFINED,
                     ),
+                    usage: entry.usage,
                 },
             );
 
@@ -950,6 +1018,14 @@ impl VulkanDevice {
             if ffi::vkEndCommandBuffer(entry.present_cb) != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
             }
+            // The per-image semaphore: safe to re-signal, because this
+            // image just came back through acquire, which proves its
+            // previous present (the only waiter) completed.
+            let present_sem = entry
+                .present_sems
+                .get(frame_entry.image_index as usize)
+                .copied()
+                .ok_or_else(|| QuantaError::internal("present semaphore index out of range"))?;
             let submit = ffi::VkSubmitInfo {
                 s_type: ffi::VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 p_next: core::ptr::null(),
@@ -959,7 +1035,7 @@ impl VulkanDevice {
                 command_buffer_count: 1,
                 p_command_buffers: &entry.present_cb,
                 signal_semaphore_count: 1,
-                p_signal_semaphores: &entry.present_sem,
+                p_signal_semaphores: &present_sem,
             };
             if ffi::vkQueueSubmit(self.queue, 1, &submit, entry.present_fence) != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
@@ -969,7 +1045,7 @@ impl VulkanDevice {
                 s_type: ffi::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                 p_next: core::ptr::null(),
                 wait_semaphore_count: 1,
-                p_wait_semaphores: &entry.present_sem,
+                p_wait_semaphores: &present_sem,
                 swapchain_count: 1,
                 p_swapchains: &entry.swapchain,
                 p_image_indices: &frame_entry.image_index,
@@ -1045,7 +1121,9 @@ impl VulkanDevice {
             (procs.destroy_surface)(self.instance, entry.surface, core::ptr::null());
             ffi::vkDestroyFence(self.device, entry.acquire_fence, core::ptr::null());
             ffi::vkDestroyFence(self.device, entry.present_fence, core::ptr::null());
-            ffi::vkDestroySemaphore(self.device, entry.present_sem, core::ptr::null());
+            for &sem in &entry.present_sems {
+                ffi::vkDestroySemaphore(self.device, sem, core::ptr::null());
+            }
         }
         if let Ok(mut pool) = self.cmd_buffer_pool.lock() {
             pool.push(entry.present_cb);

@@ -9,6 +9,7 @@ use crate::QuantaError;
 
 use super::super::VulkanDevice;
 use super::super::ffi;
+use super::super::image_rest_state;
 
 impl VulkanDevice {
     // === Timestamp queries (Step 011) ===
@@ -132,15 +133,34 @@ impl VulkanDevice {
                 .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
         })?;
 
+        // The images must license the transfer layouts the resolve puts
+        // them in. Our own textures always carry both TRANSFER bits (see
+        // texture_create_impl), but a swapchain image only carries what
+        // the surface capabilities offered — resolving into one without
+        // TRANSFER_DST is VUID-vkCmdResolveImage-dstImage-06764, a real
+        // device-loss on Intel. Fail loudly instead of recording an
+        // invalid command.
+        if src.usage & ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT == 0 {
+            return Err(QuantaError::not_supported(
+                "resolve source image was created without TRANSFER_SRC usage \
+                 (this surface's capabilities do not offer it)",
+            ));
+        }
+        if dst.usage & ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT == 0 {
+            return Err(QuantaError::not_supported(
+                "resolve destination image was created without TRANSFER_DST \
+                 usage (this surface's capabilities do not offer it) — \
+                 resolve through the render pass's resolve attachment instead",
+            ));
+        }
+
         // Route both transitions through the TRACKED layout rather than
         // assuming the source is always in COLOR_ATTACHMENT_OPTIMAL — a
         // resolve source that was previously sampled (SHADER_READ_ONLY) or
         // written by compute (GENERAL) would otherwise mismatch and trip
         // VUID-VkImageMemoryBarrier-oldLayout-01197/01211. The destination
         // is fully overwritten by the resolve, so it discards from
-        // UNDEFINED. Every render target is created with TRANSFER_DST usage
-        // (see texture_create_impl), so the resolve dst always satisfies
-        // VUID-vkCmdResolveImage-dstImage-06764.
+        // UNDEFINED.
         let src_old = src
             .current_layout
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -156,6 +176,16 @@ impl VulkanDevice {
                 ffi::VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             )
         };
+
+        // Where each image settles AFTER the resolve. Derived from usage
+        // so the transition is always licensed — SHADER_READ_ONLY needs
+        // SAMPLED (VUID-VkImageMemoryBarrier-oldLayout-01211): a
+        // render-target-only image (an MSAA intermediate, a swapchain
+        // image) rests as an attachment instead, which also keeps the
+        // pre-present transition's COLOR_ATTACHMENT assumption true when
+        // the destination is an acquired frame.
+        let (src_rest, src_rest_access, src_rest_stage) = image_rest_state(src.usage);
+        let (dst_rest, dst_rest_access, dst_rest_stage) = image_rest_state(dst.usage);
 
         let cmd = self.alloc_command_buffer()?;
         let begin = ffi::VkCommandBufferBeginInfo {
@@ -259,14 +289,15 @@ impl VulkanDevice {
                 &region,
             );
 
-            // Transition both back to shader-read
+            // Transition both out of the transfer layouts, each to its
+            // usage-derived rest state (computed above).
             let barrier_src_back = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
                 src_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
-                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                dst_access_mask: src_rest_access,
                 old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                new_layout: src_rest,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 image: src.image,
@@ -282,9 +313,9 @@ impl VulkanDevice {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
                 src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
-                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                dst_access_mask: dst_rest_access,
                 old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                new_layout: dst_rest,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 image: dst.image,
@@ -300,7 +331,7 @@ impl VulkanDevice {
             ffi::vkCmdPipelineBarrier(
                 cmd,
                 ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
-                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                src_rest_stage | dst_rest_stage,
                 0,
                 0,
                 core::ptr::null(),
@@ -315,18 +346,14 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        // Both images end in SHADER_READ_ONLY_OPTIMAL (the final barrier
-        // above). Record that so the NEXT transition on either texture —
-        // a later resolve, a sub-region upload, a present — starts from the
-        // correct oldLayout instead of a stale assumption.
-        src.current_layout.store(
-            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        dst.current_layout.store(
-            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // Record the rest layouts so the NEXT transition on either
+        // texture — a later resolve, a sub-region upload, a present —
+        // starts from the correct oldLayout instead of a stale
+        // assumption.
+        src.current_layout
+            .store(src_rest, std::sync::atomic::Ordering::Relaxed);
+        dst.current_layout
+            .store(dst_rest, std::sync::atomic::Ordering::Relaxed);
         drop(textures);
         self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }

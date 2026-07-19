@@ -147,7 +147,7 @@ let pipe = gpu.pipeline(&desc)?;
 | `render_into(&target, f)` | `Result<R>` | Closure form of `render`: hands the builder to `f`, releasing the target borrow when it returns — for call sites where `&self.target` collides with other `&mut self` state |
 | `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
 | `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target (manual MSAA path; the builder path is `.msaa(n)` below) |
-| `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample |
+| `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample; `dst` may be an acquired surface frame (on Vulkan this needs the surface to offer transfer-dst usage — checked, `NotSupported` when it doesn't) |
 | `stencil_read(&tex)` | `Result<Vec<u8>>` | Read stencil buffer contents |
 | `render_bundle(max_commands)` | `Result<IndirectRenderBundle>` | Render-path indirect command bundle |
 | `mesh_pipeline(desc)` | `Result<MeshPipeline>` | Create a mesh-shader pipeline (gated on `supports_mesh_shaders`); `dispatch(groups)` on the wrapper dispatches |

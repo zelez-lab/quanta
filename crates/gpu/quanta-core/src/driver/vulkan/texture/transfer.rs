@@ -8,7 +8,7 @@ use core::ffi::c_void;
 use crate::{QuantaError, Texture};
 
 use super::super::ffi;
-use super::super::{VulkanDevice, format_bytes_per_pixel_vk};
+use super::super::{VulkanDevice, format_bytes_per_pixel_vk, image_rest_state};
 
 impl VulkanDevice {
     pub(crate) fn texture_write_impl(
@@ -34,6 +34,18 @@ impl VulkanDevice {
             QuantaError::invalid_param("bad texture handle")
                 .with_context(&format!("texture_write: handle {}", texture.handle()))
         })?;
+
+        // Our own textures always carry TRANSFER_DST; a swapchain image
+        // only carries what the surface capabilities offered. Fail
+        // loudly instead of recording an invalid copy
+        // (VUID-vkCmdCopyBufferToImage-dstImage-00177).
+        if tex.usage & ffi::VK_IMAGE_USAGE_TRANSFER_DST_BIT == 0 {
+            return Err(QuantaError::not_supported(
+                "texture was created without TRANSFER_DST usage (this \
+                 surface's capabilities do not offer it) — render into \
+                 the frame instead of writing pixels to it",
+            ));
+        }
 
         // Acquire staging buffer from pool or create a new one
         let (staging_buf, staging_mem, staging_cap) = self.acquire_staging_buffer(data.len())?;
@@ -144,14 +156,18 @@ impl VulkanDevice {
                 &region,
             );
 
-            // Transition: TRANSFER_DST -> SHADER_READ
+            // Transition out of TRANSFER_DST to the usage-derived rest
+            // layout — SHADER_READ_ONLY is only licensed by SAMPLED
+            // usage (VUID-VkImageMemoryBarrier-oldLayout-01211); a
+            // swapchain frame rests as a color attachment instead.
+            let (rest, rest_access, rest_stage) = image_rest_state(tex.usage);
             let barrier2 = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                 p_next: core::ptr::null(),
                 src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
-                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT,
+                dst_access_mask: rest_access,
                 old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                new_layout: ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                new_layout: rest,
                 src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
                 image: tex.image,
@@ -166,7 +182,7 @@ impl VulkanDevice {
             ffi::vkCmdPipelineBarrier(
                 cmd,
                 ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
-                ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                rest_stage,
                 0,
                 0,
                 core::ptr::null(),
@@ -180,12 +196,10 @@ impl VulkanDevice {
             if r != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
             }
+            // Track the rest layout the barrier above put the image in.
+            tex.current_layout
+                .store(rest, std::sync::atomic::Ordering::Relaxed);
         }
-        // Track layout: texture_write leaves image in SHADER_READ_ONLY_OPTIMAL
-        tex.current_layout.store(
-            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            std::sync::atomic::Ordering::Relaxed,
-        );
         drop(textures);
         self.submit_and_wait(cmd)?.wait()?;
 
@@ -203,6 +217,16 @@ impl VulkanDevice {
             QuantaError::invalid_param("bad texture handle")
                 .with_context(&format!("texture_read: handle {}", texture.handle()))
         })?;
+
+        // A swapchain image only carries the TRANSFER bits its surface
+        // offered; fail loudly rather than record an invalid copy.
+        if tex.usage & ffi::VK_IMAGE_USAGE_TRANSFER_SRC_BIT == 0 {
+            return Err(QuantaError::not_supported(
+                "texture was created without TRANSFER_SRC usage (this \
+                 surface's capabilities do not offer it), so its pixels \
+                 cannot be read back",
+            ));
+        }
 
         let bpp = format_bytes_per_pixel_vk(texture.format());
         let size = (tex.width * tex.height) as usize * bpp;
@@ -285,6 +309,46 @@ impl VulkanDevice {
                 1,
                 &region,
             );
+
+            // Transition back to the usage-derived rest layout and
+            // track it — leaving the image in TRANSFER_SRC while the
+            // tracker still holds the pre-read layout would make every
+            // later tracked-layout barrier (present, resolve, load-op)
+            // declare a wrong oldLayout
+            // (VUID-VkImageMemoryBarrier-oldLayout-01197).
+            let (rest, rest_access, rest_stage) = image_rest_state(tex.usage);
+            let barrier_back = ffi::VkImageMemoryBarrier {
+                s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: core::ptr::null(),
+                src_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                dst_access_mask: rest_access,
+                old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                new_layout: rest,
+                src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                image: tex.image,
+                subresource_range: ffi::VkImageSubresourceRange {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            ffi::vkCmdPipelineBarrier(
+                cmd,
+                ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                rest_stage,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                1,
+                &barrier_back,
+            );
+            tex.current_layout
+                .store(rest, std::sync::atomic::Ordering::Relaxed);
 
             let r = ffi::vkEndCommandBuffer(cmd);
             if r != ffi::VK_SUCCESS {

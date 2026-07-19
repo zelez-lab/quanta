@@ -388,6 +388,12 @@ pub(super) struct VkTexture {
     pub(super) format: u32,
     pub(super) mip_levels: u32,
     pub(super) current_layout: std::sync::atomic::AtomicU32,
+    /// `VkImageUsageFlags` the image was created with. Layout
+    /// transitions must never target a layout the usage doesn't
+    /// license (SHADER_READ_ONLY needs SAMPLED, transfer layouts need
+    /// the matching TRANSFER bit) — swapchain images in particular
+    /// carry only what the surface capabilities offered.
+    pub(super) usage: u32,
 }
 
 // Fields are read by the compute-gated dispatch path only.
@@ -1632,7 +1638,9 @@ impl Drop for VulkanDevice {
                     (procs.destroy_surface)(self.instance, entry.surface, core::ptr::null());
                     ffi::vkDestroyFence(self.device, entry.acquire_fence, core::ptr::null());
                     ffi::vkDestroyFence(self.device, entry.present_fence, core::ptr::null());
-                    ffi::vkDestroySemaphore(self.device, entry.present_sem, core::ptr::null());
+                    for &sem in &entry.present_sems {
+                        ffi::vkDestroySemaphore(self.device, sem, core::ptr::null());
+                    }
                 }
             }
 

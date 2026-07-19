@@ -189,3 +189,31 @@ pub(super) fn sampler_create_info(desc: &crate::texture::SamplerDesc) -> ffi::Vk
         unnormalized_coordinates: 0,
     }
 }
+
+/// The layout an image settles in between explicit GPU operations,
+/// with the access mask and stage a barrier INTO that layout should
+/// use. Derived from the image's creation usage so the transition is
+/// always licensed: sampled images rest shader-readable, attachment-
+/// only images (MSAA intermediates, swapchain frames) rest as
+/// attachments, anything else rests in GENERAL — always valid.
+pub(super) fn image_rest_state(usage: u32) -> (u32, u32, u32) {
+    if usage & ffi::VK_IMAGE_USAGE_SAMPLED_BIT != 0 {
+        (
+            ffi::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            ffi::VK_ACCESS_SHADER_READ_BIT,
+            ffi::VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        )
+    } else if usage & ffi::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT != 0 {
+        (
+            ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            ffi::VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | ffi::VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        )
+    } else {
+        (
+            ffi::VK_IMAGE_LAYOUT_GENERAL,
+            ffi::VK_ACCESS_MEMORY_READ_BIT | ffi::VK_ACCESS_MEMORY_WRITE_BIT,
+            ffi::VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        )
+    }
+}

@@ -127,6 +127,7 @@ impl VulkanDevice {
                     current_layout: std::sync::atomic::AtomicU32::new(
                         ffi::VK_IMAGE_LAYOUT_UNDEFINED,
                     ),
+                    usage: vk_usage,
                 },
             );
 
@@ -243,6 +244,7 @@ impl VulkanDevice {
                     current_layout: std::sync::atomic::AtomicU32::new(
                         ffi::VK_IMAGE_LAYOUT_UNDEFINED,
                     ),
+                    usage: vk_usage,
                 },
             );
 
