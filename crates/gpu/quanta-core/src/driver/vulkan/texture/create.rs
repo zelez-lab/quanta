@@ -16,7 +16,7 @@ impl VulkanDevice {
         if desc.usage.has(TextureUsage::SHADER_READ) {
             vk_usage |= ffi::VK_IMAGE_USAGE_SAMPLED_BIT;
         }
-        if desc.usage.has(TextureUsage::SHADER_WRITE) {
+        if desc.usage.has(TextureUsage::STORAGE) {
             vk_usage |= ffi::VK_IMAGE_USAGE_STORAGE_BIT;
         }
         if desc.usage.has(TextureUsage::RENDER_TARGET) {
@@ -185,7 +185,7 @@ impl VulkanDevice {
         if desc.usage.has(TextureUsage::SHADER_READ) {
             vk_usage |= ffi::VK_IMAGE_USAGE_SAMPLED_BIT;
         }
-        if desc.usage.has(TextureUsage::SHADER_WRITE) {
+        if desc.usage.has(TextureUsage::STORAGE) {
             vk_usage |= ffi::VK_IMAGE_USAGE_STORAGE_BIT;
         }
         if desc.usage.has(TextureUsage::RENDER_TARGET) {

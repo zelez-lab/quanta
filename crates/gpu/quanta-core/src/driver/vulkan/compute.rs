@@ -349,11 +349,11 @@ impl VulkanDevice {
     /// is a mandatory Vulkan storage format, so — unlike Metal — there is no
     /// feature gate, and read-only vs read-write does not matter here (the
     /// NonWritable split is enforced in the SPIR-V itself). Each valid texel
-    /// texture must have been created with STORAGE usage (`TextureUsage::
-    /// SHADER_WRITE` today — read-only texel access still binds a
-    /// STORAGE_IMAGE descriptor), checked loudly rather than left to the
-    /// validation layer, then is transitioned into `VK_IMAGE_LAYOUT_GENERAL`
-    /// so that descriptor is legal at dispatch time.
+    /// texture must have been created with `TextureUsage::STORAGE` (read-only
+    /// texel access still binds a STORAGE_IMAGE descriptor), checked loudly
+    /// rather than left to the validation layer, then is transitioned into
+    /// `VK_IMAGE_LAYOUT_GENERAL` so that descriptor is legal at dispatch
+    /// time.
     ///
     /// Sampled (`&Sampled2D`) slots have no format constraint (RGBA8 and
     /// R32Float both read); they are moved into `SHADER_READ_ONLY_OPTIMAL`
@@ -438,7 +438,7 @@ impl VulkanDevice {
                 )
                 .with_context(&format!(
                     "compute texture: slot {slot}: create the texture with \
-                     TextureUsage::SHADER_WRITE to license texel access (read-only \
+                     TextureUsage::STORAGE to license texel access (read-only \
                      included)"
                 )));
             }

@@ -125,7 +125,7 @@ Defaults (what `new` leaves untouched):
 | Flag | Value | Description |
 |------|-------|-------------|
 | `SHADER_READ` | `1<<0` | Readable from shaders (sampling) |
-| `SHADER_WRITE` | `1<<1` | Writable from shaders (compute output) |
+| `STORAGE` | `1<<1` | Bindable as a texel (storage) image in kernels — required for `&Texture2D` and `&mut Texture2D` params alike |
 | `RENDER_TARGET` | `1<<2` | Usable as color attachment |
 
 Combine with `.union()`:

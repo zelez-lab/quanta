@@ -89,8 +89,10 @@ impl MetalDevice {
             if desc.usage.has(TextureUsage::SHADER_READ) {
                 usage |= ffi::MTL_TEXTURE_USAGE_SHADER_READ;
             }
-            if desc.usage.has(TextureUsage::SHADER_WRITE) {
-                usage |= ffi::MTL_TEXTURE_USAGE_SHADER_WRITE;
+            if desc.usage.has(TextureUsage::STORAGE) {
+                // Same grant as texture_create_impl: STORAGE licenses both
+                // access::read and access::read_write texel binding.
+                usage |= ffi::MTL_TEXTURE_USAGE_SHADER_READ | ffi::MTL_TEXTURE_USAGE_SHADER_WRITE;
             }
             if desc.usage.has(TextureUsage::RENDER_TARGET) {
                 usage |= ffi::MTL_TEXTURE_USAGE_RENDER_TARGET;

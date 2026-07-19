@@ -310,7 +310,7 @@ dispatch with `InvalidParam`:
 > invalid parameter: compute storage texture format mismatch [slot N:
 > expected R32Float, got `<Format>`]
 
-Create the texture with the matching format and `SHADER_WRITE` usage
+Create the texture with the matching format and `STORAGE` usage
 (texel slots bind as storage images even when read-only).
 
 ### Too many vertex attributes → `CompilationFailed`

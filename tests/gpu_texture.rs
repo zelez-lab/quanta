@@ -23,7 +23,7 @@ fn texture_rgba8_round_trip() {
     let tex = gpu
         .create_texture(
             &TextureDesc::new(w, h, Format::RGBA8)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -58,7 +58,7 @@ fn texture_r32float_round_trip() {
     let tex = gpu
         .create_texture(
             &TextureDesc::new(w, h, Format::R32Float)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -118,7 +118,7 @@ fn texture_partial_write() {
     let tex = gpu
         .create_texture(
             &TextureDesc::new(w, h, Format::RGBA8)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -152,12 +152,12 @@ fn texture_mipmap_generation() {
     // does NOT carry RENDER_TARGET usage: render targets are private
     // (GPU-resident) storage on Metal and reject CPU writes, and this test
     // only needs a CPU-seeded, sampleable, mipmapped texture — SHADER_READ |
-    // SHADER_WRITE keeps it shared so `write` lands.
+    // STORAGE keeps it shared so `write` lands.
     let tex = gpu
         .create_texture(
             &TextureDesc::new(64, 64, Format::RGBA8)
                 .with_mip_levels(0) // auto-calculate
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -190,7 +190,7 @@ fn texture_multiple_formats_create() {
     for fmt in &formats {
         let result = gpu.create_texture(
             &TextureDesc::new(8, 8, *fmt)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         );
         assert!(
             result.is_ok(),

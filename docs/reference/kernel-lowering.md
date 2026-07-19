@@ -168,7 +168,7 @@ CPU executor's texel read. (The fragment-shader `sample()` path keeps
 Texel access is format-checked per slot kind at dispatch: a
 `Texture2D<f32>` slot (either `&` or `&mut`) must be bound to an `R32Float`
 texture and a `Texture2D<u32>` slot to an `RGBA8` texture (created with
-`SHADER_WRITE` usage — texel slots bind as storage images even read-only),
+`STORAGE` usage — texel slots bind as storage images even read-only),
 or the bind fails with `InvalidParam`. A sampled `&Sampled2D<u32>` is a
 compile error (texel-position `u32` is the packed-RGBA8 image; a sampled
 integer texture is unwired). Sampling a texel slot, and writing a read-only

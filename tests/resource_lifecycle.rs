@@ -69,7 +69,7 @@ fn pipeline_desc<'a>(layouts: &'a [quanta::VertexLayout]) -> quanta::PipelineDes
 
 fn small_texture_desc() -> TextureDesc {
     TextureDesc::new(16, 16, Format::RGBA8)
-        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE))
+        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE))
 }
 
 // ─── Single-resource lifecycle ──────────────────────────────────────────────

@@ -83,9 +83,9 @@ unsafe fn apply_config(
             "Metal surfaces support BGRA8 and RGBA16Float frame formats",
         ));
     }
-    if config.usage.has(TextureUsage::SHADER_WRITE) {
+    if config.usage.has(TextureUsage::STORAGE) {
         return Err(QuantaError::not_supported(
-            "Metal surface frames cannot be shader-writable (drawable textures)",
+            "Metal surface frames cannot be texel (storage) images (drawable textures)",
         ));
     }
     let display_sync = match config.present_mode {

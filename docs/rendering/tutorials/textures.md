@@ -57,7 +57,7 @@ that ships with an application. They reduce GPU memory and bandwidth.
 | Flag                           | Meaning                          |
 |--------------------------------|----------------------------------|
 | `TextureUsage::SHADER_READ`   | Sampled in shaders               |
-| `TextureUsage::SHADER_WRITE`  | Written from compute shaders     |
+| `TextureUsage::STORAGE`  | Bindable as a texel (storage) image in kernels — `&Texture2D` and `&mut Texture2D` alike |
 | `TextureUsage::RENDER_TARGET` | Used as a color attachment       |
 
 Combine with `.union()`:
@@ -73,7 +73,7 @@ let usage = TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ);
 ```rust
 let tex = gpu.create_texture(
     &TextureDesc::new(1024, 1024, Format::RGBA16Float)
-        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+        .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
 )?;
 ```
 

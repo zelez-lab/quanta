@@ -157,7 +157,7 @@ fn barrier_texture_transition() {
         .create_texture(
             &quanta::TextureDesc::new(16, 16, quanta::Format::RGBA8).with_usage(
                 quanta::TextureUsage::SHADER_READ
-                    .union(quanta::TextureUsage::SHADER_WRITE)
+                    .union(quanta::TextureUsage::STORAGE)
                     .union(quanta::TextureUsage::RENDER_TARGET),
             ),
         )

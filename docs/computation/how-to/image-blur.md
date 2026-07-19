@@ -75,12 +75,12 @@ fn main() {
     let height: u32 = 1080;
     let pixel_count = (width * height) as usize;
 
-    // Texel bindings are storage images, so both textures need SHADER_WRITE
-    // (storage) usage — the read-only `&Texture2D` input included. Only the
+    // Texel bindings are storage images, so both textures need STORAGE
+    // usage — the read-only `&Texture2D` input included. Only the
     // *read-write* RGBA8 slot needs Tier 2 on Metal; this pipeline's input is
     // read-only, and the output is written here, so the Tier-2 gate applies
     // to the output slot alone.
-    let usage = TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE);
+    let usage = TextureUsage::SHADER_READ.union(TextureUsage::STORAGE);
     let input_tex = gpu.create_texture(
         &TextureDesc::new(width, height, Format::RGBA8).with_usage(usage),
     ).unwrap();

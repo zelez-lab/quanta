@@ -21,7 +21,7 @@ fn texture_view_create_basic() {
         .create_texture(
             &TextureDesc::new(64, 64, Format::RGBA8)
                 .with_mip_levels(4)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -56,7 +56,7 @@ fn texture_view_single_mip() {
                 .with_mip_levels(0) // auto-calculate
                 .with_usage(
                     TextureUsage::SHADER_READ
-                        .union(TextureUsage::SHADER_WRITE)
+                        .union(TextureUsage::STORAGE)
                         .union(TextureUsage::RENDER_TARGET),
                 ),
         )
@@ -89,7 +89,7 @@ fn texture_view_format_reinterpret() {
     let tex = gpu
         .create_texture(
             &TextureDesc::new(32, 32, Format::RGBA8)
-                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+                .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
         )
         .unwrap();
 

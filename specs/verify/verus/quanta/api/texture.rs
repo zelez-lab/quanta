@@ -52,9 +52,11 @@ pub struct TextureDescModel {
     pub usage: u8,
 }
 
-/// TextureUsage flags.
+/// TextureUsage flags. STORAGE is the texel-image capability (bit 1 —
+/// renamed from SHADER_WRITE when read-only texel access arrived: the flag
+/// names what the binding *is*, not whether the kernel writes).
 pub const SHADER_READ: u8 = 1;
-pub const SHADER_WRITE: u8 = 2;
+pub const STORAGE: u8 = 2;
 pub const RENDER_TARGET: u8 = 4;
 
 /// TextureKind discriminants.

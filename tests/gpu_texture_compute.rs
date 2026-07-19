@@ -466,9 +466,8 @@ fn run_write_pattern(gpu: &quanta::Gpu) {
     let n = (w * h) as usize;
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -497,9 +496,8 @@ fn run_rmw(gpu: &quanta::Gpu) {
     let seed: Vec<f32> = (0..n).map(|i| i as f32).collect();
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
     tex.write(&r32f_bytes(&seed)).unwrap();
@@ -549,9 +547,8 @@ fn run_write_pattern_rgba8(gpu: &quanta::Gpu) {
     let n = (w * h) as usize;
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
 
@@ -602,9 +599,8 @@ fn run_rmw_rgba8(gpu: &quanta::Gpu) {
     }
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
     tex.write(&seed_bytes).unwrap();
@@ -648,9 +644,8 @@ fn run_rmw_rgba8_intrinsic(gpu: &quanta::Gpu) {
     }
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
     tex.write(&seed_bytes).unwrap();
@@ -873,7 +868,7 @@ fn format_mismatch_is_invalid_param() {
         let tex = gpu
             .create_texture(
                 &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
-                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE),
                 ),
             )
             .unwrap();
@@ -915,7 +910,7 @@ fn r32float_to_u32_slot_is_invalid_param() {
         let tex = gpu
             .create_texture(
                 &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
-                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+                    quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE),
                 ),
             )
             .unwrap();
@@ -975,9 +970,8 @@ fn run_read_texel(gpu: &quanta::Gpu) {
     // STORAGE_IMAGE descriptor on Vulkan).
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
     tex.write(&r32f_bytes(&seed)).unwrap();
@@ -1016,9 +1010,8 @@ fn run_read_texel_rgba8(gpu: &quanta::Gpu) {
     }
     let tex = gpu
         .create_texture(
-            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
-            ),
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
     tex.write(&bytes).unwrap();

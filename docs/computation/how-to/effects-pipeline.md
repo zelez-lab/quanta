@@ -21,7 +21,7 @@ pack/unpack the channels with bit math.
 
 Effect layers are **RGBA8**. There is no SPIR-V storage format for BGRA8, so a
 layer texture bound to a `&mut Texture2D<u32>` slot must be created as
-`Format::RGBA8` with both `SHADER_READ` and `SHADER_WRITE` usage:
+`Format::RGBA8` with both `SHADER_READ` and `STORAGE` usage:
 
 ```rust
 use quanta::{Format, TextureDesc, TextureUsage};
@@ -29,7 +29,7 @@ use quanta::{Format, TextureDesc, TextureUsage};
 let layer = gpu
     .create_texture(
         &TextureDesc::new(width, height, Format::RGBA8)
-            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
     )
     .unwrap();
 ```
@@ -188,7 +188,7 @@ output as clean input.
 > returns matches the CPU executor exactly — portable across Metal, native
 > Vulkan, and the CPU executor. Reach for `&Sampled2D` when the source
 > texture wasn't created with storage usage (e.g. an atlas you also render
-> with); a texel `&Texture2D` slot needs `SHADER_WRITE` usage on the bound
+> with); a texel `&Texture2D` slot needs `STORAGE` usage on the bound
 > texture even though the kernel only reads it. WebGPU still reports
 > `QuantaErrorKind::NotSupported` when the wave is built — handle it the same
 > way as the tier-2 skip. (Filtered or normalized-UV sampling is a future
@@ -203,11 +203,11 @@ you swap which texture plays which role, so the previous pass's output becomes
 the next pass's input:
 
 ```rust
-// Two R32Float textures, both SHADER_READ | SHADER_WRITE.
+// Two R32Float textures, both SHADER_READ | STORAGE.
 let make = |gpu: &Gpu| {
     gpu.create_texture(
         &TextureDesc::new(width, height, Format::R32Float)
-            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE)),
+            .with_usage(TextureUsage::SHADER_READ.union(TextureUsage::STORAGE)),
     )
     .unwrap()
 };

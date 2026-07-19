@@ -365,7 +365,7 @@ kernel parameter.)
 The texture format contract is scalar-driven and enforced per texel-slot kind
 at dispatch: a `Texture2D<f32>` slot (`&` or `&mut`) must be bound to an
 `R32Float` texture, and a `Texture2D<u32>` slot to an `RGBA8` texture (created
-with `SHADER_WRITE` usage -- a texel slot binds as a storage image even when
+with `STORAGE` usage -- a texel slot binds as a storage image even when
 read-only). A format mismatch -- either direction -- returns
 `QuantaErrorKind::InvalidParam`. Texel compute textures are supported on
 Metal, the CPU reference device, and native Vulkan; sampling in compute

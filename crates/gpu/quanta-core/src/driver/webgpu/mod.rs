@@ -376,7 +376,7 @@ impl QGpuDevice for WebgpuDevice {
         if desc.usage.has(crate::TextureUsage::SHADER_READ) {
             usage |= ffi::texture_usage::TEXTURE_BINDING;
         }
-        if desc.usage.has(crate::TextureUsage::SHADER_WRITE) {
+        if desc.usage.has(crate::TextureUsage::STORAGE) {
             usage |= ffi::texture_usage::STORAGE_BINDING;
         }
         if desc.usage.has(crate::TextureUsage::RENDER_TARGET) {

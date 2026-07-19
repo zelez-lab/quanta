@@ -338,10 +338,15 @@ pub enum TextureKind {
 pub struct TextureUsage(u8);
 
 impl TextureUsage {
-    /// Readable from shaders (sampling).
+    /// Readable from shaders (sampling) — required for `&Sampled2D` kernel
+    /// params and fragment-shader `sample()`.
     pub const SHADER_READ: Self = Self(1 << 0);
-    /// Writable from shaders (compute output).
-    pub const SHADER_WRITE: Self = Self(1 << 1);
+    /// Bindable as a texel (storage) image in kernels — required for
+    /// `&Texture2D` and `&mut Texture2D` params alike: read-only texel
+    /// access still binds a storage-image descriptor (Vulkan
+    /// `STORAGE_BIT`), so the flag names the *capability*, not whether the
+    /// kernel writes.
+    pub const STORAGE: Self = Self(1 << 1);
     /// Usable as a render target (color attachment).
     pub const RENDER_TARGET: Self = Self(1 << 2);
 
