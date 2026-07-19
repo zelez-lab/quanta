@@ -720,6 +720,7 @@ impl VulkanDevice {
             handle: self.alloc_handle(),
             completed: true,
             wait_fn: None,
+            keep_alive: self.self_ref.pulse_keep_alive(),
         })
     }
 
@@ -861,6 +862,7 @@ impl VulkanDevice {
             handle: self.alloc_handle(),
             completed: true,
             wait_fn: None,
+            keep_alive: self.self_ref.pulse_keep_alive(),
         })
     }
 }

@@ -1221,6 +1221,11 @@ impl VulkanDevice {
             handle: self.alloc_handle(),
             completed: false,
             wait_fn: Some(Box::new(move || drop(cleanup))),
+            // The cleanup above waits the submit fence when it drops —
+            // exactly the deferred device work the keep-alive protects:
+            // a consumer holding this pulse past its last Gpu handle
+            // must not have the wait dangle on a destroyed VkDevice.
+            keep_alive: self.self_ref.pulse_keep_alive(),
         })
     }
 

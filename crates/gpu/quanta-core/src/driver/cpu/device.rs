@@ -860,6 +860,9 @@ impl GpuDevice for CpuDevice {
             handle: 0,
             completed: true,
             wait_fn: None,
+            // Synchronous backend: the pulse carries no deferred device
+            // work, so there is nothing a keep-alive would protect.
+            keep_alive: None,
         })
     }
 
@@ -1873,6 +1876,7 @@ mod tests {
             handle: 0,
             completed: false,
             wait_fn: None,
+            keep_alive: None,
         };
         assert!(dev.pulse_poll(&pulse));
     }

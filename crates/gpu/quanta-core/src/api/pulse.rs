@@ -14,6 +14,12 @@ use alloc::sync::Arc;
 /// `Field::read`), or drain the whole queue with `Gpu::wait_idle`.
 /// Presenting an acquired surface frame needs no wait — same-queue
 /// ordering covers it.
+///
+/// A pulse keeps its device alive: holding one past the last `Gpu` /
+/// resource handle is safe — the deferred wait (and any cleanup it
+/// carries) runs against a live device, never a destroyed one. The
+/// depth-N in-flight-fence pattern, which holds a pulse across frames
+/// by design, relies on this.
 pub struct Pulse {
     pub(crate) handle: u64,
     pub(crate) completed: bool,
@@ -21,6 +27,12 @@ pub struct Pulse {
     /// completion. `Send` so `on_complete` can move the wait onto a
     /// background waiter thread.
     pub(crate) wait_fn: Option<Box<dyn FnOnce() + Send>>,
+    /// Keeps the originating device alive while this pulse (and the
+    /// deferred wait/cleanup captured in `wait_fn`) exists. Declared
+    /// AFTER `wait_fn` on purpose: fields drop in declaration order,
+    /// so the wait closure — which may dispatch into the driver —
+    /// drops while the device is still referenced.
+    pub(crate) keep_alive: Option<Arc<dyn GpuDevice>>,
 }
 
 impl Pulse {
@@ -62,10 +74,15 @@ impl Pulse {
         F: FnOnce() + Send + 'static,
     {
         let wait_fn = self.wait_fn.take();
+        // The device keep-alive moves onto the waiter thread with the
+        // wait: the device must outlive a wait that runs after every
+        // caller-side handle is gone.
+        let keep_alive = self.keep_alive.take();
         self.completed = true;
         std::thread::Builder::new()
             .name("quanta-pulse-waiter".into())
             .spawn(move || {
+                let _keep_alive = keep_alive;
                 if let Some(wait) = wait_fn {
                     wait();
                 }

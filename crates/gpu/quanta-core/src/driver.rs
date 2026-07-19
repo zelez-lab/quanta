@@ -47,3 +47,58 @@ pub mod webgpu;
 
 #[cfg(feature = "std")]
 pub mod validation;
+
+/// Weak back-reference to the shared `Arc<dyn GpuDevice>` a driver is
+/// held through, installed once via `GpuDevice::install_self_ref`.
+/// Drivers upgrade it when minting a `Pulse` so every pulse keeps its
+/// device alive. Weak here, strong in the pulse — no cycle: the device
+/// never holds pulses. Only the async GPU backends carry one — the
+/// synchronous backends' pulses defer no device work — so it is gated
+/// like the metal/vulkan modules above.
+#[cfg(any(
+    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+    all(
+        feature = "vulkan",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    ),
+))]
+pub(crate) struct DeviceSelfRef(std::sync::OnceLock<alloc::sync::Weak<dyn crate::GpuDevice>>);
+
+#[cfg(any(
+    all(feature = "metal", any(target_os = "macos", target_os = "ios")),
+    all(
+        feature = "vulkan",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    ),
+))]
+impl DeviceSelfRef {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+
+    /// First install wins; a later call is a no-op (there is exactly
+    /// one shared `Arc` per device).
+    pub(crate) fn install(&self, self_ref: alloc::sync::Weak<dyn crate::GpuDevice>) {
+        let _ = self.0.set(self_ref);
+    }
+
+    /// The strong keep-alive a freshly minted pulse carries. `None`
+    /// only before `install_self_ref` ran (a device not yet handed to
+    /// callers — nothing can outlive it) or during device teardown.
+    /// Metal's only caller is compute/render-gated (`make_async_pulse`),
+    /// so a pruned metal-only build compiles this without a caller.
+    #[cfg_attr(not(any(feature = "compute", feature = "render")), allow(dead_code))]
+    pub(crate) fn pulse_keep_alive(&self) -> Option<alloc::sync::Arc<dyn crate::GpuDevice>> {
+        self.0.get().and_then(|w| w.upgrade())
+    }
+}

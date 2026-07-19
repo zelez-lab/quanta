@@ -28,6 +28,10 @@ impl GpuDevice for MetalDevice {
         &self.caps
     }
 
+    fn install_self_ref(&self, self_ref: alloc::sync::Weak<dyn GpuDevice>) {
+        self.self_ref.install(self_ref);
+    }
+
     // === Feature support — slice 20 ===
     //
     // VRS via MTLRasterizationRateMap is gated on Apple7 family

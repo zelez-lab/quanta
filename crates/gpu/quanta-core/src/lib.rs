@@ -47,14 +47,18 @@ fn validation_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Optionally wrap a device in the validation layer.
+/// Optionally wrap a device in the validation layer, then hand the
+/// device a weak reference to its own `Arc` so the pulses it mints can
+/// keep it alive (see `GpuDevice::install_self_ref`).
 #[cfg(feature = "std")]
 fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn GpuDevice> {
-    if validation_enabled() {
+    let arc: alloc::sync::Arc<dyn GpuDevice> = if validation_enabled() {
         alloc::sync::Arc::from(driver::validation::ValidationDevice::wrap(dev))
     } else {
         alloc::sync::Arc::from(dev)
-    }
+    };
+    arc.install_self_ref(alloc::sync::Arc::downgrade(&arc));
+    arc
 }
 
 /// A backend selected by the `QUANTA_BACKEND` forcing lever.

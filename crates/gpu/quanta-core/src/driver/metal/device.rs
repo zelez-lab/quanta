@@ -155,6 +155,10 @@ pub struct MetalDevice {
     pub(crate) device: ffi::Id,
     pub(crate) queue: ffi::Id,
     pub(crate) caps: Caps,
+    /// Weak back-ref to this device's shared `Arc`; minted pulses
+    /// upgrade it into their keep-alive (uniform pulse contract across
+    /// backends — see `Pulse::keep_alive`).
+    pub(crate) self_ref: crate::driver::DeviceSelfRef,
     // Resource storage — keyed by handle.
     // RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     pub(crate) buffers: RwLock<HashMap<u64, ffi::Id>>,
@@ -282,6 +286,7 @@ pub(crate) fn make_async_pulse(device: &MetalDevice, cmd: ffi::Id) -> crate::Pul
         crate::Pulse {
             handle,
             completed: false,
+            keep_alive: device.self_ref.pulse_keep_alive(),
             wait_fn: Some(Box::new(move || {
                 let (sem, block) = waiter.take();
                 ffi::dispatch_semaphore_wait(sem, ffi::DISPATCH_TIME_FOREVER);
@@ -349,6 +354,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         device,
         queue,
         caps,
+        self_ref: crate::driver::DeviceSelfRef::new(),
         buffers: RwLock::new(HashMap::new()),
         textures: RwLock::new(HashMap::new()),
         texture_formats: RwLock::new(HashMap::new()),

@@ -51,6 +51,10 @@ pub struct VulkanDevice {
     pub(super) command_pool: ffi::VkCommandPool,
     pub(super) pipeline_cache: ffi::VkPipelineCache,
     pub(super) caps: Caps,
+    /// Weak back-ref to this device's shared `Arc`; every minted
+    /// `Pulse` upgrades it into a keep-alive so its deferred
+    /// `vkWaitForFences` can never dispatch into a destroyed VkDevice.
+    pub(super) self_ref: crate::driver::DeviceSelfRef,
     // Read by the compute-gated dispatch path only.
     #[cfg_attr(not(feature = "compute"), allow(dead_code))]
     pub(super) max_push_constants_size: u32,
@@ -782,6 +786,7 @@ impl VulkanDevice {
         Ok(Pulse {
             handle,
             completed: false,
+            keep_alive: self.self_ref.pulse_keep_alive(),
             wait_fn: Some(Box::new(move || unsafe {
                 let (device, fence, cmd, pool) = waiter.take();
                 ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
@@ -1483,6 +1488,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             command_pool,
             pipeline_cache,
             caps,
+            self_ref: crate::driver::DeviceSelfRef::new(),
             max_push_constants_size: props.limits.max_push_constants_size,
             max_vertex_input_attributes: props.limits.max_vertex_input_attributes,
             buffers: RwLock::new(HashMap::new()),

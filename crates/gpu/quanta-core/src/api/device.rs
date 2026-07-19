@@ -39,6 +39,16 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     fn caps(&self) -> &Caps;
 
+    /// Hand the device a weak reference to the shared `Arc` it is held
+    /// through. Called exactly once, immediately after the
+    /// `Arc<dyn GpuDevice>` is created (see `maybe_validate`). Backends
+    /// that mint [`Pulse`]s upgrade it into each pulse's keep-alive so
+    /// a pulse held across teardown never dispatches into a destroyed
+    /// device. Wrappers must forward this to their inner device.
+    /// Default: no-op, for backends whose pulses carry no deferred
+    /// device work.
+    fn install_self_ref(&self, _self_ref: alloc::sync::Weak<dyn GpuDevice>) {}
+
     // === Feature support queries (step 063 slice 20) ===
     //
     // Public surface for the per-backend capability caches added by

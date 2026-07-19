@@ -339,6 +339,13 @@ All binding state is stored inline (no heap allocation on the hot path).
 
 GPU completion signal returned by dispatch/render operations.
 
+A pulse keeps its device alive: holding one past the last `Gpu` /
+resource handle is safe — its deferred wait (and any cleanup it
+carries) always runs against a live device. The depth-N
+in-flight-fence pattern, which holds a pulse across frames and often
+across teardown, relies on this; no drop-order discipline is required
+on the consumer side.
+
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `wait()` | `Result<()>` | Block until GPU completes this operation |

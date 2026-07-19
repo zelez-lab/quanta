@@ -156,7 +156,9 @@ impl WebgpuDevice {
 pub async fn init_async() -> Result<Gpu, QuantaError> {
     let dev = WebgpuDevice::new_async().await?;
     let boxed: Box<dyn QGpuDevice> = Box::new(dev);
-    Ok(Gpu::new(Arc::from(boxed)))
+    let arc: Arc<dyn QGpuDevice> = Arc::from(boxed);
+    arc.install_self_ref(Arc::downgrade(&arc));
+    Ok(Gpu::new(arc))
 }
 
 // ── Enum → code translations (Rust API → ABI integer codes) ─────────────────
@@ -945,5 +947,8 @@ fn make_pulse() -> Pulse {
         handle: 0,
         completed: true,
         wait_fn: None,
+        // Synchronous from the caller's view (webgpu queue submits are
+        // fire-and-forget) — no deferred device work to protect.
+        keep_alive: None,
     }
 }

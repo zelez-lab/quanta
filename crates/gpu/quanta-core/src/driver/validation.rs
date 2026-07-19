@@ -49,6 +49,13 @@ impl ValidationDevice {
 impl crate::api::device::sealed::Sealed for ValidationDevice {}
 
 impl GpuDevice for ValidationDevice {
+    // The weak points at THIS wrapper's Arc; forwarding it lets the
+    // inner driver's pulses keep the whole wrapper (and thus the inner
+    // device it owns) alive.
+    fn install_self_ref(&self, self_ref: alloc::sync::Weak<dyn GpuDevice>) {
+        self.inner.install_self_ref(self_ref);
+    }
+
     fn caps(&self) -> &Caps {
         self.inner.caps()
     }

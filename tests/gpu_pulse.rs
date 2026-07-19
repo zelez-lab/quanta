@@ -123,3 +123,58 @@ fn render_pass_returns_pulse() {
     pulse.wait().unwrap();
     assert!(pulse.is_done(), "render pulse should be done after wait");
 }
+
+#[test]
+fn pulse_outlives_every_gpu_handle() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+
+    let count = 64;
+    let field = gpu.field::<f32>(count).unwrap();
+    field.write(&vec![0.0f32; count]).unwrap();
+    let mut wave = noop_kernel(&gpu).unwrap();
+    wave.bind(0, &field);
+
+    // Batch gives a genuinely deferred pulse where supported (Metal);
+    // backends without batch dispatch pin the device through a plain
+    // dispatch pulse instead.
+    let mut pulse = match gpu.batch() {
+        Ok(mut batch) => {
+            batch.dispatch(&wave, count as u32).unwrap();
+            batch.pulse().unwrap()
+        }
+        Err(_) => gpu.dispatch(&wave, count as u32).unwrap(),
+    };
+
+    // Every other handle goes FIRST: the pulse keeps the device alive
+    // on its own, so the deferred wait below runs against a live
+    // device. The depth-N in-flight-fence pattern holds a pulse across
+    // teardown by design — this must never dangle.
+    drop(wave);
+    drop(field);
+    drop(gpu);
+
+    pulse.wait().unwrap();
+    assert!(pulse.is_done());
+}
+
+#[test]
+fn render_pulse_dropped_after_gpu() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+
+    let target = gpu.render_target(16, 16, quanta::Format::RGBA8).unwrap();
+    let pulse = gpu.render(&target).unwrap().pulse().unwrap();
+
+    // The exact consumer teardown order that used to use-after-free on
+    // Vulkan: the render pulse (whose deferred cleanup waits the
+    // submit fence when it drops) outlives the target and the Gpu, and
+    // is dropped WITHOUT an explicit wait.
+    drop(target);
+    drop(gpu);
+    drop(pulse);
+}
