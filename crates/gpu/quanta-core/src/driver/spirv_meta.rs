@@ -64,7 +64,7 @@ pub(crate) fn local_size(words: &[u32]) -> Option<[u32; 3]> {
 }
 
 /// The Vulkan descriptor type a shader binding resolves to. Buffers are
-/// `StorageBuffer`; `&Texture2D` sampled slots are `SampledImage` (bound as a
+/// `StorageBuffer`; `&Sampled2D` slots are `SampledImage` (bound as a
 /// combined image+sampler on the render path); `&mut Texture2D` storage slots
 /// are `StorageImage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,12 +409,12 @@ mod tests {
                     slot: 0,
                     scalar_type: ScalarType::F32,
                 },
-                KernelParam::Texture2DWrite {
+                KernelParam::Texture2DReadWrite {
                     name: "dst".into(),
                     slot: 1,
                     scalar_type: ScalarType::F32,
                 },
-                KernelParam::Texture2DRead {
+                KernelParam::Sampled2D {
                     name: "src".into(),
                     slot: 2,
                     scalar_type: ScalarType::F32,

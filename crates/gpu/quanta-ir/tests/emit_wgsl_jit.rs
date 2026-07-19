@@ -566,12 +566,12 @@ fn every_kernel_op_variant_compiles() {
                 slot: 2,
                 scalar_type: ScalarType::U32,
             },
-            KernelParam::Texture2DRead {
+            KernelParam::Sampled2D {
                 name: "tex_in".into(),
                 slot: 3,
                 scalar_type: ScalarType::F32,
             },
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex_out".into(),
                 slot: 4,
                 scalar_type: ScalarType::F32,

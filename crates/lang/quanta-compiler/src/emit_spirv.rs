@@ -280,7 +280,7 @@ mod tests {
         KernelDef {
             name: "write_storage".into(),
             params: vec![
-                KernelParam::Texture2DWrite {
+                KernelParam::Texture2DReadWrite {
                     name: "tex".into(),
                     slot: 0,
                     scalar_type: ScalarType::F32,
@@ -323,7 +323,7 @@ mod tests {
     fn rmw_storage_kernel() -> KernelDef {
         KernelDef {
             name: "rmw_storage".into(),
-            params: vec![KernelParam::Texture2DWrite {
+            params: vec![KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::F32,
@@ -552,7 +552,7 @@ mod tests {
         KernelDef {
             name: "sample_f32".into(),
             params: vec![
-                KernelParam::Texture2DRead {
+                KernelParam::Sampled2D {
                     name: "tex".into(),
                     slot: 0,
                     scalar_type: ScalarType::F32,

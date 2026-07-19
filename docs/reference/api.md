@@ -56,7 +56,7 @@ path without throwing.
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
 | `supports_async_compute()` | `bool` | Whether a dedicated async-compute queue is available. **Returns `false` on every backend today** — no driver overrides it yet. For overlapping submission use `gpu.queue(QueueType::Compute)` |
-| `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Texture2D` sampled reads / `&mut Texture2D<f32>` storage writes). True on Metal, the software driver, and native Vulkan (storage load/write; sampling in compute is not yet wired on Vulkan); false on WebGPU |
+| `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Sampled2D` sampled reads, `&Texture2D` read-only texel access, `&mut Texture2D` read-write texel access). True on Metal, the software driver, and native Vulkan; false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, and on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain |
 | `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
@@ -405,7 +405,7 @@ Buffers and values are visible to **both stages**: a fragment shader reading a
 uniform sees the same slot the vertex stage does (Metal binds both stages;
 Vulkan descriptors are vertex+fragment visible). Slots 0-15 are user space —
 vertex-attribute buffers live in a separate internal index space and never
-collide. For a DSL fragment, `&Texture2D` params take texture slots in
+collide. For a DSL fragment, `&Sampled2D` params take texture slots in
 declaration order (first texture param ↔ `.texture(0, …)`/`.sampler(0, …)`),
 and uniform params take buffer slots in declaration order among uniforms
 (first uniform ↔ `.uniform(0, …)`).

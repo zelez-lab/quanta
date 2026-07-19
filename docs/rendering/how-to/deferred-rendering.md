@@ -81,7 +81,7 @@ fn gbuffer_position(s: GbufSurface) -> Vec4 {
 ### Lighting pass
 
 The fullscreen triangle is synthesised from `vertex_id()` — no vertex buffer.
-The fragment samples the three G-buffer textures through `&Texture2D`
+The fragment samples the three G-buffer textures through `&Sampled2D`
 parameters and does the point-light shading.
 
 ```rust
@@ -111,9 +111,9 @@ fn fullscreen_vertex() -> FsQuad {
 #[quanta::fragment]
 fn lighting_fragment(
     s: FsQuad,
-    albedo_tex: &Texture2D,
-    normal_tex: &Texture2D,
-    position_tex: &Texture2D,
+    albedo_tex: &Sampled2D,
+    normal_tex: &Sampled2D,
+    position_tex: &Sampled2D,
     light_pos: &Vec4,
     light_color: &Vec4,
 ) -> Vec4 {
@@ -259,7 +259,7 @@ fn main() {
 Each color pipeline's `color_formats` is per-attachment and must line up with
 the targets the pass binds — a wrong count or a swapped format fails `pulse()`
 with a named error rather than misrendering silently. The lighting pipeline's
-texture slots (0/1/2) follow the declaration order of the `&Texture2D`
+texture slots (0/1/2) follow the declaration order of the `&Sampled2D`
 parameters in `lighting_fragment`.
 
 ## Why deferred rendering

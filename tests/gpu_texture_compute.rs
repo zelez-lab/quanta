@@ -9,9 +9,10 @@ fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
 }
 
-/// Read texture via sampled load and write RGBA to output buffer.
+/// Read texture via sampled load (texelFetch on a `&Sampled2D` slot — the
+/// texel-read path for textures without storage usage) and write to output.
 #[quanta::kernel]
-fn read_texture(tex: &Texture2D<f32>, output: &mut [f32], width: u32) {
+fn read_texture(tex: &Sampled2D<f32>, output: &mut [f32], width: u32) {
     let i = quark_id();
     let x = i % width;
     let y = i / width;
@@ -102,7 +103,7 @@ fn compute_reads_texture() {
 /// right-edge column. `texture_sample_2d` on an RGBA8 read slot returns the R
 /// channel as unorm, identical to `texture_load_2d`.
 #[quanta::kernel]
-fn sample_texture(tex: &Texture2D<f32>, output: &mut [f32], width: u32, dx: u32) {
+fn sample_texture(tex: &Sampled2D<f32>, output: &mut [f32], width: u32, dx: u32) {
     let i = quark_id();
     let x = i % width;
     let y = i / width;
@@ -936,4 +937,160 @@ fn r32float_to_u32_slot_is_invalid_param() {
     }
     #[cfg(feature = "software")]
     check(&quanta::init_cpu());
+}
+
+// ── Read-only texel access (`&Texture2D`) ───────────────────────────────────
+//
+// The read-only half of the texel lattice: `&Texture2D<T>` is a storage image
+// declared NonWritable (SPIR-V) / `access::read` (MSL) — same scalar-driven
+// format contract as `&mut`, no write capability, and (the reason it exists)
+// no Metal read-write tier gate: packed-RGBA8 reads work on EVERY tier.
+
+/// `out[i] = texture_load_2d(tex, x, y)` where `tex` is `&Texture2D<f32>` —
+/// a read-only R32Float texel read into a buffer.
+#[quanta::kernel]
+fn read_texel(tex: &Texture2D<f32>, output: &mut [f32], width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    output[i] = texture_load_2d(tex, x, y);
+}
+
+/// Packed-RGBA8 twin: `&Texture2D<u32>` — the read-only packed read, which had
+/// NO spelling before the lattice re-type (read-write required Tier 2 on
+/// Metal; read-only does not).
+#[quanta::kernel]
+fn read_texel_rgba8(tex: &Texture2D<u32>, output: &mut [u32], width: u32) {
+    let i = quark_id();
+    let x = i % width;
+    let y = i / width;
+    output[i] = texture_load_2d(tex, x, y);
+}
+
+fn run_read_texel(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    let seed: Vec<f32> = (0..n).map(|i| (i * 3) as f32 + 0.5).collect();
+    // Texel binding needs storage-capable usage even read-only (the slot is a
+    // STORAGE_IMAGE descriptor on Vulkan).
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::R32Float).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+    tex.write(&r32f_bytes(&seed)).unwrap();
+
+    let output = gpu.field::<f32>(n).unwrap();
+    let mut wave = read_texel(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.bind(1, &output);
+    wave.set_value(2, w);
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+
+    let got = output.read().unwrap();
+    for i in 0..n {
+        assert_eq!(
+            got[i], seed[i],
+            "read-only texel {i} = {} (expected {})",
+            got[i], seed[i]
+        );
+    }
+}
+
+fn run_read_texel_rgba8(gpu: &quanta::Gpu) {
+    let (w, h) = (4u32, 4u32);
+    let n = (w * h) as usize;
+    // Distinct bytes per texel (same scheme as write_pattern_rgba8) so the
+    // packed `0xAABBGGRR` order is observable end to end.
+    let mut bytes = vec![0u8; n * 4];
+    let mut expected = vec![0u32; n];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let (r, g, b, a) = ((x * 16 + 1) as u8, (y * 16 + 2) as u8, 100u8, 200u8);
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&[r, g, b, a]);
+            expected[i] = rgba8_pack(r, g, b, a);
+        }
+    }
+    let tex = gpu
+        .create_texture(
+            &quanta::TextureDesc::new(w, h, quanta::Format::RGBA8).with_usage(
+                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::SHADER_WRITE),
+            ),
+        )
+        .unwrap();
+    tex.write(&bytes).unwrap();
+
+    let output = gpu.field::<u32>(n).unwrap();
+    let mut wave = read_texel_rgba8(gpu).unwrap();
+    wave.bind_texture(0, &tex);
+    wave.bind(1, &output);
+    wave.set_value(2, w);
+    // No dispatch_rgba8_or_skip here: read-only RGBA8 must NOT hit the Metal
+    // Tier-2 gate — a NotSupported would be a regression, so unwrap.
+    gpu.dispatch(&wave, n as u32).unwrap().wait().unwrap();
+
+    let got = output.read().unwrap();
+    for i in 0..n {
+        assert_eq!(
+            got[i], expected[i],
+            "read-only RGBA8 texel {i} = {:#010x} (expected {:#010x})",
+            got[i], expected[i]
+        );
+    }
+}
+
+#[test]
+fn compute_reads_readonly_texel() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return; // V3DV image-in-compute path faults; SPIR-V is valid.
+    }
+    run_read_texel(&gpu);
+}
+
+/// Read-only RGBA8 texel reads run on every Metal tier — the portability the
+/// read-only form buys. No tier skip, unlike the read-write RGBA8 tests.
+#[test]
+fn compute_reads_readonly_rgba8_texel() {
+    let Some(gpu) = try_gpu() else { return };
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    if gpu.caps().vendor == quanta::Vendor::Broadcom {
+        return;
+    }
+    run_read_texel_rgba8(&gpu);
+}
+
+#[cfg(feature = "software")]
+#[test]
+fn cpu_reads_readonly_texel() {
+    let gpu = quanta::init_cpu();
+    if !gpu.supports_compute_textures() {
+        return;
+    }
+    run_read_texel(&gpu);
+    run_read_texel_rgba8(&gpu);
+}
+
+/// The read-only kernel's AOT SPIR-V must validate (NonWritable on a storage
+/// image is legal SPIR-V) and must carry an OpImageRead, not OpImageFetch.
+#[test]
+fn readonly_texel_spirv_module_validates() {
+    let Some(spirv) = READ_TEXEL_BINARY.spirv else {
+        eprintln!("SKIP: no AOT SPIR-V for read_texel");
+        return;
+    };
+    assert_spirv_val_clean("read_texel", spirv);
+    let Some(spirv) = READ_TEXEL_RGBA8_BINARY.spirv else {
+        eprintln!("SKIP: no AOT SPIR-V for read_texel_rgba8");
+        return;
+    };
+    assert_spirv_val_clean("read_texel_rgba8", spirv);
 }

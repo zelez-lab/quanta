@@ -86,7 +86,7 @@ fn scene_vertex(
 #[quanta::fragment]
 fn scene_fragment(
     s: SceneVaryings,
-    shadow_map: &Texture2D,
+    shadow_map: &Sampled2D,
     light_dir: &Vec4,
 ) -> Vec4 {
     // Project into shadow-map UV space.
@@ -112,7 +112,7 @@ fn scene_fragment(
 ```
 
 The light direction arrives as a `&Vec4` uniform read by component
-(`light_dir.x`), and `shadow_map` is a `&Texture2D` sampled with the ordinary
+(`light_dir.x`), and `shadow_map` is a `&Sampled2D` sampled with the ordinary
 `sample` intrinsic — the same colour sample as any other texture; the
 comparison is the plain `if` above.
 

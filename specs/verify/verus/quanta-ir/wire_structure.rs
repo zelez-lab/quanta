@@ -438,34 +438,38 @@ proof fn t215g_bool_canonical(v: bool)
 // =========================================================================
 //
 // Wire format (from write_kernel_param / read_kernel_param):
-//   tag: u8(0..5)
+//   tag: u8(0..6)
 //   All variants have identical payload: str(name) ++ u32(slot) ++ ScalarType(1 byte)
 //
 // Variant tags:
 //   0 = FieldRead
 //   1 = FieldWrite
 //   2 = Constant
-//   3 = Texture2DRead
-//   4 = Texture2DWrite
-//   5 = Texture3DRead
+//   3 = Sampled2D
+//   4 = Texture2DReadWrite
+//   5 = Sampled3D
+//   6 = Texture2DRead (read-only texel — appended by the access-lattice split;
+//       tags 3-5 keep their meanings, so old encodings stay readable)
 
 pub enum ParamTag {
     FieldRead,
     FieldWrite,
     Constant,
+    Sampled2D,
+    Texture2DReadWrite,
+    Sampled3D,
     Texture2DRead,
-    Texture2DWrite,
-    Texture3DRead,
 }
 
 pub open spec fn encode_param_tag(t: ParamTag) -> u8 {
     match t {
-        ParamTag::FieldRead      => 0u8,
-        ParamTag::FieldWrite     => 1u8,
-        ParamTag::Constant       => 2u8,
-        ParamTag::Texture2DRead  => 3u8,
-        ParamTag::Texture2DWrite => 4u8,
-        ParamTag::Texture3DRead  => 5u8,
+        ParamTag::FieldRead          => 0u8,
+        ParamTag::FieldWrite         => 1u8,
+        ParamTag::Constant           => 2u8,
+        ParamTag::Sampled2D          => 3u8,
+        ParamTag::Texture2DReadWrite => 4u8,
+        ParamTag::Sampled3D          => 5u8,
+        ParamTag::Texture2DRead      => 6u8,
     }
 }
 
@@ -474,9 +478,10 @@ pub open spec fn decode_param_tag(b: u8) -> Option<ParamTag> {
         0u8 => Some(ParamTag::FieldRead),
         1u8 => Some(ParamTag::FieldWrite),
         2u8 => Some(ParamTag::Constant),
-        3u8 => Some(ParamTag::Texture2DRead),
-        4u8 => Some(ParamTag::Texture2DWrite),
-        5u8 => Some(ParamTag::Texture3DRead),
+        3u8 => Some(ParamTag::Sampled2D),
+        4u8 => Some(ParamTag::Texture2DReadWrite),
+        5u8 => Some(ParamTag::Sampled3D),
+        6u8 => Some(ParamTag::Texture2DRead),
         _   => None,
     }
 }
@@ -526,12 +531,13 @@ proof fn t216a_param_tag_roundtrip(t: ParamTag)
     ensures decode_param_tag(encode_param_tag(t)) == Some(t),
 {
     match t {
-        ParamTag::FieldRead      => {},
-        ParamTag::FieldWrite     => {},
-        ParamTag::Constant       => {},
-        ParamTag::Texture2DRead  => {},
-        ParamTag::Texture2DWrite => {},
-        ParamTag::Texture3DRead  => {},
+        ParamTag::FieldRead          => {},
+        ParamTag::FieldWrite         => {},
+        ParamTag::Constant           => {},
+        ParamTag::Sampled2D          => {},
+        ParamTag::Texture2DReadWrite => {},
+        ParamTag::Sampled3D          => {},
+        ParamTag::Texture2DRead      => {},
     }
 }
 
@@ -544,15 +550,16 @@ proof fn t216b_param_tag_injective(a: ParamTag, b: ParamTag)
         ParamTag::FieldRead      => { match b { ParamTag::FieldRead      => {} _ => {} } },
         ParamTag::FieldWrite     => { match b { ParamTag::FieldWrite     => {} _ => {} } },
         ParamTag::Constant       => { match b { ParamTag::Constant       => {} _ => {} } },
-        ParamTag::Texture2DRead  => { match b { ParamTag::Texture2DRead  => {} _ => {} } },
-        ParamTag::Texture2DWrite => { match b { ParamTag::Texture2DWrite => {} _ => {} } },
-        ParamTag::Texture3DRead  => { match b { ParamTag::Texture3DRead  => {} _ => {} } },
+        ParamTag::Sampled2D  => { match b { ParamTag::Sampled2D  => {} _ => {} } },
+        ParamTag::Texture2DReadWrite => { match b { ParamTag::Texture2DReadWrite => {} _ => {} } },
+        ParamTag::Sampled3D  => { match b { ParamTag::Sampled3D  => {} _ => {} } },
+        ParamTag::Texture2DRead => { match b { ParamTag::Texture2DRead => {} _ => {} } },
     }
 }
 
-/// T216c: Invalid param tags (>= 6) are rejected.
+/// T216c: Invalid param tags (>= 7) are rejected.
 proof fn t216c_param_invalid_tag(b: u8)
-    requires b >= 6u8,
+    requires b >= 7u8,
     ensures decode_param_tag(b).is_none(),
 {
 }

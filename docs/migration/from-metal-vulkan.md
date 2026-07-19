@@ -194,6 +194,8 @@ don't implement it. The render-side methods (`gpu.mesh_pipeline`,
 | `MTLTexture` / `VkImage` handed to external code           | `texture.native_handle()` → `NativeTextureHandle::{Metal, Vulkan}` |
 | Fragment buffer table (`const device float4* [[buffer(n)]]` / fragment SSBO descriptor) | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |
 | RGBA8 read-write storage texture in compute (`access::read_write` / storage image) | `&mut Texture2D<u32>` kernel param (texels as packed `0xAABBGGRR` u32; Metal needs `MTLReadWriteTextureTier2`) |
+| Read-only storage texture in compute (`access::read` / storage image + NonWritable) | `&Texture2D<f32>` / `&Texture2D<u32>` kernel param (no Metal tier requirement — RGBA8 reads work on every tier) |
+| Combined image + sampler in compute (`texture2d<..., access::sample>` + `sampler` / `OpTypeSampledImage`) | `&Sampled2D<f32>` kernel param, read with `texture_sample_2d` (fixed nearest/clamp sampler) |
 
 The argument layout for indirect draws follows the Vulkan / Metal convention
 exactly — see [Guide: Indirect commands](../rendering/tutorials/indirect-commands.md).

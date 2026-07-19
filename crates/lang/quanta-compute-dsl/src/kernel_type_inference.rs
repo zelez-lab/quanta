@@ -505,9 +505,10 @@ fn set_field_scalar(params: &mut [KernelParam], field: &str, ty: ScalarType) {
             KernelParam::FieldRead { name, .. }
             | KernelParam::FieldWrite { name, .. }
             | KernelParam::Constant { name, .. }
+            | KernelParam::Sampled2D { name, .. }
             | KernelParam::Texture2DRead { name, .. }
-            | KernelParam::Texture2DWrite { name, .. }
-            | KernelParam::Texture3DRead { name, .. } => name.clone(),
+            | KernelParam::Texture2DReadWrite { name, .. }
+            | KernelParam::Sampled3D { name, .. } => name.clone(),
         };
         if n != field {
             continue;
@@ -516,9 +517,10 @@ fn set_field_scalar(params: &mut [KernelParam], field: &str, ty: ScalarType) {
             KernelParam::FieldRead { scalar_type, .. }
             | KernelParam::FieldWrite { scalar_type, .. }
             | KernelParam::Constant { scalar_type, .. }
+            | KernelParam::Sampled2D { scalar_type, .. }
             | KernelParam::Texture2DRead { scalar_type, .. }
-            | KernelParam::Texture2DWrite { scalar_type, .. }
-            | KernelParam::Texture3DRead { scalar_type, .. } => {
+            | KernelParam::Texture2DReadWrite { scalar_type, .. }
+            | KernelParam::Sampled3D { scalar_type, .. } => {
                 *scalar_type = ty;
             }
         }

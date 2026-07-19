@@ -160,6 +160,8 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `queue.write_texture(origin, data, layout, size)` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
 | `var<storage, read> t: array<vec4<f32>>` read in a shader | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |
 | `texture_storage_2d<rgba8unorm, read_write>` in compute | `&mut Texture2D<u32>` kernel param (texels as packed `0xAABBGGRR` u32) |
+| `texture_storage_2d<_, read>` in compute | `&Texture2D<f32>` / `&Texture2D<u32>` kernel param (read-only texel access) |
+| `texture_2d<f32>` + `sampler` in compute | `&Sampled2D<f32>` kernel param, read with `texture_sample_2d` (fixed nearest/clamp sampler) |
 
 ## Key differences
 
@@ -250,7 +252,7 @@ attribute annotations (Quanta assigns `@location` from field order):
 | `@builtin(position)` read in the fragment | `frag_coord()`, or read the `#[position]` field |
 | `@builtin(vertex_index)` | `vertex_id()` |
 | `@builtin(instance_index)` | `instance_id()` |
-| `textureSample(t, s, uv)` | `sample(t, in.uv)` (`t: &Texture2D` param) |
+| `textureSample(t, s, uv)` | `sample(t, in.uv)` (`t: &Sampled2D` param) |
 
 > The Quanta **WebGPU/WGSL backend does not yet emit** `frag_coord`, `u32`
 > varyings, `vertex_id`/`instance_id`, or shader `for` loops -- a shader using

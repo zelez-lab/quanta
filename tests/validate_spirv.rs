@@ -502,7 +502,7 @@ fn spirv_val_identity() {
 }
 
 #[quanta::fragment]
-fn val_sample_frag(s: UvVary, tex: &Texture2D) -> Vec4 {
+fn val_sample_frag(s: UvVary, tex: &Sampled2D) -> Vec4 {
     sample(tex, s.uv)
 }
 

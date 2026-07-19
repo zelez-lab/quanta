@@ -57,9 +57,10 @@ pub(crate) struct SpvEmitter {
     // unwrap the combined sampled image with OpImage first.
     pub(crate) texture_image_types: HashMap<u32, u32>,
 
-    // Slots declared `&mut Texture2D` — emitted as read_write storage images
-    // (OpTypeImage sampled=2). A `texture_load_2d` against such a slot lowers
-    // to OpImageRead, not OpImageFetch (which is sampled-image only).
+    // Texel slots — storage images (OpTypeImage sampled=2), `&Texture2D`
+    // (read-only, NonWritable) and `&mut Texture2D` (read_write) alike. A
+    // `texture_load_2d` against such a slot lowers to OpImageRead, not
+    // OpImageFetch (which is sampled-image only).
     pub(crate) texture_storage_slots: std::collections::HashSet<u32>,
 
     // The `BuiltIn FragCoord` Input variable id, declared by

@@ -143,7 +143,7 @@ impl VulkanDevice {
         for &(binding, kind) in &reflected {
             descriptor_kinds[binding as usize] = kind;
         }
-        // Sampled-image slots (`&Texture2D` reads) bind as COMBINED_IMAGE_SAMPLER
+        // Sampled-image slots (`&Sampled2D` reads) bind as COMBINED_IMAGE_SAMPLER
         // with the device compute sampler (F3), exactly like the render path;
         // the dispatch descriptor-write and `prepare_compute_textures` handle
         // that kind. Storage (load/write) slots stay STORAGE_IMAGE in GENERAL.
@@ -338,21 +338,26 @@ impl VulkanDevice {
     /// barrier is needed between them.
     /// Validate and prepare each bound texture slot for a compute dispatch.
     ///
-    /// Format contract, per storage-slot kind: a slot the kernel declares
-    /// `&mut Texture2D<f32>` (`wave.storage_texture_kinds[slot] == 1`) must be
-    /// bound to an `R32Float` texture, and a `&mut Texture2D<u32>` slot (kind 2)
-    /// to an `RGBA8_UNORM` texture — a mismatch returns `InvalidParam` naming
-    /// the slot, expected, and got. `descriptor_kinds` (from SPIR-V reflection)
-    /// only says a slot *is* a storage image, not which pixel format it wants;
-    /// the wave's kinds array is the expected-format channel it lacks. RGBA8 is
-    /// a mandatory Vulkan storage format, so — unlike Metal — there is no
-    /// feature gate. Each valid storage texture is then transitioned into
-    /// `VK_IMAGE_LAYOUT_GENERAL` so its STORAGE_IMAGE descriptor is legal at
-    /// dispatch time.
+    /// Format contract, per texel-slot kind: a slot the kernel declares
+    /// `Texture2D<f32>` (`wave.storage_texture_kinds[slot]` 1 = `&mut`,
+    /// 3 = `&`) must be bound to an `R32Float` texture, and a
+    /// `Texture2D<u32>` slot (2 = `&mut`, 4 = `&`) to an `RGBA8_UNORM`
+    /// texture — a mismatch returns `InvalidParam` naming the slot,
+    /// expected, and got. `descriptor_kinds` (from SPIR-V reflection) only
+    /// says a slot *is* a storage image, not which pixel format it wants;
+    /// the wave's kinds array is the expected-format channel it lacks. RGBA8
+    /// is a mandatory Vulkan storage format, so — unlike Metal — there is no
+    /// feature gate, and read-only vs read-write does not matter here (the
+    /// NonWritable split is enforced in the SPIR-V itself). Each valid texel
+    /// texture must have been created with STORAGE usage (`TextureUsage::
+    /// SHADER_WRITE` today — read-only texel access still binds a
+    /// STORAGE_IMAGE descriptor), checked loudly rather than left to the
+    /// validation layer, then is transitioned into `VK_IMAGE_LAYOUT_GENERAL`
+    /// so that descriptor is legal at dispatch time.
     ///
-    /// Sampled (`&Texture2D` read) slots have no format constraint (RGBA8 and
-    /// R32Float both read); they are moved into `SHADER_READ_ONLY_OPTIMAL` for
-    /// their COMBINED_IMAGE_SAMPLER descriptor instead.
+    /// Sampled (`&Sampled2D`) slots have no format constraint (RGBA8 and
+    /// R32Float both read); they are moved into `SHADER_READ_ONLY_OPTIMAL`
+    /// for their COMBINED_IMAGE_SAMPLER descriptor instead.
     #[cfg(feature = "compute")]
     fn prepare_compute_textures(
         &self,
@@ -394,7 +399,7 @@ impl VulkanDevice {
                     .with_context(&format!("compute texture: slot {slot}")));
                 }
             }
-            let format = {
+            let (format, usage) = {
                 let textures = self
                     .textures
                     .read()
@@ -403,31 +408,46 @@ impl VulkanDevice {
                     QuantaError::not_found("bound compute texture not found")
                         .with_context(&format!("compute texture: slot {slot}"))
                 })?;
-                tex.format
+                (tex.format, tex.usage)
             };
             // The scalar-driven format contract, keyed by the wave's per-slot
-            // kind: 1 ⇔ R32Float, 2 ⇔ RGBA8_UNORM. Kind 0 on a reflected
-            // storage-image slot is unexpected but non-fatal — fall back to the
-            // R32Float expectation so a stale/unstamped wave still validates.
+            // kind: {1,3} ⇔ R32Float, {2,4} ⇔ RGBA8_UNORM. Kind 0 on a
+            // reflected storage-image slot is unexpected but non-fatal — fall
+            // back to the R32Float expectation so a stale/unstamped wave
+            // still validates.
             let (expected_fmt, expected_name) = match wave.storage_texture_kinds[slot] {
-                2 => (ffi::VK_FORMAT_R8G8B8A8_UNORM, "RGBA8_UNORM"),
+                2 | 4 => (ffi::VK_FORMAT_R8G8B8A8_UNORM, "RGBA8_UNORM"),
                 _ => (ffi::VK_FORMAT_R32_SFLOAT, "R32Float"),
             };
             if format != expected_fmt {
                 return Err(
-                    QuantaError::invalid_param("compute storage texture format mismatch")
+                    QuantaError::invalid_param("compute texel texture format mismatch")
                         .with_context(&format!(
                             "slot {slot}: expected {expected_name} (VkFormat {expected_fmt}), \
                              got VkFormat {format}"
                         )),
                 );
             }
+            // A STORAGE_IMAGE descriptor is illegal against an image created
+            // without STORAGE usage — read-only texel slots included. Fail
+            // loudly here instead of leaving it to the validation layer.
+            if usage & ffi::VK_IMAGE_USAGE_STORAGE_BIT == 0 {
+                return Err(QuantaError::invalid_param(
+                    "texture bound to a texel (`Texture2D`) slot was created without \
+                     storage usage",
+                )
+                .with_context(&format!(
+                    "compute texture: slot {slot}: create the texture with \
+                     TextureUsage::SHADER_WRITE to license texel access (read-only \
+                     included)"
+                )));
+            }
             self.transition_texture_handle_general(handle)?;
         }
         Ok(())
     }
 
-    /// The device's single compute sampler for sampled `&Texture2D` reads
+    /// The device's single compute sampler for sampled `&Sampled2D` reads
     /// (`texture_sample_2d`), lazily created and cached. Contract: NEAREST
     /// min/mag/mip, CLAMP_TO_EDGE, no anisotropy/compare, UNNORMALIZED
     /// coordinates — chosen so `sample()` matches the CPU executor's
@@ -478,7 +498,7 @@ impl VulkanDevice {
     }
 
     /// Append one image descriptor write per bound texture slot, dispatching on
-    /// the reflected kind: a sampled (`&Texture2D` read) slot writes a
+    /// the reflected kind: a sampled (`&Sampled2D`) slot writes a
     /// COMBINED_IMAGE_SAMPLER with the device compute sampler and the view in
     /// SHADER_READ_ONLY_OPTIMAL; a storage slot writes a STORAGE_IMAGE with a
     /// null sampler and the view in GENERAL. Both `wave_dispatch_records_impl`
@@ -626,7 +646,7 @@ impl VulkanDevice {
         }
 
         // Image (texture) bindings, one descriptor per bound slot. A sampled
-        // (`&Texture2D` read) slot binds COMBINED_IMAGE_SAMPLER with the device
+        // (`&Sampled2D`) slot binds COMBINED_IMAGE_SAMPLER with the device
         // compute sampler and the view in SHADER_READ_ONLY_OPTIMAL; a storage
         // slot binds STORAGE_IMAGE with a null sampler and the view in GENERAL.
         // `prepare_compute_textures` already settled each layout to match.

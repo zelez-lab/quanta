@@ -244,7 +244,8 @@ pub(crate) fn write_const_value(w: &mut Writer, cv: &ConstValue) {
 }
 
 // ---------------------------------------------------------------------------
-// KernelParam  (6 variants, tags 0..5)
+// KernelParam  (7 variants, tags 0..6 — 6 is the read-only texel form,
+// appended after the sampled/read-write tags it splits from)
 // ---------------------------------------------------------------------------
 
 pub(in crate::wire) fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
@@ -279,7 +280,7 @@ pub(in crate::wire) fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
             w.u32(*slot);
             write_scalar_type(w, scalar_type);
         }
-        KernelParam::Texture2DRead {
+        KernelParam::Sampled2D {
             name,
             slot,
             scalar_type,
@@ -289,7 +290,7 @@ pub(in crate::wire) fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
             w.u32(*slot);
             write_scalar_type(w, scalar_type);
         }
-        KernelParam::Texture2DWrite {
+        KernelParam::Texture2DReadWrite {
             name,
             slot,
             scalar_type,
@@ -299,12 +300,22 @@ pub(in crate::wire) fn write_kernel_param(w: &mut Writer, p: &KernelParam) {
             w.u32(*slot);
             write_scalar_type(w, scalar_type);
         }
-        KernelParam::Texture3DRead {
+        KernelParam::Sampled3D {
             name,
             slot,
             scalar_type,
         } => {
             w.u8(5);
+            w.str(name);
+            w.u32(*slot);
+            write_scalar_type(w, scalar_type);
+        }
+        KernelParam::Texture2DRead {
+            name,
+            slot,
+            scalar_type,
+        } => {
+            w.u8(6);
             w.str(name);
             w.u32(*slot);
             write_scalar_type(w, scalar_type);

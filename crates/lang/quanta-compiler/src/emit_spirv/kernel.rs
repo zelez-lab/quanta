@@ -34,10 +34,12 @@ impl SpvEmitter {
     }
 
     pub(crate) fn emit_kernel(&mut self, kernel: &KernelDef) -> Result<(), String> {
-        // A storage image (write-declared slot) cannot be sampled — reject
-        // before emitting anything so the error is the same on every backend.
-        quanta_ir::types::reject_sample_on_write(kernel)?;
-        // A sampled `&Texture2D<u32>` is not wired (storage-position u32 is the
+        // A storage image (texel-declared slot) cannot be sampled, and a
+        // read-only texel slot cannot be written — reject before emitting
+        // anything so the error is the same on every backend.
+        quanta_ir::types::reject_sample_on_storage(kernel)?;
+        quanta_ir::types::reject_write_on_read_only(kernel)?;
+        // A sampled `&Sampled2D<u32>` is not wired (texel-position u32 is the
         // packed-RGBA8 image); reject it rather than emit a float sampled image.
         quanta_ir::types::reject_sampled_u32_texture(kernel)?;
 

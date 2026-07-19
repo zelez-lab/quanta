@@ -300,16 +300,18 @@ instead of silently binding an empty module:
 > compiler and rebuild: `cargo install --path crates/lang/quanta-compiler
 > --locked --force`
 
-### Storage-texture format mismatch → `InvalidParam`
+### Texel-texture format mismatch → `InvalidParam`
 
-Binding a `&mut Texture2D<f32>` storage-image kernel parameter to a
-texture that isn't `R32Float` fails at dispatch on Metal and the CPU
-device with `InvalidParam`:
+Binding a `Texture2D<f32>` texel kernel parameter (`&` read-only or
+`&mut` read-write) to a texture that isn't `R32Float` — or a
+`Texture2D<u32>` slot to a texture that isn't `RGBA8` — fails at
+dispatch with `InvalidParam`:
 
 > invalid parameter: compute storage texture format mismatch [slot N:
 > expected R32Float, got `<Format>`]
 
-Create the texture with `Format::R32Float` and `SHADER_WRITE` usage.
+Create the texture with the matching format and `SHADER_WRITE` usage
+(texel slots bind as storage images even when read-only).
 
 ### Too many vertex attributes → `CompilationFailed`
 

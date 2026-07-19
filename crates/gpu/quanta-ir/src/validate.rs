@@ -144,13 +144,16 @@ fn param_name_and_type(p: &KernelParam) -> (&str, ScalarType) {
         | KernelParam::Constant {
             name, scalar_type, ..
         }
+        | KernelParam::Sampled2D {
+            name, scalar_type, ..
+        }
         | KernelParam::Texture2DRead {
             name, scalar_type, ..
         }
-        | KernelParam::Texture2DWrite {
+        | KernelParam::Texture2DReadWrite {
             name, scalar_type, ..
         }
-        | KernelParam::Texture3DRead {
+        | KernelParam::Sampled3D {
             name, scalar_type, ..
         } => (name, *scalar_type),
     }

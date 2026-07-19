@@ -237,24 +237,30 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
-    /// Sampled texture read. Slot is bound to a Texture2D<T> at
-    /// dispatch time via `wave.bind_texture(slot, tex)`.
+    /// Sampled texture read through the fixed NEAREST/CLAMP_TO_EDGE sampler.
+    /// Slot must be a `&Sampled2D<T>` param, bound at dispatch time via
+    /// `wave.bind_texture(slot, tex)`.
     pub fn texture_sample_2d_f32(slot: u32, x: u32, y: u32) -> f32;
 
-    /// Unsampled (raw integer-coord) texture read.
+    /// Unsampled (raw integer-coord) texture read. Legal against every 2D
+    /// texture kind: texel slots (`&Texture2D` / `&mut Texture2D`) read the
+    /// storage image directly; a sampled slot (`&Sampled2D`) reads via
+    /// texelFetch — the texel-read path for textures without storage usage.
     pub fn texture_load_2d_f32(slot: u32, x: u32, y: u32) -> f32;
     pub fn texture_load_3d_f32(slot: u32, x: u32, y: u32, z: u32) -> f32;
 
-    /// Packed-u32 storage-image read. Slot must be a `&mut Texture2D<u32>`
-    /// storage image, which is an RGBA8-unorm texture: the four unorm channels
-    /// are packed into one `0xAABBGGRR` u32 (little-endian byte order R,G,B,A).
-    /// Unpack in the kernel with bit math — `let r = v & 0xFF; let g = (v >> 8)
-    /// & 0xFF; ...`. (Sampled `&Texture2D<u32>` is a different, unwired meaning
-    /// and is rejected at emit.)
+    /// Packed-u32 texel read. Slot must be a `Texture2D<u32>` texel image
+    /// (`&` read-only or `&mut` read-write), which is an RGBA8-unorm texture:
+    /// the four unorm channels are packed into one `0xAABBGGRR` u32
+    /// (little-endian byte order R,G,B,A). Unpack in the kernel with bit math
+    /// — `let r = v & 0xFF; let g = (v >> 8) & 0xFF; ...`. (Sampled
+    /// `&Sampled2D<u32>` is a different, unwired meaning and is rejected at
+    /// emit; the read-only `&Texture2D<u32>` form works on every Metal tier.)
     pub fn texture_load_2d_u32(slot: u32, x: u32, y: u32) -> u32;
 
-    /// Texture write (storage texture). Slot must be bound to a
-    /// `Texture2D<T>` declared as writable.
+    /// Texture write (texel image). Slot must be bound to a
+    /// `&mut Texture2D<T>` param — writes against the read-only `&Texture2D`
+    /// form are rejected at emit.
     pub fn texture_write_2d_f32(slot: u32, x: u32, y: u32, val: f32);
 
     /// Packed-u32 storage-image write — the RGBA8-unorm twin of

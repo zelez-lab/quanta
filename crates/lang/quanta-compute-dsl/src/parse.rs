@@ -291,10 +291,14 @@ pub(crate) fn parse_param_type(
                 Type::Path(path) => {
                     if let Some(seg) = path.path.segments.last() {
                         let ident = seg.ident.to_string();
+                        // The texture lattice follows ownership: `&Texture2D`
+                        // is read-only texel access, `&mut Texture2D` is
+                        // read-write texel access, and sampled access is its
+                        // own type, `&Sampled2D` / `&Sampled3D`.
                         if ident == "Texture2D" {
                             let scalar = extract_generic_scalar(seg)?;
                             return if is_mut {
-                                Ok(KernelParam::Texture2DWrite {
+                                Ok(KernelParam::Texture2DReadWrite {
                                     name: name.to_string(),
                                     slot,
                                     scalar_type: scalar,
@@ -307,18 +311,47 @@ pub(crate) fn parse_param_type(
                                 })
                             };
                         }
-                        if ident == "Texture3D" {
+                        if ident == "Sampled2D" {
+                            if is_mut {
+                                return Err(syn::Error::new_spanned(
+                                    ty,
+                                    "a sampled texture is read-only: declare it `&Sampled2D<T>`, \
+                                     or use `&mut Texture2D<T>` for read-write texel access",
+                                ));
+                            }
                             let scalar = extract_generic_scalar(seg)?;
-                            return Ok(KernelParam::Texture3DRead {
+                            return Ok(KernelParam::Sampled2D {
                                 name: name.to_string(),
                                 slot,
                                 scalar_type: scalar,
                             });
                         }
+                        if ident == "Sampled3D" {
+                            if is_mut {
+                                return Err(syn::Error::new_spanned(
+                                    ty,
+                                    "a sampled texture is read-only: declare it `&Sampled3D<T>`",
+                                ));
+                            }
+                            let scalar = extract_generic_scalar(seg)?;
+                            return Ok(KernelParam::Sampled3D {
+                                name: name.to_string(),
+                                slot,
+                                scalar_type: scalar,
+                            });
+                        }
+                        if ident == "Texture3D" {
+                            return Err(syn::Error::new_spanned(
+                                ty,
+                                "3D texel access is not wired yet: use `&Sampled3D<T>` to sample \
+                                 a 3D texture",
+                            ));
+                        }
                     }
                     Err(syn::Error::new_spanned(
                         ty,
-                        "reference parameter must be &[T], &Texture2D<T>, &Texture3D<T>, or scalar &T",
+                        "reference parameter must be &[T], &Texture2D<T>, &mut Texture2D<T>, \
+                         &Sampled2D<T>, &Sampled3D<T>, or scalar &T",
                     ))
                 }
                 _ => Err(syn::Error::new_spanned(

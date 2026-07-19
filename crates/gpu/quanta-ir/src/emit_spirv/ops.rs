@@ -2419,7 +2419,7 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, merged, 0x2, 4]);
     }
 
-    /// Load a texel from a texture slot. A sampled (`&Texture2D`) slot uses
+    /// Load a texel from a texture slot. A sampled (`&Sampled2D`) slot uses
     /// OpImageFetch after unwrapping the sampled image with OpImage; a storage
     /// (`&mut Texture2D`) slot uses OpImageRead on the plain image.
     pub(crate) fn emit_op_texture_load_2d(
@@ -2600,7 +2600,7 @@ impl SpvEmitter {
 
     /// Sample a texel from a sampled 2D image slot (OpImageSampleExplicitLod).
     /// Only valid on `&Texture2D` (sampled) slots — a storage slot is rejected
-    /// earlier by `reject_sample_on_write`.
+    /// earlier by `reject_sample_on_storage`.
     ///
     /// Compute (GLCompute) has no implicit derivatives, so ImplicitLod is
     /// illegal Vulkan SPIR-V here; the sample carries an explicit `Lod` operand

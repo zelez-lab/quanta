@@ -16,7 +16,7 @@ fn write_kernel() -> KernelDef {
     KernelDef {
         name: "write_tex".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 1,
                 scalar_type: ScalarType::F32,
@@ -71,7 +71,7 @@ fn write_slot_is_read_write_storage_texture() {
 #[test]
 fn read_slot_keeps_sampler() {
     let mut def = write_kernel();
-    def.params = vec![KernelParam::Texture2DRead {
+    def.params = vec![KernelParam::Sampled2D {
         name: "tex".into(),
         slot: 0,
         scalar_type: ScalarType::F32,
@@ -125,7 +125,7 @@ fn sample_on_write_slot_is_rejected() {
 fn rgba8_slot_packs_and_unpacks_at_the_op() {
     let mut def = write_kernel();
     def.params = vec![
-        KernelParam::Texture2DWrite {
+        KernelParam::Texture2DReadWrite {
             name: "tex".into(),
             slot: 1,
             scalar_type: ScalarType::U32,
@@ -181,7 +181,7 @@ fn rgba8_slot_packs_and_unpacks_at_the_op() {
 #[test]
 fn sampled_u32_texture_is_rejected() {
     let mut def = write_kernel();
-    def.params = vec![KernelParam::Texture2DRead {
+    def.params = vec![KernelParam::Sampled2D {
         name: "tex".into(),
         slot: 0,
         scalar_type: ScalarType::U32,
@@ -192,5 +192,102 @@ fn sampled_u32_texture_is_rejected() {
     assert!(
         err.contains("u32") && err.contains("sampled"),
         "error should explain the sampled-u32 restriction; got: {err}"
+    );
+}
+
+// ── Read-only texel slots (`&Texture2D`) ─────────────────────────────────────
+
+/// `&Texture2D` is `access::read` — no sampler, no read_write (and therefore
+/// no MTLReadWriteTextureTier gate, which is the reason the form exists).
+#[test]
+fn read_only_slot_uses_access_read_without_sampler() {
+    let def = KernelDef {
+        name: "ro_msl".into(),
+        params: vec![
+            KernelParam::Texture2DRead {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: ScalarType::F32,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: ScalarType::F32,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureLoad2D {
+                dst: Reg(1),
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                ty: ScalarType::F32,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(1),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    };
+    let msl = emit_msl::emit(&def).expect("emit ro msl");
+    assert!(
+        msl.contains("texture2d<float, access::read> tex_0 [[texture(0)]]"),
+        "read-only texel slot must be access::read; got:\n{msl}"
+    );
+    assert!(
+        !msl.contains("samp_0"),
+        "read-only texel slot must not bind a sampler; got:\n{msl}"
+    );
+    assert!(
+        msl.contains("tex_0.read("),
+        "load must lower to .read(); got:\n{msl}"
+    );
+}
+
+/// Writing a read-only slot fails in the MSL emitter with the same error as
+/// SPIR-V (`reject_write_on_read_only` is shared).
+#[test]
+fn msl_write_on_read_only_slot_is_rejected() {
+    let def = KernelDef {
+        name: "ro_msl_w".into(),
+        params: vec![KernelParam::Texture2DRead {
+            name: "tex".into(),
+            slot: 0,
+            scalar_type: ScalarType::F32,
+        }],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureWrite2D {
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                value: Reg(0),
+                ty: ScalarType::F32,
+            },
+        ],
+        body_source: None,
+        next_reg: 1,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    };
+    let err = emit_msl::emit(&def).expect_err("writing a read-only texel slot must fail");
+    assert!(
+        err.contains("read-only") && err.contains("&mut Texture2D"),
+        "error should name the read-only slot and the fix; got: {err}"
     );
 }

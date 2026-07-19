@@ -98,17 +98,33 @@ pub enum KernelParam {
         slot: u32,
         scalar_type: ScalarType,
     },
+    /// `&Texture2D<T>` — read-only texel access. A storage image whose
+    /// variable is decorated NonWritable: reads are `texture_load_2d`
+    /// (OpImageRead / MSL `access::read` / WGSL `read`), writes are
+    /// rejected. Same scalar-driven format contract as the read-write
+    /// form; unlike it, packed-RGBA8 reads need no Metal read-write
+    /// texture tier.
     Texture2DRead {
         name: String,
         slot: u32,
         scalar_type: ScalarType,
     },
-    Texture2DWrite {
+    /// `&mut Texture2D<T>` — read-write texel access on a storage image.
+    Texture2DReadWrite {
         name: String,
         slot: u32,
         scalar_type: ScalarType,
     },
-    Texture3DRead {
+    /// `&Sampled2D<T>` — sampled access through the fixed
+    /// NEAREST/CLAMP_TO_EDGE sampler (combined image+sampler binding).
+    Sampled2D {
+        name: String,
+        slot: u32,
+        scalar_type: ScalarType,
+    },
+    /// `&Sampled3D<T>` — the 3D sampled form. There is no 3D texel form
+    /// yet; `&Texture3D` is a parse error until one is wired.
+    Sampled3D {
         name: String,
         slot: u32,
         scalar_type: ScalarType,
@@ -702,90 +718,137 @@ pub struct KernelDef {
     pub dynamic_shared_bytes: u32,
 }
 
-/// Slots declared as `Texture2DWrite`. These become read_write storage images
-/// (MSL `access::read_write`, SPIR-V `sampled=2`) so that `texture_load_2d`
-/// against a `&mut Texture2D` slot lowers to a storage read rather than an
-/// invalid sampled fetch. The slot number is the positional param index shared
-/// across the buffer/texture/constant namespace.
-pub fn write_texture_slots(kernel: &KernelDef) -> std::collections::BTreeSet<u32> {
+/// Slots with texel access — `&Texture2D` (read-only) and `&mut Texture2D`
+/// (read-write) alike. These become storage images (MSL `access::read` /
+/// `access::read_write`, SPIR-V `sampled=2`) so that `texture_load_2d`
+/// against them lowers to a storage read rather than an invalid sampled
+/// fetch. The slot number is the positional param index shared across the
+/// buffer/texture/constant namespace.
+pub fn storage_texture_slots(kernel: &KernelDef) -> std::collections::BTreeSet<u32> {
     let mut set = std::collections::BTreeSet::new();
     for p in &kernel.params {
-        if let KernelParam::Texture2DWrite { slot, .. } = p {
+        if let KernelParam::Texture2DRead { slot, .. }
+        | KernelParam::Texture2DReadWrite { slot, .. } = p
+        {
             set.insert(*slot);
         }
     }
     set
 }
 
-/// Reject `texture_sample_2d`/`texture_sample_3d` against a write-declared
-/// slot. Sampling needs a sampled image with a bound sampler; a storage image
-/// (which is what a `&mut Texture2D` slot becomes) cannot be sampled — reading
-/// it is `texture_load_2d`. Every emitter calls this so all backends agree
-/// instead of failing later as undeclared-identifier MSL / invalid SPIR-V.
-pub fn reject_sample_on_write(kernel: &KernelDef) -> Result<(), String> {
-    let writes = write_texture_slots(kernel);
-    if writes.is_empty() {
-        return Ok(());
-    }
-    fn walk(ops: &[KernelOp], writes: &std::collections::BTreeSet<u32>) -> Result<(), u32> {
-        for op in ops {
-            match op {
-                KernelOp::TextureSample2D { texture, .. }
-                | KernelOp::TextureSample3D { texture, .. }
-                    if writes.contains(texture) =>
-                {
-                    return Err(*texture);
-                }
-                KernelOp::Branch {
-                    then_ops, else_ops, ..
-                } => {
-                    walk(then_ops, writes)?;
-                    walk(else_ops, writes)?;
-                }
-                KernelOp::Loop { body, .. } => walk(body, writes)?,
-                _ => {}
-            }
+/// Slots declared `&Texture2D` (read-only texel). The write guard keys on
+/// this set, and emitters mark these NonWritable / `access::read`.
+pub fn read_only_texture_slots(kernel: &KernelDef) -> std::collections::BTreeSet<u32> {
+    let mut set = std::collections::BTreeSet::new();
+    for p in &kernel.params {
+        if let KernelParam::Texture2DRead { slot, .. } = p {
+            set.insert(*slot);
         }
-        Ok(())
     }
-    let mut bodies = vec![&kernel.body];
-    for f in &kernel.device_functions {
-        bodies.push(&f.body);
-    }
-    for body in bodies {
-        if let Err(slot) = walk(body, &writes) {
-            return Err(format!(
-                "texture slot {slot} is declared `&mut Texture2D` (write/storage) but is \
-                 sampled: a storage image cannot be sampled. Use texture_load_2d to read it, \
-                 or declare the parameter `&Texture2D` for sampling."
-            ));
+    set
+}
+
+fn walk_ops(ops: &[KernelOp], hit: &mut impl FnMut(&KernelOp) -> Option<u32>) -> Result<(), u32> {
+    for op in ops {
+        if let Some(slot) = hit(op) {
+            return Err(slot);
+        }
+        match op {
+            KernelOp::Branch {
+                then_ops, else_ops, ..
+            } => {
+                walk_ops(then_ops, hit)?;
+                walk_ops(else_ops, hit)?;
+            }
+            KernelOp::Loop { body, .. } => walk_ops(body, hit)?,
+            _ => {}
         }
     }
     Ok(())
 }
 
-/// Reject a read-only, sampled `&Texture2D<u32>` param. In storage-texture
-/// position `u32` means the packed RGBA8-unorm image (`&mut Texture2D<u32>`,
-/// wired by Arc B); a *sampled* u32 texture would mean something else — an
-/// unsigned-integer sampled image (R32Uint / RGBA8Uint) — which is not wired.
-/// Rather than silently emit it as a float sampled image (`emit_texture_2d_read`
-/// ignores the scalar), refuse it at emit so the meaning of sampled u32 stays
-/// free for a future arc. Every SPIR-V emitter calls this so both backends
-/// agree. (A `&mut Texture2D<u32>` storage image is fine and is not matched.)
+fn walk_kernel(
+    kernel: &KernelDef,
+    hit: &mut impl FnMut(&KernelOp) -> Option<u32>,
+) -> Result<(), u32> {
+    walk_ops(&kernel.body, hit)?;
+    for f in &kernel.device_functions {
+        walk_ops(&f.body, hit)?;
+    }
+    Ok(())
+}
+
+/// Reject `texture_sample_2d`/`texture_sample_3d` against a texel-declared
+/// slot. Sampling needs a sampled image with a bound sampler; a storage image
+/// (which is what both `&Texture2D` and `&mut Texture2D` become) cannot be
+/// sampled — reading it is `texture_load_2d`. Every emitter and the CPU
+/// driver call this so all backends agree instead of failing later as
+/// undeclared-identifier MSL / invalid SPIR-V.
+pub fn reject_sample_on_storage(kernel: &KernelDef) -> Result<(), String> {
+    let storage = storage_texture_slots(kernel);
+    if storage.is_empty() {
+        return Ok(());
+    }
+    let hit = &mut |op: &KernelOp| match op {
+        KernelOp::TextureSample2D { texture, .. } | KernelOp::TextureSample3D { texture, .. }
+            if storage.contains(texture) =>
+        {
+            Some(*texture)
+        }
+        _ => None,
+    };
+    if let Err(slot) = walk_kernel(kernel, hit) {
+        return Err(format!(
+            "texture slot {slot} is declared `Texture2D` (texel access) but is sampled: \
+             a storage image cannot be sampled. Use texture_load_2d to read it, or \
+             declare the parameter `&Sampled2D` for sampling."
+        ));
+    }
+    Ok(())
+}
+
+/// Reject `texture_write_2d` against a read-only texel slot. `&Texture2D` is
+/// the read-only half of the texel lattice — its storage image is declared
+/// NonWritable / `access::read`, so a write would be invalid SPIR-V / MSL.
+/// Every emitter and the CPU driver call this so all backends agree.
+pub fn reject_write_on_read_only(kernel: &KernelDef) -> Result<(), String> {
+    let read_only = read_only_texture_slots(kernel);
+    if read_only.is_empty() {
+        return Ok(());
+    }
+    let hit = &mut |op: &KernelOp| match op {
+        KernelOp::TextureWrite2D { texture, .. } if read_only.contains(texture) => Some(*texture),
+        _ => None,
+    };
+    if let Err(slot) = walk_kernel(kernel, hit) {
+        return Err(format!(
+            "texture slot {slot} is declared `&Texture2D` (read-only texel) but is \
+             written: declare it `&mut Texture2D` for read-write access."
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a sampled `&Sampled2D<u32>` param. In texel position `u32` means
+/// the packed RGBA8-unorm image (`&Texture2D<u32>` / `&mut Texture2D<u32>`);
+/// a *sampled* u32 texture would mean something else — an unsigned-integer
+/// sampled image (R32Uint / RGBA8Uint) — which is not wired. Rather than
+/// silently emit it as a float sampled image (`emit_sampled_2d` ignores the
+/// scalar), refuse it at emit so the meaning of sampled u32 stays free for a
+/// future arc. Every SPIR-V emitter calls this so both backends agree.
 pub fn reject_sampled_u32_texture(kernel: &KernelDef) -> Result<(), String> {
     for p in &kernel.params {
-        if let KernelParam::Texture2DRead {
+        if let KernelParam::Sampled2D {
             slot,
             scalar_type: ScalarType::U32,
             ..
         } = p
         {
             return Err(format!(
-                "texture slot {slot} is a sampled `&Texture2D<u32>`, which is not supported: \
-                 in storage-texture position `u32` means the packed RGBA8 image \
-                 (`&mut Texture2D<u32>`). A sampled unsigned-integer texture is a distinct, \
-                 unwired meaning. Use `&Texture2D<f32>` to sample, or `&mut Texture2D<u32>` \
-                 for a packed-RGBA8 storage image."
+                "texture slot {slot} is a sampled `&Sampled2D<u32>`, which is not supported: \
+                 a sampled unsigned-integer texture is a distinct, unwired meaning. Use \
+                 `&Sampled2D<f32>` to sample, or `&Texture2D<u32>` / `&mut Texture2D<u32>` \
+                 for packed-RGBA8 texel access."
             ));
         }
     }

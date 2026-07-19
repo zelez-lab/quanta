@@ -221,10 +221,9 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         false
     }
 
-    /// Whether compute kernels can bind textures (`&Texture2D` /
-    /// `&mut Texture2D` params) on this backend. True on Metal, CPU, and
-    /// native Vulkan (storage load/write; sampling in compute is not yet
-    /// wired on Vulkan); false on WebGPU.
+    /// Whether compute kernels can bind textures (`&Sampled2D` /
+    /// `&Texture2D` / `&mut Texture2D` params) on this backend. True on
+    /// Metal, CPU, and native Vulkan; false on WebGPU.
     fn supports_compute_textures(&self) -> bool {
         false
     }

@@ -97,7 +97,7 @@ fn solid(tint: &Vec4) -> Vec4 {
   struct parameter (the same struct the vertex returns); read each varying by
   field, `s.uv`. A fragment with no varyings, like `solid` above, omits the
   struct.
-- `&T` / `&Texture2D` / `&[T]` reference parameters are uniforms, sampled
+- `&T` / `&Sampled2D` / `&[T]` reference parameters are uniforms, sampled
   textures, and storage-buffer slices -- they stay separate parameters, they
   are **not** part of the varying struct.
 
@@ -193,26 +193,26 @@ convention above and every backend matches.
 
 ## Texture parameters
 
-A fragment shader samples textures through `&Texture2D` parameters and the
+A fragment shader samples textures through `&Sampled2D` parameters and the
 `sample` intrinsic. The UV comes from the varying struct (`s.uv`); the texture
 stays a separate parameter (reusing the `Surface` interface from above):
 
 ```rust
 #[quanta::fragment]
-fn glyph(s: Surface, atlas: &Texture2D) -> Vec4 {
+fn glyph(s: Surface, atlas: &Sampled2D) -> Vec4 {
     let texel = sample(atlas, s.uv);
     Vec4::new(1.0, 1.0, 1.0, texel.x)
 }
 ```
 
 - Texture slots follow declaration order among texture params: the first
-  `&Texture2D` is slot 0, the second slot 1, and so on (at most 8).
+  `&Sampled2D` is slot 0, the second slot 1, and so on (at most 8).
 - Bind at draw time with the matching slot:
   `.texture(0, &atlas).sampler(0, SamplerDesc::default())`. Every texture
   gets its own sampler at the same slot number.
 - `sample(param, uv)` returns `Vec4`; for single-channel formats (`R8`
   glyph atlases) read `.x`.
-- Texture params are fragment-only; a `&Texture2D` in a vertex shader is a
+- Texture params are fragment-only; a `&Sampled2D` in a vertex shader is a
   compile error.
 
 ## Uniforms derive
@@ -319,7 +319,7 @@ occupy the slots above that.
 | `Mat4` | 16        | 4x4 matrix (column-major)     |
 | `u32`  | 1         | Unsigned integer (attribute, uniform, or flat varying) |
 | `i32`  | 1         | Signed integer                 |
-| `&Texture2D` | -   | Sampled texture (fragment param only) |
+| `&Sampled2D` | -   | Sampled texture (fragment param only) |
 
 `u32` is a real unsigned-integer scalar: use it for integer vertex attributes,
 flat-interpolated varyings, and real comparisons (`kind == 3u32`, `k < 2`) --
@@ -459,7 +459,7 @@ gpu.render(&target)?
 
 ## Texture sampling
 
-Fragment shaders sample textures through a `&Texture2D` parameter and
+Fragment shaders sample textures through a `&Sampled2D` parameter and
 `sample(param, uv)`. The macro rewrites the parameter to the texture slot
 it occupies (declaration order among texture params), so the shader body
 never names a raw slot number. The UV is a varying read from the interface
@@ -478,7 +478,7 @@ fn uv_vertex(pos: Vec3, in_uv: Vec2) -> Uv {
 }
 
 #[quanta::fragment]
-fn textured(s: Uv, albedo: &Texture2D) -> Vec4 {
+fn textured(s: Uv, albedo: &Sampled2D) -> Vec4 {
     sample(albedo, s.uv)
 }
 ```

@@ -38,9 +38,10 @@ pub(crate) fn build_kernel<'ctx>(
             KernelParam::Constant { scalar_type, .. } => {
                 param_types.push(scalar_to_llvm_type(context, scalar_type));
             }
-            KernelParam::Texture2DRead { scalar_type: _, .. }
-            | KernelParam::Texture2DWrite { scalar_type: _, .. }
-            | KernelParam::Texture3DRead { scalar_type: _, .. } => {
+            KernelParam::Sampled2D { scalar_type: _, .. }
+            | KernelParam::Texture2DRead { scalar_type: _, .. }
+            | KernelParam::Texture2DReadWrite { scalar_type: _, .. }
+            | KernelParam::Sampled3D { scalar_type: _, .. } => {
                 // Texture handles are passed as i32 descriptor indices
                 param_types.push(context.i32_type().into());
             }
@@ -104,13 +105,16 @@ pub(crate) fn build_kernel<'ctx>(
                 slot_to_const.insert(*slot, (val, *scalar_type));
                 arg_idx += 1;
             }
-            KernelParam::Texture2DRead {
+            KernelParam::Sampled2D {
                 slot, scalar_type, ..
             }
-            | KernelParam::Texture2DWrite {
+            | KernelParam::Texture2DRead {
                 slot, scalar_type, ..
             }
-            | KernelParam::Texture3DRead {
+            | KernelParam::Texture2DReadWrite {
+                slot, scalar_type, ..
+            }
+            | KernelParam::Sampled3D {
                 slot, scalar_type, ..
             } => {
                 // Texture handles are i32 values, store as scalar constants

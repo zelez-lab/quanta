@@ -370,9 +370,10 @@ fn param_scalar_type(p: &quanta_ir::KernelParam) -> quanta_ir::ScalarType {
         quanta_ir::KernelParam::FieldRead { scalar_type, .. }
         | quanta_ir::KernelParam::FieldWrite { scalar_type, .. }
         | quanta_ir::KernelParam::Constant { scalar_type, .. }
+        | quanta_ir::KernelParam::Sampled2D { scalar_type, .. }
         | quanta_ir::KernelParam::Texture2DRead { scalar_type, .. }
-        | quanta_ir::KernelParam::Texture2DWrite { scalar_type, .. }
-        | quanta_ir::KernelParam::Texture3DRead { scalar_type, .. } => *scalar_type,
+        | quanta_ir::KernelParam::Texture2DReadWrite { scalar_type, .. }
+        | quanta_ir::KernelParam::Sampled3D { scalar_type, .. } => *scalar_type,
     }
 }
 
@@ -435,25 +436,35 @@ fn emit_jit_kernel(
     expanded.into()
 }
 
-/// Per-slot storage-image kinds for every `&mut Texture2D<T>` param, as a
-/// `[u8; 16]` token stream indexed by texture slot: `0` = not a storage image,
-/// `1` = `&mut Texture2D<f32>` (R32Float), `2` = `&mut Texture2D<u32>`
-/// (RGBA8-unorm packed-u32). Threaded onto the Wave so drivers enforce the
-/// scalar-driven format contract at dispatch even on paths (Metal AOT, Vulkan
-/// descriptor_kinds) that can't reflect the per-slot format.
+/// Per-slot texel-image kinds for every `Texture2D` param, as a `[u8; 16]`
+/// token stream indexed by texture slot: `0` = not a texel image, `1` =
+/// `&mut Texture2D<f32>` (R32Float), `2` = `&mut Texture2D<u32>` (RGBA8-unorm
+/// packed-u32), `3` = `&Texture2D<f32>` (read-only R32Float), `4` =
+/// `&Texture2D<u32>` (read-only RGBA8). Threaded onto the Wave so drivers
+/// enforce the scalar-driven format contract at dispatch even on paths
+/// (Metal AOT, Vulkan descriptor_kinds) that can't reflect the per-slot
+/// format — and so Metal can tier-gate only the read-write RGBA8 kind
+/// (read-only RGBA8 needs no tier).
 fn storage_texture_kinds(kernel_def: &quanta_ir::KernelDef) -> proc_macro2::TokenStream {
     use quanta_ir::{KernelParam, ScalarType};
     let mut kinds = [0u8; 16];
     for p in &kernel_def.params {
-        if let KernelParam::Texture2DWrite {
-            slot, scalar_type, ..
-        } = p
-            && (*slot as usize) < 16
-        {
-            kinds[*slot as usize] = match scalar_type {
-                ScalarType::F32 => 1,
-                ScalarType::U32 => 2,
-                // Only f32 (R32Float) and u32 (RGBA8) storage images are wired;
+        let (slot, scalar_type, read_only) = match p {
+            KernelParam::Texture2DReadWrite {
+                slot, scalar_type, ..
+            } => (*slot, scalar_type, false),
+            KernelParam::Texture2DRead {
+                slot, scalar_type, ..
+            } => (*slot, scalar_type, true),
+            _ => continue,
+        };
+        if (slot as usize) < 16 {
+            kinds[slot as usize] = match (scalar_type, read_only) {
+                (ScalarType::F32, false) => 1,
+                (ScalarType::U32, false) => 2,
+                (ScalarType::F32, true) => 3,
+                (ScalarType::U32, true) => 4,
+                // Only f32 (R32Float) and u32 (RGBA8) texel images are wired;
                 // the emitter rejects any other scalar, so leave it 0 here.
                 _ => 0,
             };
@@ -677,8 +688,9 @@ fn param_slot(p: &quanta_ir::KernelParam) -> u32 {
         quanta_ir::KernelParam::FieldRead { slot, .. }
         | quanta_ir::KernelParam::FieldWrite { slot, .. }
         | quanta_ir::KernelParam::Constant { slot, .. }
+        | quanta_ir::KernelParam::Sampled2D { slot, .. }
         | quanta_ir::KernelParam::Texture2DRead { slot, .. }
-        | quanta_ir::KernelParam::Texture2DWrite { slot, .. }
-        | quanta_ir::KernelParam::Texture3DRead { slot, .. } => *slot,
+        | quanta_ir::KernelParam::Texture2DReadWrite { slot, .. }
+        | quanta_ir::KernelParam::Sampled3D { slot, .. } => *slot,
     }
 }

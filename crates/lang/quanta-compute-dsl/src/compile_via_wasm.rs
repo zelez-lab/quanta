@@ -655,22 +655,28 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
             )
         })?;
         match p {
+            KernelParam::Sampled2D {
+                slot, scalar_type, ..
+            } => {
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Sampled2D));
+                continue;
+            }
             KernelParam::Texture2DRead {
                 slot, scalar_type, ..
             } => {
                 texture_params.push((name, *slot, *scalar_type, TextureKind::Tex2DRead));
                 continue;
             }
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 slot, scalar_type, ..
             } => {
-                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex2DWrite));
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex2DReadWrite));
                 continue;
             }
-            KernelParam::Texture3DRead {
+            KernelParam::Sampled3D {
                 slot, scalar_type, ..
             } => {
-                texture_params.push((name, *slot, *scalar_type, TextureKind::Tex3DRead));
+                texture_params.push((name, *slot, *scalar_type, TextureKind::Sampled3D));
                 continue;
             }
             _ => {}
@@ -691,7 +697,7 @@ fn emit_flat_param_source(inputs: &FlatParamKernelInputs<'_>) -> Result<String, 
             }
             _ => {
                 return Err(format!(
-                    "flat-param arg `{name}` has an unsupported shape — expected `&[T]`, `&mut [T]`, `&Texture2D<T>`, `&mut Texture2D<T>`, `&Texture3D<T>`, or a scalar; KernelParam was {:?}",
+                    "flat-param arg `{name}` has an unsupported shape — expected `&[T]`, `&mut [T]`, `&Texture2D<T>`, `&mut Texture2D<T>`, `&Sampled2D<T>`, `&Sampled3D<T>`, or a scalar; KernelParam was {:?}",
                     p
                 ));
             }
@@ -773,9 +779,10 @@ fn build_flat_side_table(inputs: &FlatParamKernelInputs<'_>) -> SideTable {
             // emitted WASM signature, so they don't appear in the
             // SideTable either (lower_module's arity check enforces
             // SideTable.params.len() == WASM sig.params.len()).
-            KernelParam::Texture2DRead { .. }
-            | KernelParam::Texture2DWrite { .. }
-            | KernelParam::Texture3DRead { .. } => continue,
+            KernelParam::Sampled2D { .. }
+            | KernelParam::Texture2DRead { .. }
+            | KernelParam::Texture2DReadWrite { .. }
+            | KernelParam::Sampled3D { .. } => continue,
         };
         params.push(ParamSlot {
             wasm_index,
@@ -797,9 +804,10 @@ fn scalar_type_of(p: &KernelParam) -> ScalarType {
         KernelParam::FieldRead { scalar_type, .. }
         | KernelParam::FieldWrite { scalar_type, .. }
         | KernelParam::Constant { scalar_type, .. }
+        | KernelParam::Sampled2D { scalar_type, .. }
         | KernelParam::Texture2DRead { scalar_type, .. }
-        | KernelParam::Texture2DWrite { scalar_type, .. }
-        | KernelParam::Texture3DRead { scalar_type, .. } => *scalar_type,
+        | KernelParam::Texture2DReadWrite { scalar_type, .. }
+        | KernelParam::Sampled3D { scalar_type, .. } => *scalar_type,
     }
 }
 
@@ -908,11 +916,24 @@ impl VisitMut for F16CastEliminator {
     }
 }
 
+/// The declared access kind of a texture param — the four-way lattice:
+/// texel read-only / texel read-write (`&`/`&mut Texture2D`) and the
+/// sampled forms (`&Sampled2D` / `&Sampled3D`).
 #[derive(Copy, Clone, Debug)]
 enum TextureKind {
+    Sampled2D,
     Tex2DRead,
-    Tex2DWrite,
-    Tex3DRead,
+    Tex2DReadWrite,
+    Sampled3D,
+}
+
+/// The access class a texture API call expects of its first argument.
+#[derive(Copy, Clone, Debug)]
+enum TexUse {
+    Sample2D,
+    Load2D,
+    Write2D,
+    Load3D,
 }
 
 /// Rewrites texture API calls so the kernel source compiles without
@@ -962,11 +983,11 @@ impl VisitMut for TextureCallRewriter {
         //   texture_sample_2d → texture_sample_2d_<ty>
         //   texture_load_3d   → texture_load_3d_<ty>
         //   texture_write_2d  → texture_write_2d_<ty>
-        let (suffix_kind, expects_kind): (&str, TextureKind) = match fn_name.as_str() {
-            "texture_load_2d" => ("texture_load_2d", TextureKind::Tex2DRead),
-            "texture_sample_2d" => ("texture_sample_2d", TextureKind::Tex2DRead),
-            "texture_load_3d" => ("texture_load_3d", TextureKind::Tex3DRead),
-            "texture_write_2d" => ("texture_write_2d", TextureKind::Tex2DWrite),
+        let (suffix_kind, tex_use): (&str, TexUse) = match fn_name.as_str() {
+            "texture_load_2d" => ("texture_load_2d", TexUse::Load2D),
+            "texture_sample_2d" => ("texture_sample_2d", TexUse::Sample2D),
+            "texture_load_3d" => ("texture_load_3d", TexUse::Load3D),
+            "texture_write_2d" => ("texture_write_2d", TexUse::Write2D),
             _ => return,
         };
         // First arg must be the texture-param ident.
@@ -993,10 +1014,10 @@ impl VisitMut for TextureCallRewriter {
         let Some((_, slot, scalar_ty, kind)) = self.lookup(&tex_name) else {
             return;
         };
-        // Sanity: the call shape must match the texture's declared
-        // kind (read vs write). Mismatch leaves the call alone so
-        // rustc surfaces a clear error.
-        if !kinds_compatible(*kind, expects_kind) {
+        // Sanity: the call shape must be admitted by the texture's
+        // declared kind. Mismatch leaves the call alone so rustc
+        // surfaces a clear error.
+        if !kind_admits(*kind, tex_use) {
             return;
         }
 
@@ -1010,17 +1031,22 @@ impl VisitMut for TextureCallRewriter {
     }
 }
 
-fn kinds_compatible(decl: TextureKind, used: TextureKind) -> bool {
-    matches!(
-        (decl, used),
-        (TextureKind::Tex2DRead, TextureKind::Tex2DRead)
-            | (TextureKind::Tex2DWrite, TextureKind::Tex2DWrite)
-            | (TextureKind::Tex3DRead, TextureKind::Tex3DRead)
-            // A `Tex2DWrite` texture can also be read in some APIs;
-            // accept Tex2DRead lookups against a Write-declared
-            // texture as a permissive default.
-            | (TextureKind::Tex2DWrite, TextureKind::Tex2DRead)
-    )
+fn kind_admits(decl: TextureKind, tex_use: TexUse) -> bool {
+    match tex_use {
+        // Sampling needs the sampled type — a texel image has no sampler.
+        TexUse::Sample2D => matches!(decl, TextureKind::Sampled2D),
+        // Every 2D kind admits a texel load: texel images by definition,
+        // and sampled images via texelFetch (OpImageFetch / MSL
+        // access::sample reads) — the only texel-read path for a texture
+        // created without storage usage.
+        TexUse::Load2D => matches!(
+            decl,
+            TextureKind::Sampled2D | TextureKind::Tex2DRead | TextureKind::Tex2DReadWrite
+        ),
+        // Writes need the read-write form; `&Texture2D` is read-only.
+        TexUse::Write2D => matches!(decl, TextureKind::Tex2DReadWrite),
+        TexUse::Load3D => matches!(decl, TextureKind::Sampled3D),
+    }
 }
 
 #[cfg(test)]
@@ -1448,9 +1474,9 @@ pub(crate) fn emit_host_oracle_flat(
             return Ok(None);
         };
         match p {
-            KernelParam::Texture2DRead { .. }
-            | KernelParam::Texture2DWrite { .. }
-            | KernelParam::Texture3DRead { .. } => return Ok(None),
+            KernelParam::Sampled2D { .. }
+            | KernelParam::Texture2DReadWrite { .. }
+            | KernelParam::Sampled3D { .. } => return Ok(None),
             _ => {}
         }
         let ty_str = scalar_type_to_short_name(scalar_type_of(p));

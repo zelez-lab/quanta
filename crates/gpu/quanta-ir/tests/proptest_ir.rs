@@ -391,9 +391,10 @@ fn param_scalar_type(p: &KernelParam) -> ScalarType {
         KernelParam::FieldRead { scalar_type, .. }
         | KernelParam::FieldWrite { scalar_type, .. }
         | KernelParam::Constant { scalar_type, .. }
+        | KernelParam::Sampled2D { scalar_type, .. }
         | KernelParam::Texture2DRead { scalar_type, .. }
-        | KernelParam::Texture2DWrite { scalar_type, .. }
-        | KernelParam::Texture3DRead { scalar_type, .. } => *scalar_type,
+        | KernelParam::Texture2DReadWrite { scalar_type, .. }
+        | KernelParam::Sampled3D { scalar_type, .. } => *scalar_type,
     }
 }
 

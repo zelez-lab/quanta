@@ -242,7 +242,9 @@ Verified by Verus: **27 theorems across 4 files, 0 errors**.
 ```
 ∀ kernel_fn parsed by #[quanta::kernel]:
   ∀ param in kernel_fn.params:
-    typeof(param) ∈ {&[T], &mut [T], T, &Texture2D<T>}
+    typeof(param) ∈ {&[T], &mut [T], T,
+                     &Texture2D<T>, &mut Texture2D<T>,   -- texel: read-only / read-write
+                     &Sampled2D<T>, &Sampled3D<T>}       -- sampled
     → KernelParam variant matches the Rust type
 ```
 

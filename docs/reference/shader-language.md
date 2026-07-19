@@ -133,7 +133,7 @@ backend (the merge writes the outer local back).
 
 ```rust
 #[quanta::fragment]
-fn box_blur(s: Uv, tex: &Texture2D) -> Vec4 {
+fn box_blur(s: Uv, tex: &Sampled2D) -> Vec4 {
     let mut acc = Vec4::new(0.0, 0.0, 0.0, 0.0);
     for i in 0..4 {
         let du = (i as f32) * 0.001;

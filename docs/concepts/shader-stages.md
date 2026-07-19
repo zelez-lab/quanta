@@ -104,7 +104,7 @@ to a point on the image.
 ```rust
 // `Surface` is the varying struct (declared by the vertex) carrying `uv`.
 #[quanta::fragment]
-fn textured(s: Surface, texture: &Texture2D) -> Vec4 {
+fn textured(s: Surface, texture: &Sampled2D) -> Vec4 {
     sample(texture, s.uv)    // look up the color at this UV coordinate
 }
 ```

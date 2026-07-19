@@ -246,17 +246,22 @@ pub(in crate::wire) fn read_kernel_param(r: &mut Reader) -> Result<KernelParam, 
             slot,
             scalar_type,
         }),
-        3 => Ok(KernelParam::Texture2DRead {
+        3 => Ok(KernelParam::Sampled2D {
             name,
             slot,
             scalar_type,
         }),
-        4 => Ok(KernelParam::Texture2DWrite {
+        4 => Ok(KernelParam::Texture2DReadWrite {
             name,
             slot,
             scalar_type,
         }),
-        5 => Ok(KernelParam::Texture3DRead {
+        5 => Ok(KernelParam::Sampled3D {
+            name,
+            slot,
+            scalar_type,
+        }),
+        6 => Ok(KernelParam::Texture2DRead {
             name,
             slot,
             scalar_type,

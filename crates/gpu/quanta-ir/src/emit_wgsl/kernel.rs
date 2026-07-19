@@ -15,6 +15,12 @@ use super::ops::emit_op;
 /// required), storage/uniform bindings, module-scope `var<workgroup>`
 /// shared declarations, and the `@compute` entry point.
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
+    // Same texture-access rejections as the SPIR-V/MSL emitters, so all
+    // backends agree even though WebGPU compute textures are NotSupported
+    // at the driver today.
+    crate::types::reject_sample_on_storage(kernel)?;
+    crate::types::reject_write_on_read_only(kernel)?;
+    crate::types::reject_sampled_u32_texture(kernel)?;
     let mut out = String::new();
 
     // Enable directives — emit defensively for any feature the kernel uses.
@@ -98,7 +104,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     scalar_type.wgsl_name()
                 ));
             }
-            KernelParam::Texture2DRead {
+            KernelParam::Sampled2D {
                 name,
                 slot,
                 scalar_type,
@@ -111,7 +117,12 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 ));
                 slot_names.insert(*slot, name.clone());
             }
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DRead {
+                name,
+                slot,
+                scalar_type,
+            }
+            | KernelParam::Texture2DReadWrite {
                 name,
                 slot,
                 scalar_type,
@@ -124,13 +135,18 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     ScalarType::F32 => "r32float",
                     _ => "rgba8unorm",
                 };
+                let access = if matches!(param, KernelParam::Texture2DRead { .. }) {
+                    "read"
+                } else {
+                    "read_write"
+                };
                 out.push_str(&format!(
-                    "@group(0) @binding({}) var {}: texture_storage_2d<{}, write>;\n",
-                    slot, name, fmt,
+                    "@group(0) @binding({}) var {}: texture_storage_2d<{}, {}>;\n",
+                    slot, name, fmt, access,
                 ));
                 slot_names.insert(*slot, name.clone());
             }
-            KernelParam::Texture3DRead {
+            KernelParam::Sampled3D {
                 name,
                 slot,
                 scalar_type,

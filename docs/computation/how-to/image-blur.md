@@ -4,11 +4,12 @@ Box blur on a packed-RGBA8 image, entirely in a compute kernel. Demonstrates the
 storage-texture read/write intrinsics (`texture_load_2d` / `texture_write_2d`)
 and the `pack_unorm4x8` / `unpack_unorm4x8_*` channel intrinsics.
 
-A colour image is an **RGBA8 storage texture**, which the kernel sees as
-`&mut Texture2D<u32>`: each texel crosses the boundary as one packed
-`0xAABBGGRR` `u32` (byte order R, G, B, A). There is **no read-only RGBA8
-spelling** — the source you only read is still `&mut Texture2D<u32>`, read with
-`texture_load_2d` (a storage read). See the
+A colour image is an **RGBA8 texel texture**, which the kernel sees as
+`Texture2D<u32>`: each texel crosses the boundary as one packed
+`0xAABBGGRR` `u32` (byte order R, G, B, A). Access follows ownership —
+the source you only read is `&Texture2D<u32>` (read-only, and free of
+Metal's read-write tier gate), the destination you write is
+`&mut Texture2D<u32>`. See the
 [`#[quanta::kernel]` texture parameters](../../reference/macros.md#quantakernel).
 
 ## Kernel
@@ -16,7 +17,7 @@ spelling** — the source you only read is still `&mut Texture2D<u32>`, read wit
 ```rust
 #[quanta::kernel]
 fn box_blur(
-    input: &mut Texture2D<u32>,
+    input: &Texture2D<u32>,
     output: &mut Texture2D<u32>,
     width: u32,
     height: u32,
@@ -65,10 +66,8 @@ use quanta::{Format, TextureDesc, TextureUsage};
 fn main() {
     let gpu = quanta::init().unwrap();
 
-    // RGBA8 read-write storage textures need Tier-2 support on Metal; guard for
-    // it (native Vulkan and the CPU device always support them).
     if !gpu.supports_compute_textures() {
-        eprintln!("compute storage textures unsupported on this device");
+        eprintln!("compute textures unsupported on this device");
         return;
     }
 
@@ -76,9 +75,11 @@ fn main() {
     let height: u32 = 1080;
     let pixel_count = (width * height) as usize;
 
-    // Both textures are read-write storage images (RGBA8). The input is only
-    // read in the kernel, but an RGBA8 source has no read-only spelling, so it
-    // still needs SHADER_WRITE usage.
+    // Texel bindings are storage images, so both textures need SHADER_WRITE
+    // (storage) usage — the read-only `&Texture2D` input included. Only the
+    // *read-write* RGBA8 slot needs Tier 2 on Metal; this pipeline's input is
+    // read-only, and the output is written here, so the Tier-2 gate applies
+    // to the output slot alone.
     let usage = TextureUsage::SHADER_READ.union(TextureUsage::SHADER_WRITE);
     let input_tex = gpu.create_texture(
         &TextureDesc::new(width, height, Format::RGBA8).with_usage(usage),
@@ -125,15 +126,15 @@ The compute (kernel) texture intrinsics — a different set from the shader
 
 | Function | Description |
 |----------|-------------|
-| `texture_load_2d(tex, x, y)` | Storage read of texel `(x, y)`. On `&mut Texture2D<u32>`, the whole RGBA8 texel as a packed `0xAABBGGRR` u32; on `&mut/&Texture2D<f32>`, the R channel as `f32` |
-| `texture_write_2d(tex, x, y, v)` | Write texel `(x, y)`. On `&mut Texture2D<u32>`, `v: u32` packed RGBA8; on `&mut Texture2D<f32>`, `v: f32` into the R channel |
-| `texture_sample_2d(tex, x, y)` | Sampled read of a `&Texture2D` slot through the fixed compute sampler (nearest, clamp-to-edge, unnormalized texel coords); returns the R channel as `f32` |
+| `texture_load_2d(tex, x, y)` | Texel read of `(x, y)`. On `Texture2D<u32>` (`&` or `&mut`), the whole RGBA8 texel as a packed `0xAABBGGRR` u32; on `Texture2D<f32>`, the R channel as `f32` |
+| `texture_write_2d(tex, x, y, v)` | Write texel `(x, y)` — `&mut Texture2D` only (a write against read-only `&Texture2D` is a compile error). On `<u32>`, `v: u32` packed RGBA8; on `<f32>`, `v: f32` into the R channel |
+| `texture_sample_2d(tex, x, y)` | Sampled read of a `&Sampled2D` slot through the fixed compute sampler (nearest, clamp-to-edge, unnormalized texel coords); returns the R channel as `f32` |
 | `pack_unorm4x8(r, g, b, a)` | Pack four unorm `f32` channels into a packed RGBA8 `u32` |
 | `unpack_unorm4x8_r/_g/_b/_a(v)` | Unpack one channel of a packed RGBA8 `u32` as `f32` in `[0, 1]` |
 
-> **Note.** `texture_load_2d` / `texture_write_2d` on a `&mut Texture2D<f32>`
-> (R32Float) storage texture carry a **single** channel (R). To blur colour,
-> use the packed-RGBA8 (`&mut Texture2D<u32>`) form above and unpack/repack the
+> **Note.** `texture_load_2d` / `texture_write_2d` on a `Texture2D<f32>`
+> (R32Float) texel texture carry a **single** channel (R). To blur colour,
+> use the packed-RGBA8 (`Texture2D<u32>`) form above and unpack/repack the
 > four channels.
 
 ## Separable optimization
@@ -144,7 +145,7 @@ the packed RGBA8 texel, averages along one axis, and writes back:
 ```rust
 #[quanta::kernel]
 fn blur_horizontal(
-    input: &mut Texture2D<u32>,
+    input: &Texture2D<u32>,
     output: &mut Texture2D<u32>,
     width: u32,
     radius: u32,

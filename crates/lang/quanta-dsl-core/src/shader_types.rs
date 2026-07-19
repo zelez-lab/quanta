@@ -97,11 +97,12 @@ pub fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
 ///
 /// Value params (Vec2, Vec3, Vec4, f32) become attributes/inputs.
 /// Reference params (&T) become uniform buffer bindings.
-/// `&Texture2D` params become sampled textures: their slot is their
+/// `&Sampled2D` params become sampled textures: their slot is their
 /// declaration order among texture params, and the macro rewrites
 /// `sample(name, uv)` in the body to the slot form the emitters bind
 /// (`[[texture(slot)]]`/`[[sampler(slot)]]` on Metal, descriptor
-/// binding `slot + 8` on Vulkan).
+/// binding `slot + 8` on Vulkan). `&Texture2D` (texel access) is a
+/// compute-kernel spelling and is rejected here — shaders sample.
 pub fn parse_shader_params(
     func: &syn::ItemFn,
 ) -> Result<(Vec<ShaderParam>, Vec<String>), syn::Error> {
@@ -120,13 +121,21 @@ pub fn parse_shader_params(
                 }
             };
 
+            if is_type_named(&pat_type.ty, "Texture2D") {
+                return Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "`&Texture2D` is texel access, a compute-kernel spelling; shader \
+                     textures are sampled — declare the parameter `&Sampled2D`",
+                ));
+            }
+
             if is_texture_type(&pat_type.ty) {
                 match pat_type.ty.as_ref() {
                     syn::Type::Reference(_) => {}
                     _ => {
                         return Err(syn::Error::new_spanned(
                             &pat_type.ty,
-                            "texture parameters must be references: `&Texture2D`",
+                            "texture parameters must be references: `&Sampled2D`",
                         ));
                     }
                 }
@@ -169,8 +178,12 @@ pub fn parse_shader_params(
     Ok((params, textures))
 }
 
-/// Whether the (possibly referenced) type is the `Texture2D` marker.
+/// Whether the (possibly referenced) type is the `Sampled2D` marker.
 fn is_texture_type(ty: &syn::Type) -> bool {
+    is_type_named(ty, "Sampled2D")
+}
+
+fn is_type_named(ty: &syn::Type, name: &str) -> bool {
     let inner = match ty {
         syn::Type::Reference(r) => r.elem.as_ref(),
         other => other,
@@ -178,7 +191,7 @@ fn is_texture_type(ty: &syn::Type) -> bool {
     if let syn::Type::Path(path) = inner
         && let Some(seg) = path.path.segments.last()
     {
-        return seg.ident == "Texture2D";
+        return seg.ident == name;
     }
     false
 }

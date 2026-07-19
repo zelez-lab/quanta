@@ -65,15 +65,16 @@ pub(crate) struct SpvEmitter {
     // Field slot → (variable_id, element_type_id, is_writable)
     pub(crate) field_vars: HashMap<u32, (u32, u32, bool)>,
 
-    // Texture slot → (variable_id, loaded_type_id). For sampled (`&Texture2D`)
-    // slots the type is OpTypeSampledImage; for storage (`&mut Texture2D`)
-    // slots it is the plain OpTypeImage.
+    // Texture slot → (variable_id, loaded_type_id). For sampled (`&Sampled2D`)
+    // slots the type is OpTypeSampledImage; for texel (`&Texture2D` /
+    // `&mut Texture2D`) slots it is the plain OpTypeImage.
     pub(crate) texture_samplers: HashMap<u32, (u32, u32)>,
     // Sampled slots only: slot → underlying OpTypeImage id (OpImageFetch takes
     // a plain image, so a load unwraps the sampled image with OpImage).
     pub(crate) texture_image_types: HashMap<u32, u32>,
-    // Slots declared `&mut Texture2D` — read_write storage images. A load
-    // against such a slot emits OpImageRead rather than OpImageFetch.
+    // Texel slots — storage images, `&Texture2D` (read-only, NonWritable) and
+    // `&mut Texture2D` (read_write) alike. A load against such a slot emits
+    // OpImageRead rather than OpImageFetch.
     pub(crate) texture_storage_slots: std::collections::HashSet<u32>,
 
     // Track total push constant bytes needed

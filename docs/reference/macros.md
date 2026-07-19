@@ -344,10 +344,15 @@ fn name(params...) { body }
 
 - `&[T]` -- read-only GPU buffer (bound at slot by declaration order)
 - `&mut [T]` -- read-write GPU buffer
-- `&Texture2D<f32>` -- sampled texture (read via `texture_sample_2d` / `texture_load_2d`; bound with `wave.bind_texture`)
-- `&mut Texture2D<f32>` -- **read-write storage image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a storage image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
-- `&mut Texture2D<u32>` -- **read-write storage image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A); build/split it with bit math (see the example below). A read-only, sampled `&Texture2D<u32>` is a different, unwired meaning and is **rejected at compile time** -- use `&Texture2D<f32>` to sample. There is **no read-only RGBA8 spelling**: an RGBA8 source you only *read* (e.g. the `src` half of a src→dst ping-pong) must still be declared `&mut Texture2D<u32>` and read with `texture_load_2d` (a storage read). Because the slot is a read_write storage image either way, it is subject to the RGBA8 Tier-2 requirement below **even for a pure read**. **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). Split and rebuild the texel with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics (preferred) or the equivalent bit math (see the example below).
+- `&Sampled2D<f32>` -- sampled texture: a combined image+sampler read via `texture_sample_2d` (the fixed nearest / clamp-to-edge sampler) or `texture_load_2d` (texelFetch). Any color format reads (RGBA8 returns the R channel as unorm). Bound with `wave.bind_texture`. `&Sampled3D<f32>` is the 3D form (`texture_load_3d`). A sampled `<u32>` is a different, unwired meaning and is **rejected at compile time**.
+- `&Texture2D<f32>` / `&Texture2D<u32>` -- **read-only texel image** (a storage image with no write capability: SPIR-V `NonWritable`, MSL `access::read`). Read with `texture_load_2d`; `texture_write_2d` against it is rejected at compile time. Same scalar-driven formats as `&mut` (`f32` ⇔ R32Float, `u32` ⇔ packed RGBA8) — and unlike `&mut`, the RGBA8 form has **no Metal tier requirement**, so a read-only RGBA8 source (e.g. the `src` half of a src→dst ping-pong) reaches every Metal device.
+- `&mut Texture2D<f32>` -- **read-write texel image**, R32Float format. Write with `texture_write_2d`; read the same slot with `texture_load_2d` (a storage read, not a sampled fetch). Sampling a texel image is rejected at compile time. Slot = positional across the buffer/texture/constant namespace; bound with `wave.bind_texture`.
+- `&mut Texture2D<u32>` -- **read-write texel image**, RGBA8-unorm format, with the texel packed into one `u32`. Each texel crosses the kernel boundary as a `0xAABBGGRR` u32 (little-endian byte order R,G,B,A). Subject to the RGBA8 Tier-2 requirement below (the read-only `&Texture2D<u32>` form is not). **BGRA8 is not supported**: effect layers must be RGBA8 (there is no SPIR-V storage format for BGRA8; an in-kernel byte-shuffle is the escape hatch). Split and rebuild the texel with the `pack_unorm4x8` / `unpack_unorm4x8_*` intrinsics (preferred) or the equivalent bit math (see the example below).
 - Scalar values (`u32`, `f32`, etc.) -- push constants (set via `wave.set_value`)
+
+The lattice follows ownership: `&` = read-only, `&mut` = read-write, on the
+same texel-access machinery; sampling is a different access mode and therefore
+a different type (`Sampled2D`), not a different reference kind.
 
 A GPU buffer param **must be a reference to a slice** (`&[T]` / `&mut [T]`). A
 bare fixed-size array `[f32; N]` as a kernel parameter is **rejected at compile
@@ -357,21 +362,23 @@ type inside a `#[derive(quanta::Fields)]` / `#[quanta::gpu_type]` struct, where
 it is a push-constant array -- that is a different position from a top-level
 kernel parameter.)
 
-The texture format contract is scalar-driven and enforced per storage-slot kind
-at dispatch: a `&mut Texture2D<f32>` slot must be bound to an `R32Float`
-texture, and a `&mut Texture2D<u32>` slot to an `RGBA8` texture (both created
-with `SHADER_WRITE` usage). A format mismatch -- either direction -- returns
-`QuantaErrorKind::InvalidParam`. Storage compute textures are supported on
-Metal, the CPU reference device, and native Vulkan (load/write); sampling in
-compute (`texture_sample_2d` on a `&Texture2D` read slot) works on Metal, the
-CPU device, and native Vulkan through a fixed nearest / clamp-to-edge /
-unnormalized compute sampler, and WebGPU returns `NotSupported` for any
-compute texture binding. Query support with `gpu.supports_compute_textures()`.
-RGBA8 (`&mut Texture2D<u32>`) storage additionally needs
-`MTLReadWriteTextureTier2` on Metal; a device below tier 2 returns
-`QuantaErrorKind::NotSupported` at dispatch (RGBA8 storage is a mandatory format
-on Vulkan, so there is no equivalent gate there). This tier nuance surfaces as
-the `NotSupported` error, not as a separate capability query.
+The texture format contract is scalar-driven and enforced per texel-slot kind
+at dispatch: a `Texture2D<f32>` slot (`&` or `&mut`) must be bound to an
+`R32Float` texture, and a `Texture2D<u32>` slot to an `RGBA8` texture (created
+with `SHADER_WRITE` usage -- a texel slot binds as a storage image even when
+read-only). A format mismatch -- either direction -- returns
+`QuantaErrorKind::InvalidParam`. Texel compute textures are supported on
+Metal, the CPU reference device, and native Vulkan; sampling in compute
+(`texture_sample_2d` on a `&Sampled2D` slot) works on the same three through
+a fixed nearest / clamp-to-edge / unnormalized compute sampler, and WebGPU
+returns `NotSupported` for any compute texture binding. Query support with
+`gpu.supports_compute_textures()`. RGBA8 **read-write** (`&mut
+Texture2D<u32>`) storage additionally needs `MTLReadWriteTextureTier2` on
+Metal; a device below tier 2 returns `QuantaErrorKind::NotSupported` at
+dispatch. The **read-only** `&Texture2D<u32>` form has no tier gate -- RGBA8
+`access::read` works on every Metal device (and both are mandatory formats
+on Vulkan, so there is no equivalent gate there). This tier nuance surfaces
+as the `NotSupported` error, not as a separate capability query.
 
 Working on a packed texel — the preferred form uses the `pack_unorm4x8` /
 `unpack_unorm4x8_*` intrinsics, which read/write the four RGBA8 channels as

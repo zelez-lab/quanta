@@ -32,7 +32,7 @@ fn write_kernel() -> KernelDef {
     KernelDef {
         name: "write_tex".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::F32,
@@ -77,7 +77,7 @@ fn load_from_storage_kernel() -> KernelDef {
     KernelDef {
         name: "load_storage".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::F32,
@@ -122,7 +122,7 @@ fn write_rgba8_kernel() -> KernelDef {
     KernelDef {
         name: "write_tex_rgba8".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::U32,
@@ -167,7 +167,7 @@ fn load_rgba8_kernel() -> KernelDef {
     KernelDef {
         name: "load_storage_rgba8".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::U32,
@@ -215,12 +215,12 @@ fn ping_pong_rgba8_kernel() -> KernelDef {
     KernelDef {
         name: "ping_pong_rgba8".into(),
         params: vec![
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "src".into(),
                 slot: 0,
                 scalar_type: ScalarType::U32,
             },
-            KernelParam::Texture2DWrite {
+            KernelParam::Texture2DReadWrite {
                 name: "dst".into(),
                 slot: 1,
                 scalar_type: ScalarType::U32,
@@ -260,12 +260,12 @@ fn ping_pong_f32_kernel() -> KernelDef {
     let mut def = ping_pong_rgba8_kernel();
     def.name = "ping_pong_f32".into();
     def.params = vec![
-        KernelParam::Texture2DWrite {
+        KernelParam::Texture2DReadWrite {
             name: "src".into(),
             slot: 0,
             scalar_type: ScalarType::F32,
         },
-        KernelParam::Texture2DWrite {
+        KernelParam::Texture2DReadWrite {
             name: "dst".into(),
             slot: 1,
             scalar_type: ScalarType::F32,
@@ -297,7 +297,7 @@ fn sampled_u32_kernel() -> KernelDef {
     KernelDef {
         name: "sampled_u32".into(),
         params: vec![
-            KernelParam::Texture2DRead {
+            KernelParam::Sampled2D {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::U32,
@@ -328,7 +328,7 @@ fn sample_f32_kernel() -> KernelDef {
     KernelDef {
         name: "sample_f32".into(),
         params: vec![
-            KernelParam::Texture2DRead {
+            KernelParam::Sampled2D {
                 name: "tex".into(),
                 slot: 0,
                 scalar_type: ScalarType::F32,
@@ -651,4 +651,185 @@ fn assert_spirv_val_clean(name: &str, spirv: &[u8]) {
         "{name}: emitted SPIR-V is invalid (spirv-val):\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ── Read-only texel slots (`&Texture2D`) ─────────────────────────────────────
+//
+// The read-only half of the texel lattice: same storage image (sampled=2,
+// scalar-driven format) as the read-write form, with the variable decorated
+// NonWritable; loads emit OpImageRead, writes and samples are rejected.
+
+const OP_DECORATE: u16 = 71;
+const DECORATION_NON_WRITABLE: u32 = 24;
+
+/// True if any `OpDecorate` in the module carries `decoration`.
+fn has_decoration(words: &[u32], decoration: u32) -> bool {
+    let mut i = 5;
+    while i < words.len() {
+        let word = words[i];
+        let opcode = (word & 0xFFFF) as u16;
+        let wc = (word >> 16) as usize;
+        assert!(wc >= 1);
+        if opcode == OP_DECORATE && wc >= 3 && words[i + 2] == decoration {
+            return true;
+        }
+        i += wc;
+    }
+    false
+}
+
+/// `out[i] = texture_load_2d(tex, x, y)` where `tex` is `&Texture2D<scalar>`.
+/// The FieldWrite output is writable, so the module's only NonWritable
+/// decoration (if any) belongs to the texture variable.
+fn read_only_load_kernel(scalar: ScalarType) -> KernelDef {
+    KernelDef {
+        name: "load_ro".into(),
+        params: vec![
+            KernelParam::Texture2DRead {
+                name: "tex".into(),
+                slot: 0,
+                scalar_type: scalar,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 1,
+                scalar_type: scalar,
+            },
+        ],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::TextureLoad2D {
+                dst: Reg(1),
+                texture: 0,
+                x: Reg(0),
+                y: Reg(0),
+                ty: scalar,
+            },
+            KernelOp::Store {
+                field: 1,
+                index: Reg(0),
+                src: Reg(1),
+                ty: scalar,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 0,
+        device_sources: vec![],
+        device_functions: vec![],
+        workgroup_size: [1, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn read_only_slot_is_nonwritable_storage_image() {
+    let spirv = emit_spirv::emit(&read_only_load_kernel(ScalarType::F32)).expect("emit ro kernel");
+    let w = words(&spirv);
+    let ops = type_image_operands(&w);
+    assert_eq!(
+        ops[7], 2,
+        "read-only texel image must be sampled=2; got {ops:?}"
+    );
+    assert_eq!(
+        ops[8], IMAGE_FORMAT_R32F,
+        "&Texture2D<f32> must carry R32f; got {ops:?}"
+    );
+    assert!(
+        has_decoration(&w, DECORATION_NON_WRITABLE),
+        "read-only texel variable must be decorated NonWritable"
+    );
+    let ops = opcodes(&w);
+    assert!(
+        ops.contains(&OP_IMAGE_READ) && !ops.contains(&OP_IMAGE_FETCH),
+        "load against `&Texture2D` must be OpImageRead, not OpImageFetch; opcodes: {ops:?}"
+    );
+}
+
+/// The read-write form must NOT be NonWritable — the decoration is the whole
+/// access split at the SPIR-V level (both share one OpTypeImage). Uses the
+/// load-from-storage kernel because its params (rw texture + FieldWrite out)
+/// are all writable, so any NonWritable in the module would be the texture's
+/// (read-only *buffers* get NonWritable too, which would confound this).
+#[test]
+fn read_write_slot_has_no_nonwritable() {
+    let spirv = emit_spirv::emit(&load_from_storage_kernel()).expect("emit rw kernel");
+    assert!(
+        !has_decoration(&words(&spirv), DECORATION_NON_WRITABLE),
+        "`&mut Texture2D` variable must not be NonWritable"
+    );
+}
+
+/// `&Texture2D<u32>` — the read-only packed-RGBA8 form (which has no
+/// read-write tier requirement on Metal): Rgba8 format word + PackUnorm4x8 on
+/// the load result.
+#[test]
+fn read_only_rgba8_slot_packs() {
+    let spirv = emit_spirv::emit(&read_only_load_kernel(ScalarType::U32)).expect("emit ro u32");
+    let w = words(&spirv);
+    let ops = type_image_operands(&w);
+    assert_eq!(
+        ops[8], IMAGE_FORMAT_RGBA8,
+        "&Texture2D<u32> must carry Rgba8; got {ops:?}"
+    );
+    assert!(
+        has_ext_inst(&w, GLSL_PACK_UNORM_4X8),
+        "packed-RGBA8 read must PackUnorm4x8 the vec4 texel"
+    );
+    assert!(has_decoration(&w, DECORATION_NON_WRITABLE));
+}
+
+/// Writing a read-only slot is rejected at emit — `&Texture2D` has no write
+/// capability; the error must point at `&mut Texture2D`.
+#[test]
+fn write_on_read_only_slot_is_rejected() {
+    let mut def = read_only_load_kernel(ScalarType::F32);
+    def.body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::TextureWrite2D {
+            texture: 0,
+            x: Reg(0),
+            y: Reg(0),
+            value: Reg(0),
+            ty: ScalarType::F32,
+        },
+    ];
+    let err = emit_spirv::emit(&def).expect_err("writing a read-only texel slot must fail");
+    assert!(
+        err.contains("read-only") && err.contains("&mut Texture2D"),
+        "error should name the read-only slot and the fix; got: {err}"
+    );
+}
+
+/// Sampling a read-only texel slot is rejected exactly like the read-write
+/// case — both are storage images.
+#[test]
+fn sample_on_read_only_slot_is_rejected() {
+    let mut def = read_only_load_kernel(ScalarType::F32);
+    def.body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::TextureSample2D {
+            dst: Reg(1),
+            texture: 0,
+            x: Reg(0),
+            y: Reg(0),
+            ty: ScalarType::F32,
+        },
+    ];
+    let err = emit_spirv::emit(&def).expect_err("sampling a texel slot must fail");
+    assert!(
+        err.contains("storage") && err.contains("sampled"),
+        "error should explain the storage/sample mismatch; got: {err}"
+    );
+}
+
+/// If `spirv-val` is on PATH, both read-only modules must validate —
+/// NonWritable on a storage-image variable is legal SPIR-V.
+#[test]
+fn read_only_modules_validate() {
+    let spirv = emit_spirv::emit(&read_only_load_kernel(ScalarType::F32)).expect("emit ro f32");
+    assert_spirv_val_clean("load_ro_f32", &spirv);
+    let spirv = emit_spirv::emit(&read_only_load_kernel(ScalarType::U32)).expect("emit ro u32");
+    assert_spirv_val_clean("load_ro_u32", &spirv);
 }

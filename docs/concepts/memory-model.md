@@ -136,7 +136,7 @@ Inside a fragment shader, sample a texture with UV coordinates:
 ```rust
 // `s` is the varying struct (declared by the vertex) carrying `uv`.
 #[quanta::fragment]
-fn textured(s: Surface, tex: &Texture2D) -> Vec4 {
+fn textured(s: Surface, tex: &Sampled2D) -> Vec4 {
     sample(tex, s.uv)
 }
 ```

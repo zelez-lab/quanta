@@ -304,20 +304,25 @@ fn all_kernel_params_roundtrip() {
             slot: 2,
             scalar_type: ScalarType::I32,
         },
-        KernelParam::Texture2DRead {
+        KernelParam::Sampled2D {
             name: String::from("t0"),
             slot: 3,
             scalar_type: ScalarType::F32,
         },
-        KernelParam::Texture2DWrite {
+        KernelParam::Texture2DReadWrite {
             name: String::from("t1"),
             slot: 4,
             scalar_type: ScalarType::F32,
         },
-        KernelParam::Texture3DRead {
+        KernelParam::Sampled3D {
             name: String::from("t2"),
             slot: 5,
             scalar_type: ScalarType::F16,
+        },
+        KernelParam::Texture2DRead {
+            name: String::from("t3"),
+            slot: 6,
+            scalar_type: ScalarType::U32,
         },
     ];
     let k = KernelDef {
@@ -335,7 +340,19 @@ fn all_kernel_params_roundtrip() {
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
-    assert_eq!(k2.params.len(), 6);
+    assert_eq!(k2.params.len(), 7);
+    // Tag 6 — the read-only texel form appended by the access-lattice split.
+    assert!(
+        matches!(
+            &k2.params[6],
+            KernelParam::Texture2DRead {
+                name,
+                slot: 6,
+                scalar_type: ScalarType::U32,
+            } if name == "t3"
+        ),
+        "read-only texel param must round-trip through wire tag 6"
+    );
 }
 
 #[test]

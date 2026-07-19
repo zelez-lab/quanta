@@ -1157,10 +1157,10 @@ fn draw_indexed_without_indices_is_rejected() {
     );
 }
 
-// ─── Test: name-based texture params (`&Texture2D` + sample(name, uv)) ──────
+// ─── Test: name-based texture params (`&Sampled2D` + sample(name, uv)) ──────
 
 #[quanta::fragment]
-fn atlas_frag(s: UvVary, atlas: &Texture2D) -> Vec4 {
+fn atlas_frag(s: UvVary, atlas: &Sampled2D) -> Vec4 {
     sample(atlas, s.uv)
 }
 

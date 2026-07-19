@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use super::ops::emit_op;
 
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
-    crate::types::reject_sample_on_write(kernel)?;
+    crate::types::reject_sample_on_storage(kernel)?;
+    crate::types::reject_write_on_read_only(kernel)?;
     crate::types::reject_sampled_u32_texture(kernel)?;
     let mut out = String::new();
     out.push_str(
@@ -77,14 +78,23 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                 ));
                 slot_names.insert(*slot, name.clone());
             }
-            KernelParam::Texture2DRead { slot, .. } => {
+            KernelParam::Sampled2D { slot, .. } => {
                 param_lines.push(format!(
                     "    texture2d<float, access::sample> tex_{} [[texture({})]]",
                     slot, slot
                 ));
                 param_lines.push(format!("    sampler samp_{} [[sampler({})]]", slot, slot));
             }
-            KernelParam::Texture2DWrite { slot, .. } => {
+            KernelParam::Texture2DRead { slot, .. } => {
+                // Read-only texel access. Unlike read_write, access::read has
+                // no tier gate — packed-RGBA8 reads work on every Metal
+                // device, which is the reason this form exists.
+                param_lines.push(format!(
+                    "    texture2d<float, access::read> tex_{} [[texture({})]]",
+                    slot, slot
+                ));
+            }
+            KernelParam::Texture2DReadWrite { slot, .. } => {
                 // read_write, not write: the DSL admits texture_load_2d against a
                 // `&mut Texture2D` slot, so the storage image must be readable as
                 // well as writable. The MSL texture type is `float` for both the
@@ -100,7 +110,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
                     slot, slot
                 ));
             }
-            KernelParam::Texture3DRead { slot, .. } => {
+            KernelParam::Sampled3D { slot, .. } => {
                 param_lines.push(format!(
                     "    texture3d<float, access::sample> tex_{} [[texture({})]]",
                     slot, slot

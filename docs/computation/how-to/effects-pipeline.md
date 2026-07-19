@@ -60,12 +60,15 @@ if !gpu.supports_compute_textures() {
 }
 ```
 
-RGBA8 read-write storage carries one more requirement that `supports_compute_textures()`
-does **not** cover: on Metal it needs `MTLReadWriteTextureTier2`. A device below
-tier 2 does not fail the query — it surfaces `QuantaErrorKind::NotSupported` at
-**dispatch**. (RGBA8 storage is a mandatory format on Vulkan, so there is no
-equivalent gate there.) Handle it where you dispatch, the same way you would a
-sampled-read that a backend doesn't wire:
+RGBA8 **read-write** storage (`&mut Texture2D<u32>`) carries one more
+requirement that `supports_compute_textures()` does **not** cover: on Metal it
+needs `MTLReadWriteTextureTier2`. A device below tier 2 does not fail the query
+— it surfaces `QuantaErrorKind::NotSupported` at **dispatch**. The
+**read-only** form (`&Texture2D<u32>`) has no tier gate: RGBA8 `access::read`
+works on every Metal device, which is exactly why the read half of a ping-pong
+should be spelled `&Texture2D`. (Both are mandatory formats on Vulkan, so
+there is no equivalent gate there.) Handle the tier miss where you dispatch,
+the same way you would a sampled-read that a backend doesn't wire:
 
 ```rust
 fn dispatch_or_skip(gpu: &Gpu, wave: &mut Wave, n: u32) -> Option<Pulse> {
@@ -80,9 +83,9 @@ fn dispatch_or_skip(gpu: &Gpu, wave: &mut Wave, n: u32) -> Option<Pulse> {
 }
 ```
 
-The format contract is enforced per storage-slot kind: a `&mut Texture2D<u32>`
-slot must be bound to an RGBA8 texture and a `&mut Texture2D<f32>` slot to an
-`R32Float` texture. A mismatch in either direction returns
+The format contract is enforced per texel-slot kind: a `Texture2D<u32>` slot
+(`&` or `&mut`) must be bound to an RGBA8 texture and a `Texture2D<f32>` slot
+to an `R32Float` texture. A mismatch in either direction returns
 `QuantaErrorKind::InvalidParam`.
 
 ## Point filter: in place through `&mut Texture2D<u32>`
@@ -172,16 +175,21 @@ fn blur_h(src: &Texture2D<f32>, dst: &mut Texture2D<f32>, width: u32, radius: u3
 }
 ```
 
-The read slot is a sampled `&Texture2D<f32>` and the write slot is a storage
-`&mut Texture2D<f32>` (`R32Float`, single channel here). A separable Gaussian
-blur is two of these passes — horizontal then vertical — which is why a single
-buffer will not do: the second pass needs the first pass's full output as clean
-input.
+The ownership spells the roles: the read slot is a read-only texel image
+(`&Texture2D<f32>`) and the write slot is read-write
+(`&mut Texture2D<f32>`) — `R32Float`, single channel here. A separable
+Gaussian blur is two of these passes — horizontal then vertical — which is
+why a single buffer will not do: the second pass needs the first pass's full
+output as clean input.
 
-> Sampled-image reads in compute are portable across Metal, native Vulkan, and
-> the CPU executor: `texture_sample_2d` on a `&Texture2D` read slot fetches with
-> a fixed nearest, clamp-to-edge, unnormalized-coordinate sampler, so the texel
-> a GPU sample returns matches the CPU executor exactly. WebGPU still reports
+> Sampled reads in compute are a separate access mode with its own type:
+> `texture_sample_2d` on a `&Sampled2D` slot fetches with a fixed nearest,
+> clamp-to-edge, unnormalized-coordinate sampler, so the texel a GPU sample
+> returns matches the CPU executor exactly — portable across Metal, native
+> Vulkan, and the CPU executor. Reach for `&Sampled2D` when the source
+> texture wasn't created with storage usage (e.g. an atlas you also render
+> with); a texel `&Texture2D` slot needs `SHADER_WRITE` usage on the bound
+> texture even though the kernel only reads it. WebGPU still reports
 > `QuantaErrorKind::NotSupported` when the wave is built — handle it the same
 > way as the tier-2 skip. (Filtered or normalized-UV sampling is a future
 > sampler-API addition; today's compute sampler is fixed to the texel-fetch

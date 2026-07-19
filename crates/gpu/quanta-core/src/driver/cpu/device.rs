@@ -500,6 +500,17 @@ impl GpuDevice for CpuDevice {
     fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
         let mut def = quanta_ir::deserialize_kernel(kernel_def_bytes)
             .map_err(|e| QuantaError::compilation_failed(e.to_string()))?;
+        // The texture-access rejections the GPU emitters run. The CPU
+        // interpreter would happily treat a sample as a texel load (they
+        // coincide under the fixed NEAREST/CLAMP contract) and write through
+        // a read-only slot, so reject here to keep all backends agreeing.
+        for check in [
+            quanta_ir::types::reject_sample_on_storage,
+            quanta_ir::types::reject_write_on_read_only,
+            quanta_ir::types::reject_sampled_u32_texture,
+        ] {
+            check(&def).map_err(QuantaError::compilation_failed)?;
+        }
         // Hoist barriers nested in (uniform) control flow up to the top
         // level so the cooperative segmenter sees them. A barrier under a
         // divergent branch is UB on real GPUs, so the only barriers we
@@ -587,9 +598,9 @@ impl GpuDevice for CpuDevice {
                     continue;
                 };
                 let (expected, ok) = match wave.storage_texture_kinds[i] {
-                    1 => ("R32Float", meta.format == Format::R32Float),
-                    2 => ("RGBA8", meta.format == Format::RGBA8),
-                    _ => ("", true), // not a storage slot — no format contract
+                    1 | 3 => ("R32Float", meta.format == Format::R32Float),
+                    2 | 4 => ("RGBA8", meta.format == Format::RGBA8),
+                    _ => ("", true), // not a texel slot — no format contract
                 };
                 if !ok {
                     return Err(QuantaError::invalid_param(

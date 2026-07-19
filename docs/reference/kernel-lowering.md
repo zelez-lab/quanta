@@ -114,11 +114,17 @@ apply:
 Compute-texture and workgroup-shared-memory access go through
 intrinsics rather than raw indexing. The signatures:
 
+The texture access lattice follows ownership: `&Texture2D<T>` is
+read-only texel access, `&mut Texture2D<T>` is read-write texel access
+(both are storage images), and sampled access is its own type,
+`&Sampled2D<T>` / `&Sampled3D<T>` (a combined image+sampler with the
+fixed nearest/clamp contract).
+
 ```rust,ignore
-// Compute textures (params &Texture2D<f32> / &mut Texture2D<f32> / &mut Texture2D<u32>):
-texture_load_2d(tex, x, y) -> f32        // texel fetch (sampled slot) or storage read (&mut slot), .x channel
-texture_load_2d(tex, x, y) -> u32        // &mut Texture2D<u32>: whole RGBA8 texel as a packed 0xAABBGGRR u32
-texture_sample_2d(tex, x, y) -> f32      // nearest sample of a &Texture2D; rejected on a storage slot
+// Compute textures (params &Sampled2D<f32> / &Texture2D<f32|u32> / &mut Texture2D<f32|u32>):
+texture_load_2d(tex, x, y) -> f32        // storage read on a texel slot; texelFetch on a sampled slot; .x channel
+texture_load_2d(tex, x, y) -> u32        // Texture2D<u32> (& or &mut): whole RGBA8 texel as a packed 0xAABBGGRR u32
+texture_sample_2d(tex, x, y) -> f32      // nearest sample of a &Sampled2D; rejected on a texel slot
 texture_write_2d(tex, x, y, v: f32)      // write v into a &mut Texture2D<f32> storage image (R32Float)
 texture_write_2d(tex, x, y, v: u32)      // write a packed 0xAABBGGRR RGBA8 texel into a &mut Texture2D<u32>
 texture_size(tex) -> (u32, u32)          // (width, height), CPU device
@@ -135,13 +141,21 @@ let v = scratch[lid];                        // shared load
 ```
 
 The intrinsic is dispatched by the texture param's scalar type: a
-`&mut Texture2D<u32>` slot lowers `texture_load_2d` / `texture_write_2d` to the
+`Texture2D<u32>` slot lowers `texture_load_2d` / `texture_write_2d` to the
 same `TextureLoad2D` / `TextureWrite2D` KernelOps as the `f32` slot, only with
 `ty = U32`. On U32 the emitters pack/unpack the four unorm channels at the op
 boundary -- SPIR-V `PackUnorm4x8` / `UnpackUnorm4x8` (the storage image's own
 component type stays `f32`, format word `Rgba8`), MSL
 `pack_float_to_unorm4x8` / `unpack_unorm4x8_to_float`. The packed layout is
 `0xAABBGGRR` (little-endian byte order R,G,B,A); build/split it with bit math.
+
+At the binding level the split is: a `&Texture2D` slot is the same storage
+image as `&mut` (SPIR-V `sampled=2`, scalar-driven format word) with the
+variable decorated `NonWritable` — MSL `access::read`, WGSL
+`texture_storage_2d<_, read>` — while `&mut` stays `access::read_write`.
+A `&Sampled2D` slot is `OpTypeSampledImage` (MSL `access::sample` + a
+`sampler`), bound as `COMBINED_IMAGE_SAMPLER` where texel slots bind as
+`STORAGE_IMAGE`.
 
 A compute `texture_sample_2d` lowers to SPIR-V `OpImageSampleExplicitLod` with
 an explicit `Lod` of 0.0 -- `OpImageSampleImplicitLod` is illegal under
@@ -151,16 +165,20 @@ compute sampler (nearest, clamp-to-edge, unnormalized) so the fetch matches the
 CPU executor's texel read. (The fragment-shader `sample()` path keeps
 `OpImageSampleImplicitLod`, which is valid there.)
 
-Storage-image writes are format-checked per slot kind at dispatch: a
-`&mut Texture2D<f32>` must be bound to an `R32Float` texture and a
-`&mut Texture2D<u32>` to an `RGBA8` texture (both created with `SHADER_WRITE`
-usage), or the bind fails with `InvalidParam`. A sampled `&Texture2D<u32>` is a
-compile error (storage-position `u32` is the packed-RGBA8 image; a sampled
-integer texture is unwired). Sampling a storage slot is likewise a compile
-error. RGBA8 storage needs `MTLReadWriteTextureTier2` on Metal (below tier 2 the
-dispatch is `NotSupported`); it is a mandatory format on Vulkan. BGRA8 storage
-is unsupported -- use RGBA8. Query `gpu.supports_compute_textures()` before
-using texture params; see the
+Texel access is format-checked per slot kind at dispatch: a
+`Texture2D<f32>` slot (either `&` or `&mut`) must be bound to an `R32Float`
+texture and a `Texture2D<u32>` slot to an `RGBA8` texture (created with
+`SHADER_WRITE` usage — texel slots bind as storage images even read-only),
+or the bind fails with `InvalidParam`. A sampled `&Sampled2D<u32>` is a
+compile error (texel-position `u32` is the packed-RGBA8 image; a sampled
+integer texture is unwired). Sampling a texel slot, and writing a read-only
+`&Texture2D` slot, are likewise compile errors. RGBA8 *read-write* storage
+needs `MTLReadWriteTextureTier2` on Metal (below tier 2 the dispatch is
+`NotSupported`); read-only `&Texture2D<u32>` has no tier requirement and
+works on every Metal device — that portability is why the read-only form
+exists. Both are mandatory formats on Vulkan. BGRA8 storage is unsupported
+-- use RGBA8. Query `gpu.supports_compute_textures()` before using texture
+params; see the
 [kernel macro built-in table](macros.md#built-in-functions-available-in-kernel-body)
 for the full intrinsic list.
 

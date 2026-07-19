@@ -133,13 +133,13 @@ back to a whole-texture `write`.
 
 ## Sampling in shaders
 
-A DSL fragment samples a texture through a `&Texture2D` parameter. The UV is a
+A DSL fragment samples a texture through a `&Sampled2D` parameter. The UV is a
 varying read from the interface struct (`s.uv`); the texture stays a separate
 parameter:
 
 ```rust
 #[quanta::fragment]
-fn shade(s: Surface, image: &Texture2D) -> Vec4 {
+fn shade(s: Surface, image: &Sampled2D) -> Vec4 {
     sample(image, s.uv)
 }
 ```
@@ -192,7 +192,7 @@ or array slices to different shader slots.
 
 ## Sampling in fragment shaders
 
-Fragment shaders sample textures through a `&Texture2D` parameter and the
+Fragment shaders sample textures through a `&Sampled2D` parameter and the
 `sample(param, uv)` function. The macro rewrites the parameter to the
 texture slot it occupies (declaration order among texture params), so the
 body never names a raw slot:
@@ -211,7 +211,7 @@ fn uv_vertex(pos: Vec3, in_uv: Vec2) -> Surface {
 }
 
 #[quanta::fragment]
-fn textured(s: Surface, albedo: &Texture2D) -> Vec4 {
+fn textured(s: Surface, albedo: &Sampled2D) -> Vec4 {
     sample(albedo, s.uv)  // returns Vec4 (RGBA)
 }
 ```
@@ -239,7 +239,7 @@ Inside compute kernels, textures are accessed via texture parameters:
 
 ```rust
 #[quanta::kernel]
-fn blur(input: &Texture2D<f32>, output: &mut [f32], width: u32) {
+fn blur(input: &Sampled2D<f32>, output: &mut [f32], width: u32) {
     let i = quark_id();
     let x = i % width;
     let y = i / width;
@@ -254,8 +254,13 @@ fn blur(input: &Texture2D<f32>, output: &mut [f32], width: u32) {
 }
 ```
 
-Texture sampling in compute kernels uses hardware texture units, giving you
-free bilinear filtering and edge clamping.
+Texture sampling in compute kernels uses hardware texture units through the
+fixed compute sampler (nearest, clamp-to-edge, unnormalized texel
+coordinates), so out-of-range coordinates clamp to the edge texel for free.
+For raw texel access without a sampler, declare the parameter
+`&Texture2D<T>` (read-only) or `&mut Texture2D<T>` (read-write) instead and
+read it with `texture_load_2d` — see
+[kernel texture parameters](../../reference/macros.md#quantakernel).
 
 ## Samplers
 

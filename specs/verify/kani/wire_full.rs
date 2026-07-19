@@ -601,7 +601,7 @@ mod proofs {
     #[kani::proof]
     fn kernel_param_tag_roundtrip() {
         let tag: u8 = kani::any();
-        kani::assume(tag < 6); // 6 KernelParam variants
+        kani::assume(tag < 7); // 7 KernelParam variants
 
         // All variants decode the same payload: name + slot + scalar_type.
         // The tag alone determines the variant.
@@ -609,9 +609,10 @@ mod proofs {
             0 => "FieldRead",
             1 => "FieldWrite",
             2 => "Constant",
-            3 => "Texture2DRead",
-            4 => "Texture2DWrite",
-            5 => "Texture3DRead",
+            3 => "Sampled2D",
+            4 => "Texture2DReadWrite",
+            5 => "Sampled3D",
+            6 => "Texture2DRead",
             _ => unreachable!(),
         };
         assert!(!variant_name.is_empty(), "every param tag maps to a variant");
@@ -627,7 +628,7 @@ mod proofs {
     #[kani::proof]
     fn kernel_param_full_roundtrip() {
         let param_tag: u8 = kani::any();
-        kani::assume(param_tag < 6);
+        kani::assume(param_tag < 7);
         let slot: u32 = kani::any();
         let scalar_tag: u8 = kani::any();
         kani::assume(scalar_tag < 12);

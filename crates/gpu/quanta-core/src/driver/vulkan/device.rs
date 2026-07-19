@@ -109,7 +109,7 @@ pub struct VulkanDevice {
     /// signature (2 bits per binding) — a buffer-only layout and a mixed
     /// buffer+image layout of the same length must not collide.
     pub(super) layout_cache: Mutex<HashMap<u64, ffi::VkDescriptorSetLayout>>,
-    /// The one compute sampler this device binds for every `&Texture2D` sampled
+    /// The one compute sampler this device binds for every `&Sampled2D` sampled
     /// read (`texture_sample_2d`). Contract: NEAREST min/mag/mip,
     /// CLAMP_TO_EDGE, no anisotropy/compare, UNNORMALIZED coordinates — chosen
     /// so a GPU `sample()` matches the CPU executor's nearest+clamp texel fetch
