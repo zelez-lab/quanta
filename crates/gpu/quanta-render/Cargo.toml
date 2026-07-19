@@ -33,4 +33,4 @@ raw-window-handle = ["quanta-core/raw-window-handle"]
 # crate's normal dependency graph never contains quanta-wasm-lowering,
 # wasmparser, or the quanta-ir JIT.
 quanta-core = { workspace = true, features = ["render"] }
-quanta-render-dsl = { path = "../../lang/quanta-render-dsl", version = "0.1.0-alpha.4" }
+quanta-render-dsl = { path = "../../lang/quanta-render-dsl", version = "0.1.0-alpha.5" }

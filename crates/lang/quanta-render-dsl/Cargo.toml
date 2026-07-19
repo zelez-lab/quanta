@@ -16,7 +16,7 @@ syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 quanta-ir.workspace = true
-quanta-dsl-core = { path = "../../lang/quanta-dsl-core", version = "0.1.0-alpha.4" }
+quanta-dsl-core = { path = "../../lang/quanta-dsl-core", version = "0.1.0-alpha.5" }
 # Render-purity invariant (ci.yml render dependency-graph guard): this
 # crate MUST NOT depend on quanta-wasm-lowering, directly or transitively,
 # so quanta-render's dependency tree stays free of the compute stack.

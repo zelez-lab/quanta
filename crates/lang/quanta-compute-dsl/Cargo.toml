@@ -16,7 +16,7 @@ syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"
 quanta-ir.workspace = true
-quanta-dsl-core = { path = "../../lang/quanta-dsl-core", version = "0.1.0-alpha.4" }
+quanta-dsl-core = { path = "../../lang/quanta-dsl-core", version = "0.1.0-alpha.5" }
 # Used by `compile_via_wasm` to call into the WASM lowerer directly.
 # Load-bearing for every kernel build — this is the compute face, so it
 # is an unconditional dependency (no feature gate).
