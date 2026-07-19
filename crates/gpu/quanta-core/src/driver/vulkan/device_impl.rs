@@ -319,18 +319,24 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         if let Some(v) = view {
-            unsafe {
-                ffi::vkDestroyImageView(self.device, v, core::ptr::null());
-            }
+            self.retire_bin
+                .retire(self.device, super::retire::Retired::View(v));
         }
         Ok(())
     }
 
     // === Render-resource lifecycle (destroy methods) ===
     //
-    // Submission is synchronous (submit-and-wait), so nothing is in
-    // flight when a wrapper Drop reaches these. Each mirrors the
-    // corresponding drain arm of `impl Drop for VulkanDevice`.
+    // Render submissions are ASYNCHRONOUS (`render_end` returns a live
+    // pulse), so a wrapper Drop can reach these while the GPU still
+    // references the resource. Every destroy therefore removes the
+    // registry entry (no later submission can bind it) and hands the
+    // raw handles to the retire bin, which destroys immediately only
+    // when the queue provably has nothing outstanding — otherwise after
+    // the covering submission's fence. Destroying inline here was the
+    // dija Glass/Surface device loss (VUID-vkDestroyImage-image-01000).
+    // Each arm mirrors the corresponding drain of
+    // `impl Drop for VulkanDevice`.
 
     fn texture_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         let tex = self
@@ -339,11 +345,21 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         if let Some(t) = tex {
-            unsafe {
-                ffi::vkDestroyImageView(self.device, t.view, core::ptr::null());
-                ffi::vkDestroyImage(self.device, t.image, core::ptr::null());
-                ffi::vkFreeMemory(self.device, t.memory, core::ptr::null());
+            // A swapchain-frame registration (memory == null) aliases an
+            // image and view the surface entry owns — dropping the
+            // registry entry is the whole destroy. Every real texture
+            // allocates memory, so null memory is the discriminator.
+            if t.memory.is_null() {
+                return Ok(());
             }
+            self.retire_bin.retire(
+                self.device,
+                super::retire::Retired::Image {
+                    image: t.image,
+                    view: t.view,
+                    memory: t.memory,
+                },
+            );
         }
         Ok(())
     }
@@ -355,9 +371,8 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         if let Some(s) = sampler {
-            unsafe {
-                ffi::vkDestroySampler(self.device, s, core::ptr::null());
-            }
+            self.retire_bin
+                .retire(self.device, super::retire::Retired::Sampler(s));
         }
         Ok(())
     }
@@ -850,7 +865,13 @@ impl GpuDevice for VulkanDevice {
             signal_semaphore_count: 0,
             p_signal_semaphores: core::ptr::null(),
         };
-        let r = unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) };
+        let r = {
+            let _q = self
+                .queue_lock
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) }
+        };
         if r != ffi::VK_SUCCESS {
             unsafe { ffi::vkFreeMemory(self.device, tile_memory, core::ptr::null()) };
             return Err(QuantaError::submit_failed());
@@ -865,8 +886,8 @@ impl GpuDevice for VulkanDevice {
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if let Some(old) = bindings.insert(key, tile_memory) {
+            self.queue_wait_idle_locked();
             unsafe {
-                ffi::vkQueueWaitIdle(self.queue);
                 ffi::vkFreeMemory(self.device, old, core::ptr::null());
             }
         }
@@ -974,11 +995,17 @@ impl GpuDevice for VulkanDevice {
             signal_semaphore_count: 0,
             p_signal_semaphores: core::ptr::null(),
         };
-        let r = unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) };
+        let r = {
+            let _q = self
+                .queue_lock
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            unsafe { ffi::vkQueueBindSparse(self.queue, 1, &bind_info, ffi::null_handle()) }
+        };
         // Free the memory regardless of unbind result — the worst
         // case is a leaked binding that the Drop walker covers.
+        self.queue_wait_idle_locked();
         unsafe {
-            ffi::vkQueueWaitIdle(self.queue);
             ffi::vkFreeMemory(self.device, tile_memory, core::ptr::null());
         }
         if r != ffi::VK_SUCCESS {
@@ -1007,7 +1034,7 @@ impl GpuDevice for VulkanDevice {
             });
         }
         if !tile_mems.is_empty() {
-            unsafe { ffi::vkQueueWaitIdle(self.queue) };
+            self.queue_wait_idle_locked();
             for mem in tile_mems {
                 unsafe { ffi::vkFreeMemory(self.device, mem, core::ptr::null()) };
             }
@@ -1018,15 +1045,19 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         if let Some(tex) = removed {
-            unsafe {
-                if !tex.view.is_null() {
-                    ffi::vkDestroyImageView(self.device, tex.view, core::ptr::null());
-                }
-                ffi::vkDestroyImage(self.device, tex.image, core::ptr::null());
-                if !tex.memory.is_null() {
-                    ffi::vkFreeMemory(self.device, tex.memory, core::ptr::null());
-                }
-            }
+            // Same in-flight hazard as texture_destroy: the sparse image
+            // may still be referenced by an outstanding submission when
+            // the wrapper Drop lands here (the tile wait above only runs
+            // when bindings existed). Null view/memory are tolerated by
+            // the retire arm's destroy calls (Vulkan ignores NULL).
+            self.retire_bin.retire(
+                self.device,
+                super::retire::Retired::Image {
+                    image: tex.image,
+                    view: tex.view,
+                    memory: tex.memory,
+                },
+            );
         }
         Ok(())
     }

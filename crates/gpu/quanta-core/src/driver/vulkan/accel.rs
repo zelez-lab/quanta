@@ -406,8 +406,8 @@ impl VulkanDevice {
         let Some(destroy) = self.accel_destroy_fn else {
             return false;
         };
+        self.queue_wait_idle_locked();
         unsafe {
-            ffi::vkQueueWaitIdle(self.queue);
             destroy(self.device, ax.as_handle, core::ptr::null());
             ffi::vkDestroyBuffer(self.device, ax.storage_buffer, core::ptr::null());
             ffi::vkFreeMemory(self.device, ax.storage_memory, core::ptr::null());

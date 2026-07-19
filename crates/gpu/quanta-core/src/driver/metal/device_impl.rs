@@ -2,6 +2,7 @@
 
 #[cfg(feature = "compute")]
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -535,6 +536,29 @@ impl GpuDevice for MetalDevice {
         let dst = textures
             .get(&dst_handle)
             .ok_or_else(|| QuantaError::invalid_param("bad dst texture handle"))?;
+
+        // Metal requires an MSAA attachment and its resolve target to share
+        // one pixel format — a mismatch is API-invalid and renders garbage
+        // or asserts in the driver. The Vulkan lane converts through a
+        // same-format temp + blit; Metal has no format-converting blit, so
+        // until a conversion pass is wired this fails loudly instead of
+        // encoding an invalid resolve.
+        {
+            let fmts = self
+                .texture_formats
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            if let (Some(&sf), Some(&df)) = (fmts.get(&src_handle), fmts.get(&dst_handle))
+                && sf != df
+            {
+                return Err(QuantaError::not_supported(
+                    "resolve_texture: source and destination formats differ; Metal has \
+                     no format-converting resolve — create the destination in the \
+                     source's format",
+                )
+                .with_context(&format!("src {sf:?} vs dst {df:?}")));
+            }
+        }
 
         unsafe {
             let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");

@@ -114,12 +114,49 @@ impl VulkanDevice {
 
     // === MSAA Resolve (Step 012) ===
 
+    /// Resolve a multisampled `src` into single-sample `dst`.
+    /// `vkCmdResolveImage` requires identical formats
+    /// (VUID-vkCmdResolveImage-srcImage-01386 — a real device loss on
+    /// Iris Xe when violated), but the format mismatch is structural for
+    /// the windowed effect path: the swapchain scene is BGRA8 while
+    /// compute texel effects are RGBA8-only (SPIR-V has no BGRA8 storage
+    /// format). So a differing-format resolve goes through a cached
+    /// same-format single-sample temp — resolve src→temp, then a
+    /// format-converting `vkCmdBlitImage` temp→dst (1:1 extent, NEAREST,
+    /// so the blit is exact; blit handles the channel swizzle).
     #[cfg(feature = "render")]
     pub(crate) fn resolve_texture_impl(
         &self,
         src_handle: u64,
         dst_handle: u64,
     ) -> Result<(), QuantaError> {
+        // Conversion decision in its own lock scope: temp creation below
+        // takes the textures WRITE lock, so it must not overlap the read
+        // lock held for recording.
+        let convert = {
+            let textures = self
+                .textures
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let src = textures.get(&src_handle).ok_or_else(|| {
+                QuantaError::not_found("source texture not found")
+                    .with_context(&format!("resolve_texture: src handle {src_handle}"))
+            })?;
+            let dst = textures.get(&dst_handle).ok_or_else(|| {
+                QuantaError::not_found("destination texture not found")
+                    .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
+            })?;
+            if src.format == dst.format {
+                None
+            } else {
+                Some((src.format, src.width, src.height))
+            }
+        };
+        let temp_handle = match convert {
+            None => None,
+            Some((vk_format, w, h)) => Some(self.resolve_convert_temp(vk_format, w, h)?),
+        };
+
         let textures = self
             .textures
             .read()
@@ -132,6 +169,12 @@ impl VulkanDevice {
             QuantaError::not_found("destination texture not found")
                 .with_context(&format!("resolve_texture: dst handle {dst_handle}"))
         })?;
+        let temp = match temp_handle {
+            Some(h) => Some(textures.get(&h).ok_or_else(|| {
+                QuantaError::internal("resolve conversion temp missing from registry")
+            })?),
+            None => None,
+        };
 
         // The images must license the transfer layouts the resolve puts
         // them in. Our own textures always carry both TRANSFER bits (see
@@ -240,7 +283,15 @@ impl VulkanDevice {
                     layer_count: 1,
                 },
             };
-            let barriers = [barrier_src, barrier_dst];
+            let mut barriers = vec![barrier_src, barrier_dst];
+            if let Some(t) = temp {
+                // The conversion temp is fully overwritten by the
+                // resolve — discard from UNDEFINED like the destination.
+                barriers.push(ffi::VkImageMemoryBarrier {
+                    image: t.image,
+                    ..barrier_dst
+                });
+            }
             ffi::vkCmdPipelineBarrier(
                 cmd,
                 // srcStageMask must cover whatever produced the source in
@@ -253,11 +304,13 @@ impl VulkanDevice {
                 core::ptr::null(),
                 0,
                 core::ptr::null(),
-                2,
+                barriers.len() as u32,
                 barriers.as_ptr(),
             );
 
-            // Resolve
+            // Resolve — into the same-format temp when converting, else
+            // straight into the destination.
+            let mid_image = temp.map(|t| t.image).unwrap_or(dst.image);
             let region = ffi::VkImageResolve {
                 src_subresource: ffi::VkImageSubresourceLayers {
                     aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
@@ -283,11 +336,78 @@ impl VulkanDevice {
                 cmd,
                 src.image,
                 ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                dst.image,
+                mid_image,
                 ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1,
                 &region,
             );
+
+            if let Some(t) = temp {
+                // Flip the temp to TRANSFER_SRC behind the resolve write,
+                // then blit it into the real destination — the blit is
+                // what performs the format conversion (channel swizzle);
+                // 1:1 extents with NEAREST make it exact.
+                let barrier_temp_flip = ffi::VkImageMemoryBarrier {
+                    s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    p_next: core::ptr::null(),
+                    src_access_mask: ffi::VK_ACCESS_TRANSFER_WRITE_BIT,
+                    dst_access_mask: ffi::VK_ACCESS_TRANSFER_READ_BIT,
+                    old_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    new_layout: ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    src_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: ffi::VK_QUEUE_FAMILY_IGNORED,
+                    image: t.image,
+                    subresource_range: ffi::VkImageSubresourceRange {
+                        aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+                ffi::vkCmdPipelineBarrier(
+                    cmd,
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    ffi::VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0,
+                    0,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                    1,
+                    &barrier_temp_flip,
+                );
+                let subresource = ffi::VkImageSubresourceLayers {
+                    aspect_mask: ffi::VK_IMAGE_ASPECT_COLOR_BIT,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                };
+                let extent = [
+                    ffi::VkOffset3D { x: 0, y: 0, z: 0 },
+                    ffi::VkOffset3D {
+                        x: src.width as i32,
+                        y: src.height as i32,
+                        z: 1,
+                    },
+                ];
+                let blit = ffi::VkImageBlit {
+                    src_subresource: subresource,
+                    src_offsets: extent,
+                    dst_subresource: subresource,
+                    dst_offsets: extent,
+                };
+                ffi::vkCmdBlitImage(
+                    cmd,
+                    t.image,
+                    ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    dst.image,
+                    ffi::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &blit,
+                    ffi::VK_FILTER_NEAREST,
+                );
+            }
 
             // Transition both out of the transfer layouts, each to its
             // usage-derived rest state (computed above).
@@ -349,14 +469,89 @@ impl VulkanDevice {
         // Record the rest layouts so the NEXT transition on either
         // texture — a later resolve, a sub-region upload, a present —
         // starts from the correct oldLayout instead of a stale
-        // assumption.
+        // assumption. The temp rests in TRANSFER_SRC (the next
+        // conversion discards it from UNDEFINED anyway, but the tracked
+        // value stays truthful).
         src.current_layout
             .store(src_rest, std::sync::atomic::Ordering::Relaxed);
         dst.current_layout
             .store(dst_rest, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = temp {
+            t.current_layout.store(
+                ffi::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         drop(textures);
         self.submit_and_wait(cmd).and_then(|mut p| p.wait())
     }
+
+    /// Get-or-create the cached single-sample intermediate for a
+    /// format-converting resolve, keyed by (vk_format, width, height).
+    /// A stale temp is replaced through `texture_destroy`, whose
+    /// fence-deferred retirement makes the swap safe even with the old
+    /// temp still referenced by an in-flight frame.
+    #[cfg(feature = "render")]
+    fn resolve_convert_temp(&self, vk_format: u32, w: u32, h: u32) -> Result<u64, QuantaError> {
+        {
+            let cache = self
+                .resolve_temp
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            if let Some((f, cw, ch, handle)) = *cache
+                && f == vk_format
+                && cw == w
+                && ch == h
+            {
+                return Ok(handle);
+            }
+        }
+        let api_format = api_format_from_vk(vk_format).ok_or_else(|| {
+            QuantaError::not_supported(
+                "resolve_texture: source and destination formats differ, and the source \
+                 format has no wired conversion path — resolve into a texture of the \
+                 source's format instead",
+            )
+        })?;
+        // Create OUTSIDE the cache lock (texture_create_impl takes the
+        // textures write lock; keep lock scopes disjoint). Every created
+        // texture carries both TRANSFER bits, which is all the temp needs.
+        let tex = self.texture_create_impl(&crate::TextureDesc::new(w, h, api_format))?;
+        let handle = tex.handle;
+        let old = {
+            let mut cache = self
+                .resolve_temp
+                .lock()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let old = cache.take();
+            *cache = Some((vk_format, w, h, handle));
+            old
+        };
+        if let Some((_, _, _, old_handle)) = old {
+            use crate::GpuDevice;
+            let _ = self.texture_destroy(old_handle);
+        }
+        Ok(handle)
+    }
+}
+
+/// Inverse of `format_to_vulkan` for the color formats a converting
+/// resolve can target. Depth and compressed formats intentionally have
+/// no arm — a resolve between those and anything else is malformed.
+#[cfg(feature = "render")]
+fn api_format_from_vk(vk: u32) -> Option<crate::Format> {
+    use crate::Format;
+    Some(match vk {
+        x if x == ffi::VK_FORMAT_R8G8B8A8_UNORM => Format::RGBA8,
+        x if x == ffi::VK_FORMAT_B8G8R8A8_UNORM => Format::BGRA8,
+        x if x == ffi::VK_FORMAT_R8_UNORM => Format::R8,
+        x if x == ffi::VK_FORMAT_R16_SFLOAT => Format::R16Float,
+        x if x == ffi::VK_FORMAT_R32_SFLOAT => Format::R32Float,
+        x if x == ffi::VK_FORMAT_R32G32_SFLOAT => Format::RG32Float,
+        x if x == ffi::VK_FORMAT_R16G16B16A16_SFLOAT => Format::RGBA16Float,
+        x if x == ffi::VK_FORMAT_R32G32B32A32_SFLOAT => Format::RGBA32Float,
+        _ => return None,
+    })
 }
 
 #[cfg(feature = "render")]

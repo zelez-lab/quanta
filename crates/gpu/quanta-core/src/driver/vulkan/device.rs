@@ -99,8 +99,24 @@ pub struct VulkanDevice {
     #[cfg(feature = "render")]
     pub(super) vk_surface_frames: RwLock<HashMap<u64, super::surface::VkSurfaceFrame>>,
     pub(super) next_handle: AtomicU64,
+    /// External synchronization for the one `VkQueue`: every
+    /// `vkQueueSubmit` / `vkQueuePresentKHR` / `vkQueueWaitIdle` /
+    /// `vkQueueBindSparse` goes through this lock. Submission serials
+    /// (see `RetireBin`) are assigned under it so serial order matches
+    /// submission order.
+    pub(super) queue_lock: Mutex<()>,
+    /// Fence-deferred destruction of images/buffers/views/samplers —
+    /// Arc so `submit_and_wait`'s Pulse closures can drain it after
+    /// their fence wait.
+    pub(super) retire_bin: std::sync::Arc<super::retire::RetireBin>,
     /// Pool of reusable command buffers — Arc<Mutex> for sharing with Pulse closures.
     pub(super) cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+    /// Cached single-sample intermediate for format-converting resolves
+    /// (`resolve_texture` with `src.format != dst.format`): (vk_format,
+    /// width, height, texture handle). The handle is an ordinary registry
+    /// texture, replaced through `texture_destroy` (fence-deferred) when
+    /// the key changes, drained with the registry at device teardown.
+    pub(super) resolve_temp: Mutex<Option<(u32, u32, u32, u64)>>,
     /// Pool of reusable descriptor pools — avoids create/destroy per dispatch.
     pub(super) descriptor_pool_cache: Mutex<Vec<ffi::VkDescriptorPool>>,
     /// Pool of reusable staging buffers — avoids alloc/free per texture upload.
@@ -716,6 +732,40 @@ impl VulkanDevice {
         }
     }
 
+    /// Submit one batch to the device queue under the queue lock and
+    /// assign its submission serial. The queue is externally
+    /// synchronized in Vulkan; this lock is that synchronization, and
+    /// holding it across the serial assignment keeps serial order equal
+    /// to submission order — the invariant the retire bin's
+    /// completion-watermark reasoning rests on.
+    pub(super) fn queue_submit_locked(
+        &self,
+        submit: &ffi::VkSubmitInfo,
+        fence: ffi::VkFence,
+    ) -> Result<u64, QuantaError> {
+        let _q = self
+            .queue_lock
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let r = unsafe { ffi::vkQueueSubmit(self.queue, 1, submit, fence) };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        Ok(self.retire_bin.next_serial())
+    }
+
+    /// `vkQueueWaitIdle` under the queue lock. A successful idle proves
+    /// every submission complete, so the retire bin drains fully.
+    pub(super) fn queue_wait_idle_locked(&self) {
+        let Ok(_q) = self.queue_lock.lock() else {
+            return;
+        };
+        let r = unsafe { ffi::vkQueueWaitIdle(self.queue) };
+        if r == ffi::VK_SUCCESS {
+            self.retire_bin.complete_all(self.device);
+        }
+    }
+
     /// Submit a command buffer with a fence. Returns a Pulse that waits on the
     /// fence when wait() is called. The GPU executes asynchronously — the CPU
     /// can do other work before calling pulse.wait().
@@ -744,12 +794,18 @@ impl VulkanDevice {
             signal_semaphore_count: 0,
             p_signal_semaphores: core::ptr::null(),
         };
-        unsafe {
-            let r = ffi::vkQueueSubmit(self.queue, 1, &submit, fence);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
+        let serial = match self.queue_submit_locked(&submit, fence) {
+            Ok(serial) => serial,
+            Err(e) => {
+                // Never submitted: the fence is unused and the recorded
+                // CB will reset cleanly — safe to reclaim both.
+                unsafe { ffi::vkDestroyFence(self.device, fence, core::ptr::null()) };
+                if let Ok(mut p) = self.cmd_buffer_pool.lock() {
+                    p.push(cmd);
+                }
+                return Err(e);
             }
-        }
+        };
 
         // vkWaitForFences/vkDestroyFence are legal from any thread (this
         // pulse is the fence's sole owner), and the pooled command buffer
@@ -760,6 +816,8 @@ impl VulkanDevice {
             fence: ffi::VkFence,
             cmd: ffi::VkCommandBuffer,
             pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+            bin: std::sync::Arc<super::retire::RetireBin>,
+            serial: u64,
         }
         unsafe impl Send for FenceWaiter {}
         type FenceParts = (
@@ -767,12 +825,21 @@ impl VulkanDevice {
             ffi::VkFence,
             ffi::VkCommandBuffer,
             std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+            std::sync::Arc<super::retire::RetireBin>,
+            u64,
         );
         impl FenceWaiter {
             // By-value method: the closure must capture the whole
             // (Send-asserted) struct, not its raw-pointer fields.
             fn take(self) -> FenceParts {
-                (self.device, self.fence, self.cmd, self.pool)
+                (
+                    self.device,
+                    self.fence,
+                    self.cmd,
+                    self.pool,
+                    self.bin,
+                    self.serial,
+                )
             }
         }
         let waiter = FenceWaiter {
@@ -780,6 +847,8 @@ impl VulkanDevice {
             fence,
             cmd,
             pool: self.cmd_buffer_pool.clone(),
+            bin: self.retire_bin.clone(),
+            serial,
         };
 
         let handle = self.alloc_handle();
@@ -788,12 +857,20 @@ impl VulkanDevice {
             completed: false,
             keep_alive: self.self_ref.pulse_keep_alive(),
             wait_fn: Some(Box::new(move || unsafe {
-                let (device, fence, cmd, pool) = waiter.take();
-                ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
-                ffi::vkDestroyFence(device, fence, core::ptr::null());
-                if let Ok(mut p) = pool.lock() {
-                    p.push(cmd);
+                let (device, fence, cmd, pool, bin, serial) = waiter.take();
+                let r = ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
+                if r == ffi::VK_SUCCESS {
+                    ffi::vkDestroyFence(device, fence, core::ptr::null());
+                    bin.complete(device, serial);
+                    if let Ok(mut p) = pool.lock() {
+                        p.push(cmd);
+                    }
                 }
+                // A failed wait (device loss) intentionally leaks the
+                // fence and CB: the CB may still be PENDING, and
+                // resetting a pending CB is the 00045/00049/00071 VUID
+                // trio that killed the Iris Xe. Nothing advances,
+                // nothing is recycled, on a device that just died.
             })),
         })
     }
@@ -1511,6 +1588,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             // The pool handle is genuinely shared (cloned out at dispatch time),
             // so Arc is intended; VkCommandBuffer is a raw FFI pointer that can't
             // be Send+Sync, which is inherent to the Vulkan handle model.
+            queue_lock: Mutex::new(()),
+            retire_bin: std::sync::Arc::new(super::retire::RetireBin::new()),
+            resolve_temp: Mutex::new(None),
             #[allow(clippy::arc_with_non_send_sync)]
             cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
             descriptor_pool_cache: Mutex::new(Vec::new()),
@@ -1629,6 +1709,9 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         unsafe {
             ffi::vkDeviceWaitIdle(self.device);
+            // The device is idle: everything fence-deferred can go now,
+            // before the registries drain below.
+            self.retire_bin.complete_all(self.device);
 
             // Surfaces first: swapchains and VkSurfaceKHR must go
             // before the device/instance they were created from.

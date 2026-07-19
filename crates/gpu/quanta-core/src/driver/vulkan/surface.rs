@@ -171,6 +171,12 @@ pub(super) struct VkSurfaceEntry {
     /// pipelining — present never CPU-waits the current frame).
     pub present_cb: ffi::VkCommandBuffer,
     pub present_fence: ffi::VkFence,
+    /// Submission serial of the most recent present-transition submit.
+    /// When the NEXT present's fence wait succeeds, this serial — and
+    /// with it every earlier submission on the queue, the whole frame —
+    /// is proven complete, which advances the retire bin's watermark
+    /// once per frame without any extra CPU wait.
+    pub present_serial: core::sync::atomic::AtomicU64,
 }
 
 /// An acquired, not-yet-presented frame.
@@ -375,6 +381,7 @@ impl VulkanDevice {
                     present_sems,
                     present_cb,
                     present_fence,
+                    present_serial: core::sync::atomic::AtomicU64::new(0),
                 },
             );
         Ok(handle)
@@ -696,7 +703,7 @@ impl VulkanDevice {
         // while the entry still owns intact objects, so an error leaves
         // it fully valid — no destroyed handle ever stays behind in a
         // live entry for a retry or teardown to double-destroy.
-        unsafe { ffi::vkQueueWaitIdle(self.queue) };
+        self.queue_wait_idle_locked();
         let (swapchain, images, views, vk_format, format, extent, usage) =
             self.build_swapchain(procs, entry.surface, config, entry.swapchain)?;
         // The rebuilt swapchain may have a different image count; the
@@ -817,7 +824,14 @@ impl VulkanDevice {
             }
         }
         unsafe {
-            ffi::vkWaitForFences(self.device, 1, &entry.acquire_fence, 1, u64::MAX);
+            // Checked: an acquire whose fence never signals must not hand
+            // out the image as if it were ready.
+            let r = ffi::vkWaitForFences(self.device, 1, &entry.acquire_fence, 1, u64::MAX);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::internal(format!(
+                    "surface_acquire: waiting the acquire fence failed (VkResult {r})"
+                )));
+            }
         }
 
         // Register the swapchain image as an ordinary texture so the
@@ -965,9 +979,27 @@ impl VulkanDevice {
             .unwrap_or(ffi::VK_IMAGE_LAYOUT_UNDEFINED);
 
         // Recycle the dedicated transition CB: bounded wait on the
-        // PREVIOUS frame's transition only (depth-1 pipelining).
+        // PREVIOUS frame's transition only (depth-1 pipelining). The
+        // result is load-bearing: proceeding past a failed wait would
+        // re-begin a possibly-PENDING present_cb — the
+        // 00045/00049/00071 VUID trio that kills the Intel driver — so
+        // a failed wait aborts the present instead. A successful wait
+        // proves the previous present submission (and, by queue order,
+        // the whole previous frame) complete, advancing the retire
+        // bin's watermark once per frame for free.
         unsafe {
-            ffi::vkWaitForFences(self.device, 1, &entry.present_fence, 1, u64::MAX);
+            let r = ffi::vkWaitForFences(self.device, 1, &entry.present_fence, 1, u64::MAX);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed().with_context(&format!(
+                    "present: waiting the previous present transition failed (VkResult {r})"
+                )));
+            }
+            self.retire_bin.complete(
+                self.device,
+                entry
+                    .present_serial
+                    .load(core::sync::atomic::Ordering::SeqCst),
+            );
             ffi::vkResetFences(self.device, 1, &entry.present_fence);
         }
 
@@ -1037,9 +1069,10 @@ impl VulkanDevice {
                 signal_semaphore_count: 1,
                 p_signal_semaphores: &present_sem,
             };
-            if ffi::vkQueueSubmit(self.queue, 1, &submit, entry.present_fence) != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
+            let serial = self.queue_submit_locked(&submit, entry.present_fence)?;
+            entry
+                .present_serial
+                .store(serial, core::sync::atomic::Ordering::SeqCst);
 
             let present = ffi::VkPresentInfoKHR {
                 s_type: ffi::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -1051,7 +1084,13 @@ impl VulkanDevice {
                 p_image_indices: &frame_entry.image_index,
                 p_results: core::ptr::null_mut(),
             };
-            let result = (procs.queue_present)(self.queue, &present);
+            let result = {
+                let _q = self
+                    .queue_lock
+                    .lock()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                (procs.queue_present)(self.queue, &present)
+            };
             drop(surfaces);
             match result {
                 ffi::VK_SUCCESS => Ok(()),
@@ -1112,8 +1151,8 @@ impl VulkanDevice {
         else {
             return Ok(());
         };
+        self.queue_wait_idle_locked();
         unsafe {
-            ffi::vkQueueWaitIdle(self.queue);
             for &view in &entry.views {
                 ffi::vkDestroyImageView(self.device, view, core::ptr::null());
             }

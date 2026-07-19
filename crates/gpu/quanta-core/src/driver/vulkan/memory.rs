@@ -149,13 +149,20 @@ impl VulkanDevice {
             .ok()
             .and_then(|mut b| b.remove(&handle))
         {
-            unsafe {
-                if buf.mapped_ptr.is_some() {
-                    ffi::vkUnmapMemory(self.device, buf.memory);
-                }
-                ffi::vkDestroyBuffer(self.device, buf.buffer, core::ptr::null());
-                ffi::vkFreeMemory(self.device, buf.memory, core::ptr::null());
+            // Unmapping is a host-side operation, safe while the GPU may
+            // still read the buffer; the destroy itself defers behind any
+            // outstanding submission (a dropped vertex/storage buffer has
+            // the same in-flight hazard as a dropped texture).
+            if buf.mapped_ptr.is_some() {
+                unsafe { ffi::vkUnmapMemory(self.device, buf.memory) };
             }
+            self.retire_bin.retire(
+                self.device,
+                super::retire::Retired::Buffer {
+                    buffer: buf.buffer,
+                    memory: buf.memory,
+                },
+            );
         }
     }
 

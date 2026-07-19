@@ -99,3 +99,56 @@ fn msaa_target_creation() {
         assert_eq!(tex.height(), 8);
     }
 }
+
+/// The windowed effect shape: a BGRA8 MSAA scene (the swapchain format)
+/// resolved into an RGBA8 destination (the only compute texel format —
+/// SPIR-V has no BGRA8 storage image). `vkCmdResolveImage` requires
+/// identical formats (VUID 01386, a real device loss on Iris Xe), so the
+/// Vulkan driver converts through a cached same-format temp plus a
+/// format-converting blit; a backend without a conversion path must
+/// reject loudly (NotSupported) instead of recording the invalid resolve.
+#[test]
+fn resolve_bgra8_scene_into_rgba8_converts_or_rejects() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    let (w, h) = (8u32, 8u32);
+    let msaa = gpu.msaa_target(w, h, Format::BGRA8, 4).unwrap();
+    let dst = gpu.render_target(w, h, Format::RGBA8).unwrap();
+
+    // Channel-asymmetric clear so a missed swizzle (a raw byte copy
+    // instead of a converting blit) shows up as swapped R/B.
+    gpu.render(&msaa)
+        .unwrap()
+        .clear(quanta::Color::rgba(1.0, 0.25, 0.0, 1.0))
+        .pulse()
+        .unwrap()
+        .wait()
+        .unwrap();
+
+    match gpu.resolve_texture(&msaa, &dst) {
+        Ok(()) => {
+            let px = dst.read().unwrap();
+            // RGBA8 bytes, texel 0: R≈255, G≈64, B≈0.
+            assert!(px[0] >= 250, "R channel lost in conversion: {:?}", &px[..4]);
+            assert!(
+                (58..=70).contains(&px[1]),
+                "G channel off after conversion: {:?}",
+                &px[..4]
+            );
+            assert!(
+                px[2] <= 5,
+                "B channel gained — swizzle miss (raw copy?): {:?}",
+                &px[..4]
+            );
+        }
+        Err(e) => {
+            assert!(
+                matches!(e.kind, quanta::QuantaErrorKind::NotSupported(_)),
+                "a format-mismatched resolve must convert or reject loudly; got: {e}"
+            );
+            eprintln!("SKIP: converting resolve unsupported here: {e}");
+        }
+    }
+}

@@ -329,3 +329,47 @@ fn hundred_frame_reuse_does_not_grow_registries() {
         "120 create+drop frames must not grow the driver registries"
     );
 }
+
+/// Drop textures while a render submission still references them — the
+/// dija Glass/Surface shape (per-frame recreated effect intermediates,
+/// dropped as the next frame builds while the previous frame's async
+/// render is still executing). The Vulkan driver must defer the actual
+/// vkDestroyImage/View behind the submission's fence (the retire bin)
+/// instead of destroying in flight (VUID-vkDestroyImage-image-01000,
+/// device loss on Iris Xe). Later frames must keep working.
+#[test]
+fn drop_textures_while_render_in_flight() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    let mut prev_pulse: Option<quanta::Pulse> = None;
+    for _frame in 0..8 {
+        let target = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+        let pulse = gpu
+            .render(&target)
+            .unwrap()
+            .clear(Color::rgba(0.0, 1.0, 0.0, 1.0))
+            .pulse()
+            .unwrap();
+        // The destroy-in-flight moment: the target drops while its own
+        // render submission may still be executing (its pulse is live).
+        drop(target);
+        // Depth-1 pipelining like a real frame loop: the PREVIOUS
+        // frame's pulse is released only now.
+        prev_pulse = Some(pulse);
+    }
+    drop(prev_pulse);
+
+    // The device must still be fully functional afterwards.
+    let target = gpu.render_target(32, 32, Format::RGBA8).unwrap();
+    gpu.render(&target)
+        .unwrap()
+        .clear(Color::WHITE)
+        .pulse()
+        .unwrap()
+        .wait()
+        .unwrap();
+    let px = target.read().unwrap();
+    assert_eq!(&px[..4], &[255, 255, 255, 255]);
+}

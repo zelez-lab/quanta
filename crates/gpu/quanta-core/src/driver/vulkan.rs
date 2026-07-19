@@ -17,6 +17,7 @@ mod memory;
 // (render/queries.rs). The render-only submodules inside it are gated
 // individually (step 085).
 mod render;
+mod retire;
 #[cfg(feature = "render")]
 mod surface;
 mod sync;

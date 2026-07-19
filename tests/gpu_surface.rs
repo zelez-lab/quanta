@@ -8,7 +8,7 @@
 
 use quanta::RenderGpu;
 
-use quanta::{Format, NativeTextureHandle, QuantaErrorKind, SurfaceConfig, SurfaceTarget};
+use quanta::{Color, Format, NativeTextureHandle, QuantaErrorKind, SurfaceConfig, SurfaceTarget};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -739,4 +739,44 @@ fn metal_layer_demand_driven_cadence() {
         }
         Err(e) => panic!("create_surface(MetalLayer) failed: {e}"),
     }
+}
+
+/// The windowed effect-frame shape, headless: MSAA render into the
+/// acquired frame (pooled intermediate + subpass resolve), a per-frame
+/// scratch texture dropped while the frame is in flight, present with
+/// no CPU wait, and a pulse held across the frame boundary — the
+/// closest CI walk of the swapchain path that only the Iris Xe rig used
+/// to see. Guards the fence-deferred destroy + checked present-fence
+/// recycling as one piece.
+#[test]
+fn surface_msaa_effect_frame_loop_with_midflight_drops() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let mut surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &SurfaceConfig::new(64, 64))
+        .unwrap();
+    let mut prev_pulse: Option<quanta::Pulse> = None;
+    for _ in 0..6 {
+        let frame = surface.acquire().unwrap();
+        // A per-frame "effect intermediate", dropped mid-flight below.
+        let scratch = gpu.render_target(64, 64, Format::RGBA8).unwrap();
+        let pulse = gpu
+            .render(frame.texture())
+            .unwrap()
+            .msaa(4)
+            .clear(Color::rgba(0.2, 0.4, 0.6, 1.0))
+            .pulse()
+            .unwrap();
+        drop(scratch); // destroyed while this frame is still executing
+        frame.present().unwrap(); // async — no CPU wait before present
+        prev_pulse = Some(pulse); // previous frame's pulse released here
+    }
+    drop(prev_pulse);
 }
