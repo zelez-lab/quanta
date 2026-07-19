@@ -245,7 +245,7 @@ impl WebgpuDevice {
             .borrow_mut()
             .insert(handle, state::PipelineEntry { pipeline, layout });
 
-        Ok(Pipeline::from_handle(handle))
+        Ok(Pipeline::from_desc(handle, desc))
     }
 
     pub(super) fn pipeline_destroy_impl(&self, handle: u64) -> Result<(), QuantaError> {

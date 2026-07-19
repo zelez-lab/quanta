@@ -17,8 +17,7 @@ pub struct Pipeline {
     /// Per-attachment color formats this pipeline was built with —
     /// a copy of `PipelineDesc::color_formats`, retained so the render
     /// pass can validate that the bound targets match at encode time.
-    /// Drivers construct pipelines with this empty; the `Gpu` wrapper
-    /// stamps it from the descriptor.
+    /// Stamped at construction (`from_desc`) by every driver.
     pub(crate) color_formats: Vec<Format>,
     /// Depth format this pipeline was built with (a copy of
     /// `PipelineDesc::depth_format`), retained for the same encode-time
@@ -33,19 +32,22 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Construct a live pipeline wrapper around a fresh driver handle,
-    /// with no device attached and no formats recorded yet. Drivers use
-    /// this from `pipeline_create`; the `Gpu` wrapper then attaches the
-    /// device and stamps the formats. Centralising the field list here
-    /// keeps future `Pipeline` fields off every backend's construction
-    /// site.
-    pub(crate) fn from_handle(handle: u64) -> Self {
+    /// stamped with the descriptor's declared shape (color/depth
+    /// formats, sample count) so encode-time pass-shape validation
+    /// works no matter which path created the pipeline — the
+    /// `quanta-render` seam or a consumer driving the raw `GpuDevice`
+    /// trait (the web examples do). Drivers use this from
+    /// `pipeline_create`; no device is attached yet. Centralising the
+    /// field list here keeps future `Pipeline` fields off every
+    /// backend's construction site.
+    pub(crate) fn from_desc(handle: u64, desc: &crate::PipelineDesc) -> Self {
         Self {
             handle,
             device: None,
             live: true,
-            color_formats: Vec::new(),
-            depth_format: None,
-            sample_count: 1,
+            color_formats: desc.color_formats.clone(),
+            depth_format: desc.depth_format,
+            sample_count: desc.sample_count,
         }
     }
 
@@ -60,23 +62,6 @@ impl Pipeline {
     #[doc(hidden)]
     pub fn __attach_device(&mut self, device: Arc<dyn GpuDevice>) {
         self.device = Some(device);
-    }
-
-    /// Record the color/depth formats and rasterization sample count
-    /// the pipeline was built with so the render pass can validate
-    /// bound targets against them at encode time. Internal hook for the
-    /// `quanta-render` sibling crate (drivers construct pipelines
-    /// shape-less); not part of the stable public surface.
-    #[doc(hidden)]
-    pub fn __set_shape(
-        &mut self,
-        color_formats: Vec<Format>,
-        depth_format: Option<Format>,
-        sample_count: u32,
-    ) {
-        self.color_formats = color_formats;
-        self.depth_format = depth_format;
-        self.sample_count = sample_count;
     }
 }
 

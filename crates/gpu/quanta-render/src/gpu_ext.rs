@@ -233,17 +233,11 @@ impl RenderGpu for quanta_core::Gpu {
         let device = self.device_handle();
         let mut pipeline = device.pipeline_create(desc)?;
         pipeline.__attach_device(device.clone());
-        // Record the descriptor's declared color/depth formats and
-        // rasterization sample count on the pipeline so the render pass
-        // can validate the bound targets against them at encode time
-        // (see `RenderPass::validate_pass_shape`). Done here, at the
-        // single shared post-`pipeline_create` seam, so every backend
-        // gets it.
-        pipeline.__set_shape(
-            desc.color_formats.clone(),
-            desc.depth_format,
-            desc.sample_count,
-        );
+        // The pipeline's declared shape (color/depth formats, sample
+        // count — what `RenderPass::validate_pass_shape` checks at
+        // encode time) is stamped at construction by every driver, so
+        // it holds on this path AND for consumers driving the raw
+        // `GpuDevice` trait.
         Ok(pipeline)
     }
 
