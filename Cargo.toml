@@ -72,6 +72,7 @@ readme = "README.md"
 ## on native it would still force `jit` + `compute` into the graph and
 ## break render-purity, so it is not zero-cost off-target.
 default = ["metal", "vulkan", "render", "compute"]
+# (cookbook_transformer needs the nn feature — see [[example]] at the end)
 std = ["quanta-core/std", "quanta-render?/std"]
 ## Backend features carry weak (`?/`) forwards to every companion crate
 ## so that e.g. `--features "sci,metal"` gives quanta-array the `metal`
@@ -225,3 +226,7 @@ quanta-tensor = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"
+
+[[example]]
+name = "cookbook_transformer"
+required-features = ["nn"]
