@@ -67,8 +67,8 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 | Item | Status |
 |---|---|
-| Named parameter traversal (`state_dict` equivalent) | planned |
-| In-memory + bytes round-trip save/load | planned |
+| Named parameter traversal (`state_dict` equivalent) | **shipped** — `ParamTree::{collect_named, named_flatten}`: derived structs name by FIELD, tuples by INDEX, `Option` transparent, `.`-joined paths (`"0.w"`, `"proj.norm.gamma"`); order = flatten order (the invariant `load_state` rebuilds through). The derive generates it. |
+| In-memory + bytes round-trip save/load | **shipped** — `state::{save_state, load_state}`: dependency-free `QNNS` byte format; **load matches by NAME, not order** (a reordered/refield-ordered witness loads identically), and missing / extra / wrong-shape / wrong-dtype leaves are loud errors naming the path. Elements travel as f64 LE (exact for f32 and f64 trees); compact native-width encoding = future increment. Optimizer state trees checkpoint with the same two calls. |
 | safetensors / npy interop | **deferred to step 084.8** — file-format IO is the numeric-stack step's scope; this crate exposes the traversal it will consume |
 | torch/ONNX checkpoint import | **deferred** — interop lane, post-084.8 |
 

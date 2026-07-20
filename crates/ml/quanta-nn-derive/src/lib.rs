@@ -138,6 +138,18 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     #( #fnames: <#field_tys as #root::layer::ParamTree<#tp>>::grads(&vars.#fnames, loss)?, )*
                 })
             }
+
+            fn collect_named(
+                &self,
+                prefix: &str,
+                out: &mut ::std::vec::Vec<(::std::string::String, #root::Array<#tp>)>,
+            ) {
+                #( #root::layer::ParamTree::<#tp>::collect_named(
+                    &self.#fnames,
+                    &#root::layer::path_join(prefix, stringify!(#fnames)),
+                    out,
+                ); )*
+            }
         }
     })
 }

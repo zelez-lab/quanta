@@ -109,6 +109,20 @@ pub trait ParamTree<T: DiffScalar>: Sized {
         Self::grads(vars, loss)
     }
 
+    /// Append every leaf under its hierarchical name (the `state_dict`
+    /// traversal): derived structs name by FIELD, tuples by INDEX,
+    /// `Option` is transparent, segments join with `.` (`"0.w"`,
+    /// `"2.gamma"`). Same order as [`ParamTree::flatten`] — that
+    /// alignment is the invariant `state::load_state` rebuilds through.
+    fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>);
+
+    /// The named leaf view — [`ParamTree::flatten`] with names.
+    fn named_flatten(&self) -> Vec<(String, Array<T>)> {
+        let mut v = Vec::new();
+        self.collect_named("", &mut v);
+        v
+    }
+
     /// Map every leaf (e.g. zeros-like for optimizer moments).
     fn map(&self, f: LeafFn<'_, T>) -> Result<Self, AutogradError> {
         let mapped = self
@@ -117,6 +131,21 @@ pub trait ParamTree<T: DiffScalar>: Sized {
             .map(&mut *f)
             .collect::<Result<Vec<_>, _>>()?;
         self.unflatten(&mut mapped.into_iter())
+    }
+}
+
+/// Join a name path segment onto a prefix (`""` + `"w"` → `"w"`,
+/// `"0"` + `"w"` → `"0.w"`). Public because derive-generated
+/// `collect_named` bodies call it.
+pub fn path_join(prefix: &str, segment: &str) -> String {
+    if prefix.is_empty() {
+        segment.to_string()
+    } else {
+        let mut s = String::with_capacity(prefix.len() + 1 + segment.len());
+        s.push_str(prefix);
+        s.push('.');
+        s.push_str(segment);
+        s
     }
 }
 
@@ -150,6 +179,13 @@ impl<T: DiffScalar, P: ParamTree<T>> ParamTree<T> for Option<P> {
             Some(v) => Ok(Some(P::grads(v, loss)?)),
         }
     }
+    fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>) {
+        // Transparent: the Option layer adds no path segment (a `None`
+        // subtree simply contributes nothing, mirroring `flatten`).
+        if let Some(p) = self {
+            p.collect_named(prefix, out);
+        }
+    }
 }
 
 /// The empty tree — the `Params` of zero-parameter layers (activations,
@@ -167,6 +203,7 @@ impl<T: DiffScalar> ParamTree<T> for () {
     fn grads(_vars: &(), _loss: &Var<T>) -> Result<Self, AutogradError> {
         Ok(())
     }
+    fn collect_named(&self, _prefix: &str, _out: &mut Vec<(String, Array<T>)>) {}
 }
 
 /// The leaf: a single tensor.
@@ -184,6 +221,11 @@ impl<T: DiffScalar> ParamTree<T> for Array<T> {
     }
     fn grads(vars: &Var<T>, loss: &Var<T>) -> Result<Self, AutogradError> {
         loss.grad(vars)
+    }
+    fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>) {
+        // The leaf carries no segment of its own: its name is the path
+        // the parents built (a bare-leaf root tree names itself "").
+        out.push((prefix.to_string(), self.shallow_clone()));
     }
 }
 
@@ -291,6 +333,10 @@ impl<T: DiffScalar> ParamTree<T> for LinearParams<T> {
             },
         })
     }
+    fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>) {
+        self.w.collect_named(&path_join(prefix, "w"), out);
+        self.b.collect_named(&path_join(prefix, "b"), out);
+    }
 }
 
 impl<T: DiffScalar + ToF64> Layer<T> for Linear {
@@ -397,6 +443,10 @@ impl<T: DiffScalar> ParamTree<T> for NormParams<T> {
             },
         })
     }
+    fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>) {
+        self.gamma.collect_named(&path_join(prefix, "gamma"), out);
+        self.beta.collect_named(&path_join(prefix, "beta"), out);
+    }
 }
 
 fn ones_zeros<T: DiffScalar>(
@@ -482,6 +532,10 @@ macro_rules! impl_tuple_layer {
             }
             fn grads(vars: &Self::Vars, loss: &Var<T>) -> Result<Self, AutogradError> {
                 Ok(($($P::grads(&vars.$idx, loss)?,)+))
+            }
+            fn collect_named(&self, prefix: &str, out: &mut Vec<(String, Array<T>)>) {
+                // Tuple members name by INDEX — "0.w", "1.gamma", …
+                $(self.$idx.collect_named(&path_join(prefix, stringify!($idx)), out);)+
             }
         }
 
