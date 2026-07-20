@@ -30,6 +30,7 @@
 - [Layer normalization](computation/tutorials/layer-norm.md)
 - [Rotary embeddings](computation/tutorials/rotary-embeddings.md)
 - [Train a model with quanta::nn](computation/tutorials/nn-training.md)
+- [A tiny transformer, end to end](computation/tutorials/transformer-lm.md)
 - [Project: linear regression](computation/tutorials/project-linear-regression.md)
 - [Project: recognize digits (MNIST)](computation/tutorials/project-mnist.md)
 - [Project: softmax regression](computation/tutorials/project-softmax-regression.md)

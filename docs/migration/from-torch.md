@@ -15,7 +15,8 @@ sharper equivalent rather than a lookalike. This page is the idiom map.
 | `optimizer.step()` mutates params in place; `zero_grad()` | `(params, state) = opt.step(&params, &grads, state)?` | Functional update; the state is *consumed* — replaying a stale state is a compile error |
 | `torch.manual_seed(0)` (global RNG) | `Key::new(seed)`, split per layer, **consumed on use** | No global RNG, no init-order hazard; same key ⇒ same params, always |
 | `nn.Sequential(l1, l2)` | the tuple `(l1, l2)` *is* a layer | Width contracts checked at `init` (build time), not at first forward |
-| `model.state_dict()` | `params.flatten()` → ordered `Vec<Array<T>>` (+ `unflatten`) | The same leaf view optimizers and checkpointing share |
+| `model.state_dict()` | `params.named_flatten()` → `("attn.wq.w", Array)` pairs; `state::save_state` / `load_state` for bytes | Names by field/index (`"0.w"`, `"norm.gamma"`); loading matches by NAME, never position, and missing/extra/shape mismatches are loud errors naming the path |
+| `model.train()` / `model.eval()` (a global mode bit) | two forwards: `apply` (eval) and `apply_train(…, key) → (y, key′)` | No mode flag anywhere — the SIGNATURE says which semantics you run, and the RNG key threads through the stack as state |
 | `requires_grad` / `no_grad()` | binding to a tape is what makes something differentiable | Differentiability is structural, not a flag on a tensor |
 | lr schedulers wrap the optimizer | `Schedule` is a pure `lr(t)`; rebuild the `Copy` config: `Adam { lr: sched.lr(t), ..opt }` | The learning rate is data, not hidden mutable state |
 
@@ -32,8 +33,13 @@ sharper equivalent rather than a lookalike. This page is the idiom map.
 | `F.scaled_dot_product_attention` | `functional::sdpa_var` — FlashAttention-style, fused both directions |
 | rotary embeddings (hand-rolled) | `rope::rope_var` + `RopeCache` — one sign-flagged kernel both directions |
 | `nn.MultiheadAttention` | `attention::MultiheadAttention` — fused heads + four projections; `causal` and per-head `rope` flags; `attend` for cross-attention |
-| `nn.Embedding` | `Var::embedding` today; module form arrives with the state/derive increment |
-| `nn.Dropout` | planned (`Key`-seeded, deterministic) — see `PARITY.md` |
+| `nn.Embedding` | `embedding::Embedding { vocab, dim }` — chain-head module over the gather/scatter-add op; unit-std init |
+| `nn.Dropout(p)` | `dropout::Dropout { rate }` — the mask is a pure function of (key, index): deterministic per key on every backend, regenerated in the backward (never stored), one kernel both directions (T9231–T9233) |
+| `nn.BatchNorm1d(c)` (running stats hidden in the module) | `batchnorm::BatchNorm` — **state-in/state-out**: `apply_train(params, stats, x) → (y, stats′)`, `apply_eval(params, stats, x)`; `BnStats` is a value you thread and checkpoint |
+| `nn.GroupNorm(g, c)` | `layer::GroupNorm { dim, groups, eps }` — the proven LayerNorm core per group + per-channel affine |
+| `nn.Conv2d(ci, co, k, stride, padding, bias)` | `conv::Conv2d { cin, cout, kh, kw, stride, pad, bias }` — NCHW, im2col+matmul |
+| `nn.MaxPool2d` / `nn.AvgPool2d` | `conv::{MaxPool2d, AvgPool2d}` — zero-param layers |
+| `nn.TransformerEncoderLayer(d, h, dim_ff, dropout, norm_first=True)` | `transformer::TransformerEncoderLayer` — pre-LN is THE form (no `norm_first` flag), SwiGLU feed-forward; a full `Layer`, keys threaded through both dropouts |
 
 ## Losses
 

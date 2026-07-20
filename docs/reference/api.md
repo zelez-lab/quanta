@@ -1035,11 +1035,12 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 
 | Item | Description |
 |------|-------------|
-| `trait Layer<T>` | Configuration + shapes: `in_dim() -> Option<usize>`, `out_dim(in)`, `init(&gpu, key) -> Params`, `apply(&tape, &vars, &x) -> Var` |
-| `trait ParamTree<T>` | Typed parameter tree: `bind(&tape) -> Vars`, `flatten() -> Vec<Array<T>>`, `unflatten(iter)`, `grads(vars, loss)` / `grads_from`, `map(f)` |
-| `Key` | Splittable PRNG key; `split(self)` and `uniform(self, …)` **consume** it — linear by ownership |
+| `trait Layer<T>` | Configuration + shapes: `in_dim() -> Option<usize>`, `out_dim(in)`, `init(&gpu, key) -> Params`, `apply(&tape, &vars, &x) -> Var`, and the TRAINING forward `apply_train(&tape, &vars, &x, key) -> (Var, Key)` — key in, remainder out; deterministic layers inherit the pass-through default, stochastic layers (Dropout) split; tuple stacks thread it member-to-member. No mode flag exists: the signature says which forward you run |
+| `trait ParamTree<T>` | Typed parameter tree: `bind(&tape) -> Vars`, `flatten() -> Vec<Array<T>>`, `unflatten(iter)`, `grads(vars, loss)` / `grads_from`, `map(f)`, and the NAMED view `collect_named(prefix, out)` / `named_flatten() -> Vec<(String, Array<T>)>` — derived structs name by field, tuples by index, `Option` transparent, `.`-joined, in flatten order |
+| `Key` | Splittable PRNG key; `split(self)`, `uniform(self, …)`, and `raw(self)` **consume** it — linear by ownership |
 | `Linear { in_dim, out_dim, bias }` | Dense affine `[N, in] → [N, out]`; Kaiming-uniform init; params `LinearParams { w, b: Option }` |
 | `LayerNorm { dim, eps }` / `RmsNorm { dim, eps }` | Norm layers over the fused kernels; params `NormParams { gamma, beta: Option }` |
+| `GroupNorm { dim, groups, eps }` | Per-group row normalization (the T9210 core over the `[N·G, C/G]` view) + per-channel affine; `GroupNorm(1)` ≡ LayerNorm; `C % groups` is loud |
 | tuples `(L1, …, L6)` | Tuple stacking (arity ≤ 6): the tuple IS a layer; width contracts checked at `init`; `Params` = tuple of member trees |
 | `()` as `ParamTree` | The empty tree — zero-parameter layers occupy stack slots for free |
 | `Option<P>` as `ParamTree` | Optional subtree: `None` contributes no leaves; the `&self` witness rebuilds the right variant |
@@ -1099,6 +1100,48 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 | `Schedule::{Constant, Step, LinearWarmup, Cosine}` | Pure `lr(t)`; feed back by rebuilding the `Copy` config |
 | `clip_grad_norm(&grads, max)` | Global L2 over ALL leaves; returns `(clipped_tree, pre_clip_norm)` |
 | `clip_grad_value(&grads, max_abs)` | Elementwise clamp over the tree |
+
+### `nn::dropout` — key-based, one kernel both directions
+
+| Item | Description |
+|------|-------------|
+| `dropout_var(tape, x, rate, key)` | The mask is a pure function of (key, element index): one Philox word per element, keep iff `⌊rate·2³²⌋ ≤ u`, survivors scaled `1/(1−t/2³²)` (unbiased at the implemented rate, T9231). The backward regenerates the mask and reruns the SAME kernel on the cotangent (T9232) — nothing stored. Deterministic per key on every backend; `rate` 0 = identity node, 1 = zero values AND gradients |
+| `Dropout { rate }` | The layer: `apply` (eval) = identity — inverted dropout never rescales at inference; `apply_train` splits the key and masks |
+| `keep_mask_host(key, rate, n)` | The bit-exact host reference for the kernel's keep decision (differential tests, mask inspection) |
+
+### `nn::embedding` — the chain head
+
+| Item | Description |
+|------|-------------|
+| `Embedding { vocab, dim }` | Token table `[V, E]` looked up by `u32` ids: `apply(&table_var, &ids) → [B, E]`; gradient scatter-adds (repeated ids accumulate). Unit-std init (uniform ±√3). Params = the table `Array` itself (the `ParamTree` leaf). Deliberately NOT a `Layer` — its input is ids, not a `Var`; compose it at the front, then feed the stack |
+
+### `nn::batchnorm` — state-in/state-out (decision D5)
+
+| Item | Description |
+|------|-------------|
+| `BatchNorm { dim, eps, momentum }` | `apply_train(tape, &vars, &stats, x) → (y, stats′)` normalizes by BATCH statistics (fully differentiated — the backward through mean/variance comes off the tape) and returns the EMA-updated running stats (variance stored unbiased); `apply_eval(tape, &vars, &stats, x)` normalizes by the running stats. No hidden fields, no mode flag; a module (not tuple-stackable — eval needs the stats too) |
+| `BnStats { mean, var }` | The threaded state; derives `ParamTree` so it checkpoints via `nn::state` under `"mean"`/`"var"` — never bind it, never optimize it |
+
+### `nn::conv` — NCHW module forms
+
+| Item | Description |
+|------|-------------|
+| `Conv2d { cin, cout, kh, kw, stride, pad, bias }` | Layer over `Var::conv2d` (im2col + matmul; col2im-adjoint backward); Kaiming init over `Cin·kh·kw`; params reuse `LinearParams`. Rank-4 layers set `in_dim = None` (width contracts are 2-D); the op checks shapes loudly |
+| `MaxPool2d` / `AvgPool2d { kh, kw, stride, pad }` | Zero-param layers over the pooling ops; stack in tuples with `Conv2d` |
+
+### `nn::state` — named checkpoints
+
+| Item | Description |
+|------|-------------|
+| `save_state(&tree) -> Vec<u8>` | Serializes any `ParamTree` under its hierarchical names (dependency-free `QNNS` format; elements travel as f64 LE — exact for f32 and f64 trees) |
+| `load_state(&witness, &gpu, bytes) -> P` | Rebuilds a tree of the witness's shape **matching leaves by NAME, never position** — reordered fields load identically; missing / extra / wrong-shape / wrong-dtype leaves fail loudly naming the path. Optimizer state trees checkpoint with the same two calls |
+
+### `nn::transformer` — the composed block
+
+| Item | Description |
+|------|-------------|
+| `TransformerEncoderLayer { attn, ffn_hidden, dropout, eps }` | Pre-LN block: `x + Dropout(MHA(LN₁x))`, then `+ Dropout(W₂·SwiGLU(W₁·LN₂h))` — every piece a shipped, proven citizen. A full `Layer`: stacks in tuples, `apply_train` threads keys through both dropouts, checkpoints by name (`"attn.wq.w"`, `"ffn1.b"`, …). `new(embed, heads)` = bidirectional default (`ffn_hidden = 4·embed`, dropout 0.1); pair with `MultiheadAttention::decoder` for causal+rope language modelling |
+| `EncoderLayerParams` | The derived five-subtree params (`norm1`, `attn`, `norm2`, `ffn1`, `ffn2`) |
 
 ---
 

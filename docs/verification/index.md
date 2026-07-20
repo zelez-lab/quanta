@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss identities (T9210–T9230) — 34 theorems, 0 axioms |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss/dropout identities (T9210–T9233) — 37 theorems, 0 axioms |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -94,7 +94,7 @@ The math companion crates carry their own proof obligations, in the same
   autograd forward, and asserts finiteness under ±80 logits. See
   [Fused attention](../computation/tutorials/fused-attention.md) for the tutorial.
   The same recipe now covers the whole stack — norms, rotary, optimizers,
-  activations, losses (T9210–T9230; details in the
+  activations, losses, dropout (T9210–T9233; details in the
   [fused attention section](#the-rest-of-the-quanta-nn-proof-foundation-t9210t9230)
   below).
 
@@ -398,7 +398,7 @@ differential-tested against an f64 two-pass reference across many shapes
 forward, gradient-checked through `sdpa_var` by finite differences, and
 asserted finite under ±80 logits.
 
-### The rest of the `quanta-nn` proof foundation (T9210–T9230)
+### The rest of the `quanta-nn` proof foundation (T9210–T9233)
 
 Every later fused kernel family in `quanta-nn` follows the same recipe —
 Lean identities first, then the kernels, then differential tests that run
@@ -427,6 +427,12 @@ the theorems empirically. All files under `specs/verify/lean/Quanta/Nn/`;
   BCE-with-logits spelling equals the textbook form for all logits; the
   Huber gradient is globally `clamp(r, −δ, δ)`, continuous across the
   knee.
+* **Dropout** (`DropoutVjp.lean`, T9231–T9233) — inverted dropout is
+  EXACTLY unbiased at the quantized rate the kernel implements (summed
+  over all 2³² equally-likely Philox words); the mask-scale map is
+  self-adjoint, so the backward is the forward kernel run on the
+  cotangent with the mask regenerated from the key — never stored; the
+  floor threshold undershoots the requested rate by less than 2⁻³².
 
 ## Trusted Computing Base
 
