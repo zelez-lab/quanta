@@ -65,6 +65,12 @@ impl Key {
         )
     }
 
+    /// The `(seed, stream)` words, consuming the key — the kernel-facing
+    /// view for counter-based consumers (dropout's Philox mask).
+    pub fn raw(self) -> (u64, u64) {
+        (self.seed, self.stream)
+    }
+
     /// Fill `n` values uniformly in `[lo, hi)`, consuming the key.
     pub fn uniform(self, n: usize, lo: f32, hi: f32) -> Vec<f32> {
         let mixed = self.seed ^ self.stream.wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -205,6 +211,24 @@ pub trait Layer<T: DiffScalar + ToF64> {
         params: &<Self::Params as ParamTree<T>>::Vars,
         x: &Var<T>,
     ) -> Result<Var<T>, AutogradError>;
+
+    /// The TRAINING forward: `apply` plus the RNG effect, threaded in
+    /// D2's state-passing style — key in, remainder key out (the
+    /// unrolled monad; it crosses actor boundaries as plain data).
+    /// Deterministic layers inherit this pass-through default;
+    /// stochastic layers (Dropout) override it, split the key, and
+    /// return the other half. There is NO mode flag: eval semantics are
+    /// `apply`, training semantics are `apply_train`, and the type
+    /// signature says which one you are running.
+    fn apply_train(
+        &self,
+        tape: &Tape<T>,
+        params: &<Self::Params as ParamTree<T>>::Vars,
+        x: &Var<T>,
+        key: Key,
+    ) -> Result<(Var<T>, Key), AutogradError> {
+        Ok((self.apply(tape, params, x)?, key))
+    }
 }
 
 // ── Concrete layers ──────────────────────────────────────────────────────
@@ -510,6 +534,20 @@ macro_rules! impl_tuple_layer {
                 let y = x.clone();
                 $(let y = self.$idx.apply(tape, &params.$idx, &y)?;)+
                 Ok(y)
+            }
+            fn apply_train(
+                &self,
+                tape: &Tape<T>,
+                params: &<($($L::Params,)+) as ParamTree<T>>::Vars,
+                x: &Var<T>,
+                key: Key,
+            ) -> Result<(Var<T>, Key), AutogradError> {
+                // Same shadowing shape as `apply` above; the key threads
+                // member-to-member (D2's state-passing style).
+                let y = x.clone();
+                let k = key;
+                $(let (y, k) = self.$idx.apply_train(tape, &params.$idx, &y, k)?;)+
+                Ok((y, k))
             }
         }
     };

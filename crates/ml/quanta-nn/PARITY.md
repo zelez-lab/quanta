@@ -11,12 +11,12 @@ recipe (Lean proof foundation, then implementation with differential tests).
 | Item | Status | Notes |
 |---|---|---|
 | `Linear` | planned | blas gemm-backed; bias optional |
-| `Embedding` | planned | array `select_rows` backed |
+| `Embedding` | **shipped (module)** | `embedding::Embedding` — configuration + unit-std init around the existing `Var::embedding` op (gather forward, scatter-add backward; repeated ids accumulate). Deliberately NOT a `Layer` impl: its input is `ids: Array<u32>`, not a `Var` — it heads the chain (the MHA `attend` precedent); revisit if a use-case needs mid-stack lookup. |
 | `LayerNorm` ⚗ | **shipped (functional)** | `norm::layer_norm_var` — fused fwd (saves `(μ, rstd)` stats) + the proven T9210 three-term backward via `custom_vjp`; composed `Var::layer_norm` retained as oracle. Module form arrives with the Layer slice. |
 | `RMSNorm` ⚗ | **shipped (functional)** | `norm::rms_norm_var` — fused fwd/bwd (T9211, no centering term); composed `Var::rms_norm` as oracle. Module form with the Layer slice. |
 | `GroupNorm` | planned | via LayerNorm machinery |
 | `BatchNorm2d` | planned | running stats owned by the module |
-| `Dropout` | planned | quanta-rand backed, seeded/deterministic mode |
+| `Dropout` ⚗ | **shipped (module)** | `dropout::{dropout_var, Dropout}` — the mask is a pure function of (key, index): one Philox word per element, keep iff `⌊rate·2³²⌋ ≤ u`, scale `1/(1−t/2³²)` (T9231 unbiased, T9233 quantization ≤ 2⁻³²). ONE kernel serves forward and backward — the VJP is the same masked scaling (T9232), so the mask is regenerated, never stored. Deterministic per key on every backend (host-reference mask in tests). **First stochastic layer: introduced `Layer::apply_train`** — `(x, key) → (y, key′)` state-passing (D2), pass-through default for deterministic layers, key threaded through tuple stacks; eval stays `apply` (identity — no mode flag exists). |
 | `Conv2d` | planned | im2col path exists in quanta-array |
 | `MaxPool2d` / `AvgPool2d` | planned | exists in array/autograd; wrapped as modules |
 | `MultiheadAttention` ⚗ | **shipped (module)** | `attention::MultiheadAttention` — four `Linear` projections around H fused streaming heads (`functional::sdpa_var`, T9200–T9209: the N² score matrix exists on neither pass). Optional per-head rotary (`rope: true`, T9216–T9218) and causal masking; `Layer::apply` = self-attention, inherent `attend` = cross-attention; head-divisibility contract fails at `init`. Params = `MhaParams`, the first `#[derive(ParamTree)]` consumer. Tested against the composed `Var::multi_head_attention` oracle (values + gradients, both mask modes), gradchecked with biases, future-leak probed, trained in a tuple stack. 2-D `[T, E]` core (batch = host loop); per-call rope cache + padding-mask passthrough = next increments. |

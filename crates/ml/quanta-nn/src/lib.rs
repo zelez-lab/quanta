@@ -30,6 +30,8 @@
 
 pub mod activation;
 pub mod attention;
+pub mod dropout;
+pub mod embedding;
 pub mod functional;
 pub mod kernel;
 pub mod layer;
