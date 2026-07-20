@@ -468,6 +468,18 @@ implementations lean on.
 | T9229 | `t9229_bce_with_logits_stable` — `max(x,0) − x·y + log(1+e^{−\|x\|})` equals the textbook `−(y·log σ + (1−y)·log(1−σ))` for ALL logits | Lean | proven |
 | T9230 | `t9230_huber_knee_{value,grad_clamp}` — the Huber branches meet at `\|r\| = δ` and the gradient is globally `clamp(r, −δ, δ)` | Lean | proven |
 
+## Dropout — key-based mask, one kernel both directions (T9231–T9233)
+
+`specs/verify/lean/Quanta/Nn/DropoutVjp.lean` — the facts the fused
+Philox-mask dropout rests on: the mask is a pure function of
+(key, index), so the backward regenerates it instead of storing it.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9231 | `t9231_dropout_unbiased` — over all `N` equally-likely words, keep-iff-`t ≤ u` with scale `N/(N−t)` averages exactly to the identity: unbiased at the rate the kernel implements | Lean | proven |
+| T9232 | `t9232_dropout_self_adjoint` — the mask-scale map is diagonal, hence self-adjoint: the VJP is the SAME masked scaling applied to the cotangent — one kernel serves forward and backward | Lean | proven |
+| T9233 | `t9233_threshold_quantization` — `t = ⌊rate·N⌋` gives `t/N ≤ rate < t/N + 1/N`: the implemented drop-rate never exceeds the requested one and undershoots by less than `2⁻³²` | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -508,7 +520,8 @@ implementations lean on.
 | Optimizer Step Identities (Fused SGD/Adam/AdamW) | 4 | 4 | 0 |
 | Activation Identities (Fused Softmax/GeLU/SwiGLU) | 5 | 5 | 0 |
 | Loss Identities (CE/BCE/Huber) | 3 | 3 | 0 |
-| **Total proven theorems** | **226** | **225** | **1** |
+| Dropout (Key-Based Mask) | 3 | 3 | 0 |
+| **Total proven theorems** | **229** | **228** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing

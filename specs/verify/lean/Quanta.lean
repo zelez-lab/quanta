@@ -103,6 +103,7 @@ import Quanta.Nn.RotationVjp
 import Quanta.Nn.OptimStep
 import Quanta.Nn.ActivationVjp
 import Quanta.Nn.LossVjp
+import Quanta.Nn.DropoutVjp
 
 -- Level-1 BLAS forward-error bounds (companion crate quanta-blas)
 import Quanta.Blas.Reference
