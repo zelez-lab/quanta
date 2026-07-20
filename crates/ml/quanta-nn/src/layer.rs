@@ -509,6 +509,36 @@ impl<T: DiffScalar + ToF64> Layer<T> for RmsNorm {
     }
 }
 
+/// GroupNorm as a layer: `[N, C]` rows normalized per channel-group
+/// (the proven LayerNorm core over the `[N·G, C/G]` view), then the
+/// per-channel affine. `C % groups == 0` is checked in the op.
+pub struct GroupNorm {
+    pub dim: usize,
+    pub groups: usize,
+    pub eps: f32,
+}
+
+impl<T: DiffScalar + ToF64> Layer<T> for GroupNorm {
+    type Params = NormParams<T>;
+
+    fn in_dim(&self) -> Option<usize> {
+        Some(self.dim)
+    }
+    fn out_dim(&self, _in: usize) -> usize {
+        self.dim
+    }
+    fn init(&self, gpu: &Gpu, _key: Key) -> Result<Self::Params, AutogradError> {
+        ones_zeros(gpu, self.dim, true)
+    }
+    fn apply(&self, tape: &Tape<T>, p: &NormVars<T>, x: &Var<T>) -> Result<Var<T>, AutogradError> {
+        let beta = p
+            .beta
+            .as_ref()
+            .ok_or_else(|| bad("GroupNorm: beta missing"))?;
+        crate::norm::group_norm_var(tape, x, &p.gamma, beta, self.groups, self.eps)
+    }
+}
+
 // ── Tuple stacking (D3) ──────────────────────────────────────────────────
 
 macro_rules! impl_tuple_layer {

@@ -674,3 +674,48 @@ pub fn rms_norm_var<T: DiffScalar + ToF64>(
 
     Ok(tape.custom_vjp(&[x, gamma], out_arr, backward))
 }
+
+/// Tape-differentiable GroupNorm over `[N, C]` with `[C]` scale/shift and
+/// `C % groups == 0`: each row's channels split into `groups` segments,
+/// each segment normalized independently, then the per-CHANNEL affine.
+///
+/// Composed over the proven LayerNorm core (T9210's backward) via the
+/// reshape `[N, C] → [N·groups, C/groups]` — the normalization runs the
+/// fused kernels with a unit/zero inner affine (their gradients are
+/// computed and discarded; the per-channel γ/β affine happens outside,
+/// through ordinary per-op VJPs). No new kernel, no new proof
+/// obligation. GroupNorm(1) is LayerNorm-without-per-channel-stats-fusion;
+/// GroupNorm(C) is InstanceNorm-per-channel.
+pub fn group_norm_var<T: DiffScalar + ToF64>(
+    tape: &Tape<T>,
+    x: &Var<T>,
+    gamma: &Var<T>,
+    beta: &Var<T>,
+    groups: usize,
+    eps: f32,
+) -> Result<Var<T>, AutogradError> {
+    let xs = x.value().shape().to_vec();
+    if xs.len() != 2 {
+        return Err(bad("group_norm_var: input must be 2-D [N, C]"));
+    }
+    let (n, c) = (xs[0], xs[1]);
+    if groups == 0 || c % groups != 0 {
+        return Err(bad("group_norm_var: C must be divisible by groups"));
+    }
+    if gamma.value().shape() != [c] || beta.value().shape() != [c] {
+        return Err(bad("group_norm_var: gamma/beta must be [C]"));
+    }
+    let cg = c / groups;
+    let gpu = x.value().gpu().clone();
+
+    let ones_host: Vec<T> = (0..cg).map(|_| T::from_f64(1.0)).collect();
+    let zeros_host: Vec<T> = (0..cg).map(|_| T::from_f64(0.0)).collect();
+    let ones = tape.var(Array::from_slice(&gpu, &ones_host, &[cg]).map_err(AutogradError::from)?);
+    let zeros = tape.var(Array::from_slice(&gpu, &zeros_host, &[cg]).map_err(AutogradError::from)?);
+
+    let xg = x.reshape(&[n * groups, cg])?;
+    let xn = layer_norm_var(tape, &xg, &ones, &zeros, eps)?;
+    xn.reshape(&[n, c])?
+        .mul(&gamma.reshape(&[1, c])?)?
+        .add(&beta.reshape(&[1, c])?)
+}
