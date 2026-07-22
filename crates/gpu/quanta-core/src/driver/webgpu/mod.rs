@@ -58,8 +58,8 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use crate::{
-    Caps, FieldUsage, Format, FormatCaps, Gpu, GpuDevice as QGpuDevice, Pulse, QuantaError,
-    Texture, TextureDesc, Vendor, Wave,
+    Caps, FieldUsage, Format, FormatCaps, Gpu, GpuDevice as QGpuDevice, MemoryTopology, Pulse,
+    QuantaError, Texture, TextureDesc, Vendor, Wave,
 };
 // Render types used by the render-gated trait wrappers + the
 // ray-tracing NotSupported stubs below (085).
@@ -137,6 +137,10 @@ impl WebgpuDevice {
             max_groups: [65535, 65535, 65535],
             vendor: Vendor::Software,
             name: String::from("WebGPU (browser)"),
+            // The browser hides the physical topology and offers no
+            // zero-copy import — every transfer is a real copy, so the
+            // effective regime is discrete even on unified hardware.
+            memory_topology: MemoryTopology::Discrete,
         };
         Ok(WebgpuDevice {
             caps,

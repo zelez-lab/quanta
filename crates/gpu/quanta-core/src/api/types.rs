@@ -151,6 +151,28 @@ impl Color {
     }
 }
 
+/// Memory topology of the (backend, device) pair — the transfer-cost
+/// regime a consumer should plan against.
+///
+/// This reports the *effective* topology of the API + device pair, not
+/// the bare silicon: WebGPU reports [`Discrete`](Self::Discrete) even
+/// on unified hardware, because the browser exposes no zero-copy path
+/// and every host↔device transfer pays a real copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryTopology {
+    /// CPU and GPU share one physical memory pool (Apple silicon,
+    /// integrated GPUs, the software driver). Host-visible placements
+    /// are coherent views of the same pages: `MappedField` and
+    /// `FieldUsage::TRANSFER` cost nothing over device-local, and
+    /// staging copies are avoidable.
+    Unified,
+    /// The device owns local memory separate from host RAM (discrete
+    /// cards — and WebGPU, where the topology is hidden and transfers
+    /// always copy). Host↔device movement pays interconnect
+    /// bandwidth: batch transfers, keep hot data resident.
+    Discrete,
+}
+
 /// GPU device capabilities.
 ///
 /// Marked `#[non_exhaustive]`: capability fields will be added without a
@@ -174,6 +196,9 @@ pub struct Caps {
     pub vendor: Vendor,
     /// Device name (for diagnostics).
     pub name: String,
+    /// Memory topology — see [`MemoryTopology`] for the placement and
+    /// transfer-cost semantics each variant implies.
+    pub memory_topology: MemoryTopology,
 }
 
 impl Caps {

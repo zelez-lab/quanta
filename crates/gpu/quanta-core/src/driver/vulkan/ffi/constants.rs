@@ -43,6 +43,14 @@ pub const fn null_handle() -> *mut c_void {
 pub type VkResult = i32;
 pub const VK_SUCCESS: VkResult = 0;
 
+// ─── VkPhysicalDeviceType ───────────────────────────────────────────────────
+// Spec-stable values. OTHER = 0 and VIRTUAL_GPU = 3 exist but are not
+// named here — topology mapping treats them via its wildcard arm.
+
+pub const VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: u32 = 1;
+pub const VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: u32 = 2;
+pub const VK_PHYSICAL_DEVICE_TYPE_CPU: u32 = 4;
+
 // ─── VkStructureType constants ──────────────────────────────────────────────
 
 pub const VK_STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;

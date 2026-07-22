@@ -167,6 +167,13 @@ pub unsafe fn msg_ptr_f32(obj: Id, name: &[u8]) -> *mut f32 {
     f(obj, sel(name))
 }
 
+/// Send message with no arguments, returning BOOL — used for
+/// `MTLDevice.hasUnifiedMemory`.
+pub unsafe fn msg_bool(obj: Id, name: &[u8]) -> bool {
+    let f: unsafe extern "C" fn(Id, Sel) -> BOOL = mem::transmute(objc_msgSend as *const c_void);
+    f(obj, sel(name)) != NO
+}
+
 /// Send message taking one NSUInteger, returning BOOL — used for
 /// `MTLDevice.supportsRasterizationRateMapWithLayerCount:`.
 pub unsafe fn msg_bool_u64(obj: Id, name: &[u8], v: u64) -> bool {

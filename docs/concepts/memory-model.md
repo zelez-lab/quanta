@@ -158,10 +158,63 @@ mapped.write(0, 3.14);   // CPU writes directly to GPU-visible memory
 Use mapped memory for small, frequently-updated data (camera matrices, UI
 state). For large compute buffers, dedicated Fields are faster for the GPU.
 
-## Transfers
+## Transfers and memory topology
 
-Data crosses the PCIe bus (or unified memory controller) when moving between
-CPU and GPU. Minimize transfers by keeping data on the GPU between dispatches.
+Data crosses the PCIe bus (or no bus at all, on unified-memory devices) when
+moving between CPU and GPU. What a transfer really costs depends on the
+device's *memory topology*, which Quanta exposes as a queryable property:
+
+```rust
+use quanta::MemoryTopology;
+
+match gpu.memory_topology() {
+    MemoryTopology::Unified => { /* host<->device transfers are ~free */ }
+    MemoryTopology::Discrete => { /* transfers pay interconnect bandwidth */ }
+}
+```
+
+- **`Unified`** -- CPU and GPU share one physical memory pool (Apple
+  silicon, integrated GPUs, the software driver). Host-visible placements
+  are coherent views of the same pages: `field_mapped` costs nothing over a
+  dedicated field, and a `write()` is a memcpy within one RAM.
+- **`Discrete`** -- the device owns local VRAM (desktop discrete cards).
+  Every host<->device movement pays real interconnect bandwidth: batch
+  transfers, and keep hot data resident on the GPU between dispatches.
+
+The query reports the *effective* topology of the backend + device pair,
+not the bare silicon:
+
+| Backend | Reports | Source |
+|---------|---------|--------|
+| Metal | `Unified` on Apple silicon; `Discrete` for discrete cards on Intel Macs | `MTLDevice.hasUnifiedMemory` |
+| Vulkan | `Unified` for integrated GPUs and CPU implementations (llvmpipe); `Discrete` otherwise | `VkPhysicalDeviceProperties::deviceType` |
+| Software | `Unified` | it *is* host memory |
+| WebGPU | `Discrete` | the browser hides the topology and offers no zero-copy path, so every transfer is a real copy -- the discrete cost model is the honest one even on unified hardware |
+
+If your code makes a CPU-vs-GPU routing decision -- a query planner deciding
+whether a scan is worth dispatching, a scheduler placing work -- branch on
+this query instead of hardcoding a crossover measured on one machine. A
+threshold calibrated on unified memory (where memory-bound work gains little
+from the GPU) is wrong on a discrete card, and vice versa.
+
+### Field placement per topology
+
+Where a `Field<T>` physically lives is decided by its usage flags, per
+backend:
+
+- With `FieldUsage::TRANSFER` (present in every `default_*` preset): Metal
+  allocates shared storage, Vulkan host-visible + coherent memory. On
+  unified topology that is the same pool the GPU computes from; on discrete
+  Vulkan it can be slower for the GPU than device-local memory.
+- Without `TRANSFER`: Metal allocates private storage, Vulkan device-local
+  -- fastest for the GPU, unreachable from the CPU except via a staged
+  copy.
+- `field_mapped` always takes the host-visible flavor and stays permanently
+  mapped.
+
+On `Unified` topology the distinction is nearly free either way. On
+`Discrete`, choose deliberately: strip `TRANSFER` from fields the CPU never
+touches.
 
 ## When to use what
 

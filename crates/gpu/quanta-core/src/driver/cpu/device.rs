@@ -8,7 +8,10 @@ use alloc::vec::Vec;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::{Caps, FieldUsage, GpuDevice, Pulse, QuantaError, Texture, TextureDesc, Vendor, Wave};
+use crate::{
+    Caps, FieldUsage, GpuDevice, MemoryTopology, Pulse, QuantaError, Texture, TextureDesc, Vendor,
+    Wave,
+};
 // Render types used only by the render-gated GpuDevice impl methods (085).
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
@@ -219,6 +222,7 @@ impl CpuDevice {
                 max_groups: [u32::MAX; 3],
                 vendor: Vendor::Software,
                 name: String::from("Quanta CPU (software)"),
+                memory_topology: MemoryTopology::Unified,
             },
             next_handle: Mutex::new(1),
             buffers: Mutex::new(HashMap::new()),

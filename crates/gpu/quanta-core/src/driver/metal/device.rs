@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Caps, GpuDevice, Vendor};
+use crate::{Caps, GpuDevice, MemoryTopology, Vendor};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -315,6 +315,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
 
     let max_threads = unsafe { ffi::msg_mtlsize(device, b"maxThreadsPerThreadgroup\0") };
     let memory_bytes = unsafe { ffi::msg_u64(device, b"recommendedMaxWorkingSetSize\0") };
+    // Hardware truth, not an Apple-silicon assumption: an Intel Mac
+    // driving a discrete AMD card answers false here.
+    let unified = unsafe { ffi::msg_bool(device, b"hasUnifiedMemory\0") };
 
     let caps = Caps {
         nuclei: (max_threads.width as u32 / 32).max(1),
@@ -325,6 +328,11 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         max_groups: [u32::MAX, u32::MAX, u32::MAX],
         vendor: Vendor::Apple,
         name,
+        memory_topology: if unified {
+            MemoryTopology::Unified
+        } else {
+            MemoryTopology::Discrete
+        },
     };
 
     let queue = unsafe { ffi::msg_id(device, b"newCommandQueue\0") };

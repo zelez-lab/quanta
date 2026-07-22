@@ -35,6 +35,7 @@ let gpu = quanta::init()?;
 | `quarks_per_proton()` | `u32` | Threads per core (warp / wavefront width) |
 | `total_quarks()` | `u32` | Total parallel execution units |
 | `name()` | `&str` | Device name string |
+| `memory_topology()` | `MemoryTopology` | `Unified` (host and device share one physical pool) or `Discrete` (transfers pay interconnect bandwidth). See [Memory Model](../concepts/memory-model.md#transfers-and-memory-topology) for per-backend mapping and placement policy |
 
 ### Feature support queries
 

@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::{
-    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, QuantaError,
-    ResourceState, Texture, TextureDesc, TextureView, TextureViewDesc, TimestampQuery,
+    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, MemoryTopology,
+    QuantaError, ResourceState, Texture, TextureDesc, TextureView, TextureViewDesc, TimestampQuery,
 };
 #[cfg(feature = "compute")]
 mod compute;
@@ -91,6 +91,16 @@ impl Gpu {
 
     pub fn total_quarks(&self) -> u32 {
         self.caps().total_quarks()
+    }
+
+    /// Memory topology of the active device: whether host and device
+    /// share one physical memory pool ([`MemoryTopology::Unified`]) or
+    /// host↔device transfers cross a real interconnect
+    /// ([`MemoryTopology::Discrete`]). Consumers with a CPU-vs-GPU
+    /// routing decision (query planners, schedulers) branch on this
+    /// instead of hardcoding one topology's crossover point.
+    pub fn memory_topology(&self) -> MemoryTopology {
+        self.caps().memory_topology
     }
 
     // === Feature support queries (step 063 slice 20) ===

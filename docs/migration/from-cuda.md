@@ -113,6 +113,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `cudaDeviceSynchronize()` | `pulse.wait()` / `gpu.wait_idle()` |
 | `cudaLaunchHostFunc` / `cudaStreamAddCallback` | `pulse.on_complete(f)` (run `f` on a background waiter at completion — the event-driven alternative to `wait()`) |
 | `cudaGetDeviceProperties` | `gpu.caps()` |
+| `prop.integrated` / unified-memory checks | `gpu.memory_topology()` (`Unified` \| `Discrete` — see [Memory Model](../concepts/memory-model.md#transfers-and-memory-topology)) |
 | `cudaFree` | automatic (Field drops when it goes out of scope) |
 
 ## CUB block primitives

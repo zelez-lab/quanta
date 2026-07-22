@@ -6,7 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Caps, GpuDevice, Pulse, QuantaError, Vendor};
+use crate::{Caps, GpuDevice, MemoryTopology, Pulse, QuantaError, Vendor};
 use std::collections::HashMap;
 use std::eprintln;
 use std::sync::{Mutex, RwLock};
@@ -1545,6 +1545,16 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             .max()
             .unwrap_or(0);
 
+        // Integrated GPUs and CPU implementations (lavapipe) share host
+        // RAM. Everything else — discrete, virtual, unknown — is
+        // treated as discrete: the conservative regime (transfers cost).
+        let memory_topology = match props.device_type {
+            ffi::VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU | ffi::VK_PHYSICAL_DEVICE_TYPE_CPU => {
+                MemoryTopology::Unified
+            }
+            _ => MemoryTopology::Discrete,
+        };
+
         let caps = Caps {
             nuclei: props.limits.max_compute_work_group_count[0].min(1024),
             protons_per_nucleus: 1,
@@ -1554,6 +1564,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             max_groups: props.limits.max_compute_work_group_count,
             vendor,
             name,
+            memory_topology,
         };
 
         devices.push(Box::new(VulkanDevice {
