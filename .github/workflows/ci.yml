@@ -137,6 +137,9 @@ jobs:
       # case runs under a 30s watchdog so a dropped loop-exit Break (which
       # spins the structured Loop to its sentinel bound) fails instead of
       # wedging the runner. Covers the k1_bin double-sentinel miscompile.
+      - name: Memory-topology query tests (software lane)
+        run: cargo test --test memory_topology --features software --no-default-features
+
       - name: Lowering loop-shape tests (software lane)
         run: cargo test --test lowering_loops --features software --no-default-features
 
@@ -614,3 +617,16 @@ jobs:
           cargo test --test vulkan_failed_pipeline --no-default-features --features vulkan,render
           cargo test --test vulkan_msaa_resolve_sample --no-default-features --features vulkan,render
           cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
+
+      # Memory surface on a real Vulkan implementation: topology
+      # (lavapipe = CPU type → Unified), zero-copy host import (native
+      # via VK_EXT_external_memory_host where lavapipe advertises it —
+      # the test log records which path ran), shared buffers.
+      - name: Memory-surface tests (topology, host import, shared buffers)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+          LD_LIBRARY_PATH: /usr/lib/llvm-22/lib
+        run: |
+          cargo test --test memory_topology --no-default-features --features vulkan,jit,compute
+          cargo test --test host_field_import --no-default-features --features vulkan,jit,compute
+          cargo test --test shared_field --no-default-features --features vulkan,jit,compute
