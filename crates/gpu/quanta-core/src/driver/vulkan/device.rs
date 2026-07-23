@@ -1193,7 +1193,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // None ⇒ no import path; the API layer stages a copy instead.
         let has_host_import_ext =
             physical_device_has_extension(pd, b"VK_EXT_external_memory_host\0");
-        let host_import_min_align: Option<u64> = match (has_host_import_ext, get_props2) {
+        let host_import_min_align: Option<u64> = match (has_host_import_ext, get_props2_fn) {
             (true, Some(get_props2)) => {
                 let mut host_props = ffi::VkPhysicalDeviceExternalMemoryHostPropertiesEXT {
                     s_type:
