@@ -254,7 +254,7 @@ covered: SPIR-V, MSL, WGSL (build-time + JIT), LLVM, CPU.
   template applied to all three drivers; the discipline caught the
   same VRS silent-drop bug on each.
 
-### API surface (steps 075 + 094)
+### API surface (steps 075 + 094 + 088)
 
 * **T720–T722** — Pulse lifecycle. Wait closure (FnOnce) consumed
   exactly once: no double-fire.
@@ -268,6 +268,9 @@ covered: SPIR-V, MSL, WGSL (build-time + JIT), LLVM, CPU.
   construction, the staged fallback copies exactly once, the view is
   released exactly once — never the caller's pages — and the v1 op
   set is read-only. Lean + Verus pair.
+* **T770–T774** — Shared buffers (`SharedField` = `Arc<Field<T>>`).
+  Refcount algebra, freed exactly once on the last holder's drop, no
+  use after it, native-handle export is a borrow. Lean + Verus pair.
 
 ### Memory models (steps 055–056)
 

@@ -51,17 +51,18 @@ verdicts; `tests/litmus.rs` runs the same shapes as real GPU kernels
 ### Level 5: API Invariants -- ACHIEVED
 
 **What is proven:** Pulse/Field/Wave/Texture lifecycle invariants, host-memory
-import lifecycle, capability
+import lifecycle, shared-buffer ownership, capability
 monotonicity, batch ordering, blend state consistency, derive macro correctness,
 render builder sequencing, field/texture delegation.
 
-**Tool:** Verus (83 mirror files, ~1,150 proof functions across all levels)
+**Tool:** Verus (84 mirror files, ~1,150 proof functions across all levels)
 
-**Theorems (44 total):**
+**Theorems (49 total):**
 
 | Range | Category | Count | What |
 |-------|----------|------:|------|
 | T760-T766 | Host-Memory Import | 7 | zero-copy by construction (T760), staged fallback copies exactly once (T761), view released exactly once (T762), caller pages never freed (T763), freed view not bindable (T764), alignment contract (T765), read-only op set (T766) |
+| T770-T774 | Shared Buffers | 5 | clone preserves handle (T770), refcount algebra (T771), freed exactly once (T772), no use-after-last-drop (T773), export is a borrow (T774) |
 | T800-T810 | Core API | 11 | Wave slot bounds (T800), push alignment (T801), binding monotonicity (T802), push mask bijection (T803), Pulse monotonic completion (T804), Pulse once-consume (T805), Field byte_size (T806), Field write-read preservation (T807), MappedField pointer validity (T808), Batch dispatch equivalence (T809), blend state consistency (T810) |
 | T2000-T2003 | Render Builder | 4 | Each method appends exactly one RenderOp (T2000), pulse delegates correctly (T2001), move semantics prevent reuse (T2002), method-to-op mapping (T2003) |
 | T2010-T2014 | Vertex Derive | 5 | Type-to-format mapping (T2010), cumulative offsets (T2011), stride = total size (T2012), location = field index (T2013), repr(C) requirement (T2014) |

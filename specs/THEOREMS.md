@@ -339,6 +339,11 @@ Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
 | T764 | A freed host-import view is not bindable | Lean + Verus | proven |
 | T765 | Unaligned import rejected, never silently staged | Lean + Verus | proven |
 | T766 | Post-creation op set never writes host bytes (read-only v1) | Lean + Verus | proven |
+| T770 | Shared-buffer clone preserves the handle (no second buffer) | Lean + Verus | proven |
+| T771 | Shared-buffer refcount algebra: create=1, clone +1, drop −1 | Lean + Verus | proven |
+| T772 | Shared buffer freed exactly once — only the last holder's drop | Lean + Verus | proven |
+| T773 | Freed shared buffer not bindable (no use-after-last-drop) | Lean + Verus | proven |
+| T774 | Native-handle export is ownership-neutral (a borrow) | Lean + Verus | proven |
 
 ## WebGPU Host Axioms (A10, A11) — TCB
 
@@ -562,6 +567,13 @@ staged fallback copies exactly once, releasing the view never frees
 the caller's pages, unaligned import is rejected, and the v1 op set
 is read-only. Proven twice — Lean (`Quanta.HostImport`) and the Verus
 mirror (`quanta-api/host_field_import.rs`).
+
+T770-T774 state the shared-ownership invariants of `SharedField<T>`
+(= `Arc<Field<T>>`): the refcount algebra, freed-exactly-once on the
+last holder's drop, no use after it, and export-as-borrow. Production
+discharge is the Arc + affine-Drop composition; the models
+(`Quanta.SharedBuffer`, `quanta-api/shared_field_lifecycle.rs`) pin
+what that composition must guarantee.
 
 T1710–T1713 are the B″ (WebIDL grammar mirror) deliverables.
 T1710 discharges enum-string conformance, T1711 method-presence,

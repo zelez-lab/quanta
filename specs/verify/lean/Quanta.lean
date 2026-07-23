@@ -82,6 +82,9 @@ import Quanta.SparseTexture
 -- Zero-copy host-memory field import
 import Quanta.HostImport
 
+-- Shared device buffers (one buffer, many holders)
+import Quanta.SharedBuffer
+
 -- Multi-queue (steps 018 + 019)
 import Quanta.MultiQueue
 
