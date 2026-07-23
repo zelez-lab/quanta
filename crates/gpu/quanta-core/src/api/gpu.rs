@@ -195,7 +195,8 @@ impl Gpu {
     }
 
     /// Whether [`Texture::native_handle`](crate::Texture::native_handle)
-    /// exports a real backend object on the active backend. `false`
+    /// and [`Field::native_handle`](crate::Field::native_handle)
+    /// export a real backend object on the active backend. `false`
     /// on the CPU software driver (no native object exists) and on
     /// backends whose export path isn't wired yet; those return
     /// `NotSupported` from `native_handle`.

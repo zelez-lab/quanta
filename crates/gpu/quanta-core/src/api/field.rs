@@ -171,6 +171,57 @@ impl<T: Copy> core::fmt::Debug for HostField<'_, T> {
     }
 }
 
+/// One device buffer, many holders: clones share the same buffer,
+/// every `&self` method (`write`, `read`, `handle`,
+/// [`Field::native_handle`]) and `Wave::bind` work through `Deref`,
+/// and the buffer is freed exactly once — when the last clone drops.
+///
+/// Enter the pattern with [`Field::into_shared`]. Sharing adds no
+/// implicit synchronization: holders order their GPU work with
+/// [`Pulse`](crate::Pulse)s exactly as a single owner does.
+pub type SharedField<T> = Arc<Field<T>>;
+
+/// A backend-native buffer handle exported from a [`Field`] for
+/// zero-copy interop — the buffer sibling of
+/// [`NativeTextureHandle`](crate::NativeTextureHandle), with the same
+/// ownership/lifetime contract: a **borrow**, valid while the `Field`
+/// (and its `Gpu`) live; no ownership transfer. An importer that
+/// needs the native object longer must take its own reference through
+/// the native API before the `Field` drops.
+///
+/// Marked `#[non_exhaustive]`: new backend variants (and additional
+/// per-backend metadata) can be added without a breaking change —
+/// always match with a wildcard arm.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub enum NativeBufferHandle {
+    /// Metal: the raw `id<MTLBuffer>` pointer. Non-null. The importer
+    /// may message it directly (bind, blit, `retain` for extended
+    /// lifetime).
+    Metal {
+        /// `id<MTLBuffer>` as a raw pointer.
+        buffer: *mut core::ffi::c_void,
+    },
+    /// Vulkan: the `VkBuffer` plus its backing memory. Created by
+    /// Quanta's `VkDevice`; cross-device / cross-process import
+    /// additionally requires the external-memory extensions, which
+    /// are not wired for export yet.
+    Vulkan {
+        /// The raw `VkBuffer`.
+        buffer: *mut core::ffi::c_void,
+        /// The `VkDeviceMemory` backing the buffer (offset 0).
+        memory: *mut core::ffi::c_void,
+        /// Buffer size in bytes.
+        size: u64,
+    },
+    /// WebGPU: reserved — the export path is not implemented and the
+    /// backend currently returns `NotSupported`.
+    WebGpu {
+        /// Registry id of the `GPUBuffer`.
+        buffer: u64,
+    },
+}
+
 impl<T: Copy> Field<T> {
     /// Number of elements.
     pub fn len(&self) -> usize {
@@ -236,6 +287,28 @@ impl<T: Copy> Field<T> {
     pub fn copy_from(&self, src: &Field<T>) -> Result<(), QuantaError> {
         let size = self.byte_size().min(src.byte_size());
         self.device.field_copy_bytes(self.handle, src.handle, size)
+    }
+
+    /// Move this field into shared ownership — one buffer, many
+    /// holders (e.g. two actors reading and writing one table). See
+    /// [`SharedField`] for the semantics; the buffer is freed exactly
+    /// once, when the last clone drops.
+    pub fn into_shared(self) -> SharedField<T> {
+        Arc::new(self)
+    }
+
+    /// Export the backend-native handle behind this field's buffer,
+    /// for zero-copy interop with an external consumer. The handle is
+    /// a **borrow** — valid while this `Field` lives, no ownership
+    /// transfer; see [`NativeBufferHandle`] and
+    /// [`Texture::native_handle`](crate::Texture::native_handle),
+    /// whose contract this mirrors. GPU work writing the buffer must
+    /// be complete (`Pulse::wait`) before the importer reads it.
+    /// Backends without an exportable object (the CPU software
+    /// driver, WebGPU) return `NotSupported`; query
+    /// `Gpu::supports_native_handle_export` to branch ahead of time.
+    pub fn native_handle(&self) -> Result<NativeBufferHandle, QuantaError> {
+        self.device.field_native_handle(self.handle)
     }
 }
 

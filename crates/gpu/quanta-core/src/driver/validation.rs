@@ -605,6 +605,15 @@ impl GpuDevice for ValidationDevice {
         self.inner.texture_native_handle(texture)
     }
 
+    fn field_native_handle(&self, handle: u64) -> Result<crate::NativeBufferHandle, QuantaError> {
+        if !self.live_fields.lock().unwrap().contains(&handle) {
+            return Err(QuantaError::invalid_param(
+                "field_native_handle on a freed or unknown field handle",
+            ));
+        }
+        self.inner.field_native_handle(handle)
+    }
+
     fn supports_surface_present(&self) -> bool {
         self.inner.supports_surface_present()
     }

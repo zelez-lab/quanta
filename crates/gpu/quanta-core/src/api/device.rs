@@ -2,8 +2,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    Caps, FieldUsage, Format, FormatCaps, NativeTextureHandle, Pulse, QuantaError, QueueFamily,
-    QueueType, ResourceState, Texture, TextureDesc, TextureViewDesc, Timeline,
+    Caps, FieldUsage, Format, FormatCaps, NativeBufferHandle, NativeTextureHandle, Pulse,
+    QuantaError, QueueFamily, QueueType, ResourceState, Texture, TextureDesc, TextureViewDesc,
+    Timeline,
 };
 // `Wave` is a compute type; only the compute-gated trait methods
 // (wave / dispatch / batch / queue-dispatch / compute ICB) reference it.
@@ -989,6 +990,16 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     ) -> Result<NativeTextureHandle, QuantaError> {
         Err(QuantaError::not_supported(
             "native texture handle export not supported on this backend",
+        ))
+    }
+
+    /// Export the backend-native handle behind a field's buffer —
+    /// the buffer sibling of
+    /// [`texture_native_handle`](Self::texture_native_handle), same
+    /// borrow contract. See [`Field::native_handle`](crate::Field::native_handle).
+    fn field_native_handle(&self, _handle: u64) -> Result<NativeBufferHandle, QuantaError> {
+        Err(QuantaError::not_supported(
+            "native buffer handle export not supported on this backend",
         ))
     }
 

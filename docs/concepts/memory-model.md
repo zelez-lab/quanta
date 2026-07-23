@@ -158,6 +158,30 @@ mapped.write(0, 3.14);   // CPU writes directly to GPU-visible memory
 Use mapped memory for small, frequently-updated data (camera matrices, UI
 state). For large compute buffers, dedicated Fields are faster for the GPU.
 
+## Sharing one buffer between holders
+
+A `Field<T>` has one owner. When several independent holders (actors,
+threads, subsystems) need the *same* device buffer — one writes through
+a kernel, another reads — move it into shared ownership:
+
+```rust
+let table = gpu.field::<f32>(n)?.into_shared();   // SharedField<T>
+let holder_b = table.clone();                     // same buffer, no copy
+// any holder: wave.bind(0, &table); table.read(); table.write(&data);
+```
+
+`SharedField<T>` is `Arc<Field<T>>`: clones share the one buffer, every
+`&self` method and `Wave::bind` work unchanged, and the buffer is freed
+exactly once — when the last clone drops. Sharing adds no implicit
+synchronization: order GPU work with `Pulse`s exactly as a single owner
+does.
+
+For interop with an external engine, `field.native_handle()` exports
+the backend-native object (`id<MTLBuffer>` / `VkBuffer` + memory) as a
+**borrow** — the buffer sibling of `Texture::native_handle`, same
+lifetime contract, gated by the same
+`gpu.supports_native_handle_export()`.
+
 ## Importing caller-owned memory (zero-copy)
 
 The inverse of mapped memory: the host already owns the data -- an mmap'd
@@ -269,6 +293,9 @@ Does the CPU update it every frame?
 
 Does the host already own it in kernel layout? (an mmap'd file)
   YES --> Host import (gpu.field_from_host, read-only)
+
+Do several independent holders need the same buffer?
+  YES --> Shared ownership (field.into_shared())
 
 Is it a local variable in your kernel?
   YES --> Register (automatic, no annotation needed)

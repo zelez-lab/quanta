@@ -1959,6 +1959,21 @@ impl GpuDevice for VulkanDevice {
         })
     }
 
+    fn field_native_handle(&self, handle: u64) -> Result<crate::NativeBufferHandle, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
+        Ok(crate::NativeBufferHandle::Vulkan {
+            buffer: buf.buffer,
+            memory: buf.memory,
+            size: buf.size,
+        })
+    }
+
     // ╭──────────────────────────────────────────────────────────────╮
     // │ End presentation & interop block                             │
     // ╰──────────────────────────────────────────────────────────────╯

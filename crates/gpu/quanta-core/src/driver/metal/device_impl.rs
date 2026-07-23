@@ -1543,6 +1543,17 @@ impl GpuDevice for MetalDevice {
         Ok(crate::NativeTextureHandle::Metal { texture: *tex })
     }
 
+    fn field_native_handle(&self, handle: u64) -> Result<crate::NativeBufferHandle, QuantaError> {
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let buf = buffers
+            .get(&handle)
+            .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
+        Ok(crate::NativeBufferHandle::Metal { buffer: *buf })
+    }
+
     fn supports_surface_present(&self) -> bool {
         true
     }
