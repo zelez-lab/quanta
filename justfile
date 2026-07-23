@@ -173,8 +173,13 @@ fmt:
 clippy:
     cargo clippy --all -- -D warnings
 
+# The vulkan module is cfg(target_os)-pruned on Apple targets, so on a
+# Mac the clippy line type-checks NOTHING under driver/vulkan/. The
+# cross-target check is what actually compiles the module here — it is
+# the line that catches mac-blind name/type errors before CI does.
 clippy-vulkan:
     cargo clippy --features vulkan -- -D warnings
+    cargo check -p quanta --target x86_64-unknown-linux-gnu --features vulkan
 
 quality: fmt clippy test-conformance
 
