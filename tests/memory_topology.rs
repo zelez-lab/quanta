@@ -8,6 +8,12 @@
 //!
 //! Run: cargo test --test memory_topology --features software
 
+// Only the cfg-gated tests name the enum — a plain `use` would be
+// unused in e.g. the vulkan-only CI combo.
+#[cfg(any(
+    feature = "software",
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 use quanta::MemoryTopology;
 
 fn try_gpu() -> Option<quanta::Gpu> {
