@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::api::types::{MAX_BINDINGS, MAX_TEXTURES, PUSH_DATA_CAP};
-use crate::{Field, GpuDevice, Texture};
+use crate::{Field, GpuDevice, HostField, Texture};
 
 /// A compute dispatch binding — kernel + fields, ready to dispatch.
 ///
@@ -51,6 +51,17 @@ impl Wave {
         if slot as u8 >= self.binding_count {
             self.binding_count = slot as u8 + 1;
         }
+    }
+
+    /// Bind a host-imported field at the given slot.
+    ///
+    /// Read-only contract: bind only to `&[T]` kernel parameters —
+    /// [`HostField`] wraps caller-owned memory the kernel must not
+    /// write. Binding one to a `&mut [T]` parameter is a contract
+    /// violation (the CPU backend panics on it; GPU backends cannot
+    /// see it at bind time).
+    pub fn bind_host<T: Copy>(&mut self, slot: u32, field: &HostField<'_, T>) {
+        self.bind_handle(slot, field.handle());
     }
 
     /// Bind a raw buffer handle at the given slot. Use this when working

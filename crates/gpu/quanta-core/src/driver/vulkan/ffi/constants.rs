@@ -389,6 +389,26 @@ pub type PfnVkGetPhysicalDeviceFragmentShadingRatesKHR = unsafe extern "C" fn(
 
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: u32 = 1000059001;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES: u32 = 1000094000;
+
+// ─── VK_EXT_external_memory_host (extension #179) ───────────────────────────
+// Spec-stable values: enum base 1000178000.
+
+pub const VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT: u32 = 1000178000;
+pub const VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT: u32 = 1000178001;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT: u32 = 1000178002;
+/// `VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT`
+pub const VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT: u32 = 0x0000_0080;
+
+/// Function-pointer type for `vkGetMemoryHostPointerPropertiesEXT`.
+/// Reports which memory types can import the given host pointer.
+/// Loaded at device init when `VK_EXT_external_memory_host` is
+/// enabled.
+pub type PfnVkGetMemoryHostPointerPropertiesEXT = unsafe extern "C" fn(
+    device: VkDevice,
+    handle_type: u32,
+    p_host_pointer: *const c_void,
+    p_memory_host_pointer_properties: *mut super::device::VkMemoryHostPointerPropertiesEXT,
+) -> VkResult;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2: u32 = 1000059000;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: u32 = 1000083000;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES: u32 = 1000177000;

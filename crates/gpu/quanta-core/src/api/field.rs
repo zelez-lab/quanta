@@ -95,6 +95,82 @@ impl<T: Copy> Drop for MappedField<T> {
     }
 }
 
+/// A field over caller-owned host memory — the inverse of
+/// [`MappedField`]: there, the driver allocates and the host gets a
+/// view; here, the host already owns the memory (typically an mmap'd
+/// file region) and the device imports a view of it without copying.
+///
+/// Created via [`Gpu::field_from_host`](crate::Gpu::field_from_host)
+/// (safe, lifetime-bound) or
+/// [`Gpu::field_from_host_ptr`](crate::Gpu::field_from_host_ptr)
+/// (raw, for owners the borrow checker can't see). Zero-copy where the
+/// backend has an import path
+/// ([`Gpu::supports_host_import`](crate::Gpu::supports_host_import));
+/// elsewhere the same call succeeds through a staged copy and
+/// [`is_imported`](Self::is_imported) reports `false` — the cost is
+/// queryable, never silent.
+///
+/// **Read-only contract:** bind it only to `&[T]` kernel parameters
+/// (via [`Wave::bind_host`](crate::Wave::bind_host)). The type exposes
+/// no write path, and the shared `&'a [T]` borrow keeps the region
+/// immutable for the field's whole life. Complete or wait in-flight
+/// pulses that bind it before dropping it or ending the region's
+/// lifetime (unmap).
+pub struct HostField<'a, T: Copy> {
+    pub(crate) handle: u64,
+    pub(crate) count: usize,
+    pub(crate) imported: bool,
+    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) _borrow: PhantomData<&'a [T]>,
+}
+
+impl<T: Copy> HostField<'_, T> {
+    /// Number of elements.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Size in bytes.
+    pub fn byte_size(&self) -> usize {
+        self.count * size_of::<T>()
+    }
+
+    /// Raw GPU handle (for binding to waves).
+    pub fn handle(&self) -> u64 {
+        self.handle
+    }
+
+    /// `true` when the device reads the caller's memory directly
+    /// (zero-copy import); `false` when the backend had no import
+    /// path and the data was staged into a device buffer with one
+    /// copy at creation.
+    pub fn is_imported(&self) -> bool {
+        self.imported
+    }
+}
+
+impl<T: Copy> Drop for HostField<'_, T> {
+    fn drop(&mut self) {
+        // Releases the driver-side view (buffer object / registry
+        // entry) — never the caller's pages.
+        self.device.field_free(self.handle);
+    }
+}
+
+impl<T: Copy> core::fmt::Debug for HostField<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HostField")
+            .field("handle", &self.handle)
+            .field("count", &self.count)
+            .field("imported", &self.imported)
+            .finish()
+    }
+}
+
 impl<T: Copy> Field<T> {
     /// Number of elements.
     pub fn len(&self) -> usize {

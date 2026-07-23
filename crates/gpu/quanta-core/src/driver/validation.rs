@@ -68,6 +68,20 @@ impl GpuDevice for ValidationDevice {
         Ok(handle)
     }
 
+    fn field_import_host(&self, ptr: *const u8, len: usize) -> Result<u64, QuantaError> {
+        let handle = self.inner.field_import_host(ptr, len)?;
+        self.live_fields.lock().unwrap().insert(handle);
+        Ok(handle)
+    }
+
+    fn supports_host_import(&self) -> bool {
+        self.inner.supports_host_import()
+    }
+
+    fn host_import_alignment(&self) -> Option<usize> {
+        self.inner.host_import_alignment()
+    }
+
     fn field_free(&self, handle: u64) {
         self.live_fields.lock().unwrap().remove(&handle);
         self.inner.field_free(handle);

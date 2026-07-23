@@ -61,6 +61,8 @@ path without throwing.
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` returns a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, and on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain |
 | `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
+| `supports_host_import()` | `bool` | Zero-copy host-memory import (`field_from_host`). True on Metal, the software driver, and Vulkan with `VK_EXT_external_memory_host`; false on WebGPU — the call still succeeds there via one staged copy |
+| `host_import_alignment()` | `Option<usize>` | Granularity the import contract checks pointers and lengths against (Metal: VM page size, 16 KiB on Apple silicon; Vulkan: `minImportedHostPointerAlignment`; software: 1). `None` when no import path exists |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
 | `supported_shading_rates()` | `Vec<(u32, u32)>` | Concrete (x,y) shading rates the device exposes (e.g. `[(1,1), (2,2), (4,4)]`). Empty when VRS is not supported. |
 
@@ -96,6 +98,8 @@ device-family- and extension-dependent within a backend.
 | `field::<T>(count)` | `Result<Field<T>>` | Allocate with default compute usage (storage + transfer) |
 | `field_with_usage::<T>(count, usage)` | `Result<Field<T>>` | Allocate with explicit `FieldUsage` flags (`default_compute()` / `default_render()` / `default_uniform()` or a custom union) |
 | `field_mapped::<T>(count)` | `Result<MappedField<T>>` | CPU-mapped buffer (zero-copy) |
+| `field_from_host::<T>(&'a [T])` | `Result<HostField<'a, T>>` | Import caller-owned memory (an mmap'd region) as a read-only field — zero-copy where `supports_host_import()`, one queryable staged copy elsewhere. Pointer and byte length must be multiples of `host_import_alignment()` |
+| `field_from_host_ptr::<T>(ptr, count)` | `Result<HostField<'static, T>>` | `unsafe` raw-pointer variant for owners the borrow checker can't see; same contract |
 
 ### Textures
 

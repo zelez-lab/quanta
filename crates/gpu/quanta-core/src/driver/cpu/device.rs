@@ -27,9 +27,38 @@ use super::value::Value;
 
 // ── CPU Device ───────────────────────────────────────────────────────────────
 
-/// Internal buffer allocation.
-struct CpuBuffer {
-    data: Vec<u8>,
+/// Internal buffer allocation. `Owned` is a driver allocation;
+/// `Borrowed` is caller-owned memory imported zero-copy through
+/// `field_import_host` — read-only by contract and never freed here
+/// (dropping the entry releases the view, not the pages).
+enum CpuBuffer {
+    Owned { data: Vec<u8> },
+    Borrowed { ptr: *const u8, len: usize },
+}
+
+// Safety: the `Borrowed` pointer is kept alive and immutable by the
+// importing `HostField`'s borrow, and this backend is fully
+// synchronous (a pulse completes inside dispatch), so every access
+// happens while that borrow is live.
+unsafe impl Send for CpuBuffer {}
+
+impl CpuBuffer {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            CpuBuffer::Owned { data } => data,
+            CpuBuffer::Borrowed { ptr, len } => unsafe { core::slice::from_raw_parts(*ptr, *len) },
+        }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            CpuBuffer::Owned { data } => data,
+            CpuBuffer::Borrowed { .. } => panic!(
+                "write to a read-only host-imported field — bind \
+                 HostField only to &[T] kernel parameters"
+            ),
+        }
+    }
 }
 
 /// Texel metadata for a compute-bound texture. The pixel bytes live in
@@ -284,11 +313,34 @@ impl GpuDevice for CpuDevice {
 
     fn field_alloc(&self, size: usize, _usage: FieldUsage) -> Result<u64, QuantaError> {
         let handle = self.alloc_handle();
-        let buf = CpuBuffer {
+        let buf = CpuBuffer::Owned {
             data: vec![0u8; size],
         };
         self.buffers.lock().unwrap().insert(handle, buf);
         Ok(handle)
+    }
+
+    fn field_import_host(&self, ptr: *const u8, len: usize) -> Result<u64, QuantaError> {
+        if ptr.is_null() || len == 0 {
+            return Err(QuantaError::invalid_param(
+                "host import requires a non-null pointer and non-zero length",
+            ));
+        }
+        let handle = self.alloc_handle();
+        self.buffers
+            .lock()
+            .unwrap()
+            .insert(handle, CpuBuffer::Borrowed { ptr, len });
+        Ok(handle)
+    }
+
+    fn supports_host_import(&self) -> bool {
+        true
+    }
+
+    fn host_import_alignment(&self) -> Option<usize> {
+        // Pointer passthrough has no hardware granularity.
+        Some(1)
     }
 
     fn field_free(&self, handle: u64) {
@@ -300,8 +352,9 @@ impl GpuDevice for CpuDevice {
         let buf = bufs
             .get_mut(&handle)
             .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
-        let len = data.len().min(buf.data.len());
-        buf.data[..len].copy_from_slice(&data[..len]);
+        let dst = buf.bytes_mut();
+        let len = data.len().min(dst.len());
+        dst[..len].copy_from_slice(&data[..len]);
         Ok(())
     }
 
@@ -315,11 +368,12 @@ impl GpuDevice for CpuDevice {
         let buf = bufs
             .get_mut(&handle)
             .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
-        if byte_offset >= buf.data.len() {
+        let dst = buf.bytes_mut();
+        if byte_offset >= dst.len() {
             return Ok(());
         }
-        let len = data.len().min(buf.data.len() - byte_offset);
-        buf.data[byte_offset..byte_offset + len].copy_from_slice(&data[..len]);
+        let len = data.len().min(dst.len() - byte_offset);
+        dst[byte_offset..byte_offset + len].copy_from_slice(&data[..len]);
         Ok(())
     }
 
@@ -328,8 +382,9 @@ impl GpuDevice for CpuDevice {
         let buf = bufs
             .get(&handle)
             .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
-        let len = size.min(buf.data.len());
-        Ok(buf.data[..len].to_vec())
+        let src = buf.bytes();
+        let len = size.min(src.len());
+        Ok(src[..len].to_vec())
     }
 
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError> {
@@ -339,14 +394,16 @@ impl GpuDevice for CpuDevice {
             let src_buf = bufs
                 .get(&src)
                 .ok_or_else(|| QuantaError::not_found("src field not found"))?;
-            let len = size.min(src_buf.data.len());
-            src_buf.data[..len].to_vec()
+            let src = src_buf.bytes();
+            let len = size.min(src.len());
+            src[..len].to_vec()
         };
         let dst_buf = bufs
             .get_mut(&dst)
             .ok_or_else(|| QuantaError::not_found("dst field not found"))?;
-        let len = src_data.len().min(dst_buf.data.len());
-        dst_buf.data[..len].copy_from_slice(&src_data[..len]);
+        let dst_bytes = dst_buf.bytes_mut();
+        let len = src_data.len().min(dst_bytes.len());
+        dst_bytes[..len].copy_from_slice(&src_data[..len]);
         Ok(())
     }
 
@@ -355,7 +412,7 @@ impl GpuDevice for CpuDevice {
         let buf = bufs
             .get_mut(&handle)
             .ok_or_else(|| QuantaError::not_found("field handle not found"))?;
-        Ok(buf.data.as_mut_ptr())
+        Ok(buf.bytes_mut().as_mut_ptr())
     }
 
     fn field_unmap(&self, _handle: u64) -> Result<(), QuantaError> {
@@ -368,7 +425,7 @@ impl GpuDevice for CpuDevice {
         _usage: FieldUsage,
     ) -> Result<(u64, *mut u8), QuantaError> {
         let handle = self.alloc_handle();
-        let buf = CpuBuffer {
+        let buf = CpuBuffer::Owned {
             data: vec![0u8; size],
         };
         self.buffers.lock().unwrap().insert(handle, buf);
@@ -378,7 +435,7 @@ impl GpuDevice for CpuDevice {
             .unwrap()
             .get_mut(&handle)
             .unwrap()
-            .data
+            .bytes_mut()
             .as_mut_ptr();
         Ok((handle, ptr))
     }
@@ -390,7 +447,7 @@ impl GpuDevice for CpuDevice {
         let size = (desc.width * desc.height) as usize * desc.format.bytes_per_pixel();
         self.buffers.lock().unwrap().insert(
             handle,
-            CpuBuffer {
+            CpuBuffer::Owned {
                 data: vec![0u8; size],
             },
         );
@@ -573,7 +630,7 @@ impl GpuDevice for CpuDevice {
                 if handle != 0
                     && let Some(buf) = bufs.get(&handle)
                 {
-                    *slot = Some(Mutex::new(buf.data.clone()));
+                    *slot = Some(Mutex::new(buf.bytes().to_vec()));
                 }
             }
         }
@@ -616,7 +673,7 @@ impl GpuDevice for CpuDevice {
                     )));
                 }
                 *slot = Some(super::exec::CpuTexSlot {
-                    data: Mutex::new(buf.data.clone()),
+                    data: Mutex::new(buf.bytes().to_vec()),
                     width: meta.width,
                     height: meta.height,
                     format: meta.format,
@@ -847,7 +904,26 @@ impl GpuDevice for CpuDevice {
                     && let Some(modified) = slot.take()
                     && let Some(buf) = bufs.get_mut(&handle)
                 {
-                    buf.data = modified.into_inner().unwrap();
+                    let modified = modified.into_inner().unwrap();
+                    match buf {
+                        CpuBuffer::Owned { data } => *data = modified,
+                        // Host-imported fields are read-only by
+                        // contract; the snapshot lets us detect a
+                        // kernel that violated it instead of
+                        // scribbling the caller's memory.
+                        CpuBuffer::Borrowed { ptr, len } => {
+                            let orig = unsafe { core::slice::from_raw_parts(*ptr, *len) };
+                            if orig != modified.as_slice() {
+                                return Err(QuantaError::invalid_param(
+                                    "kernel wrote a read-only host-imported field",
+                                )
+                                .with_context(&format!(
+                                    "binding slot {i}: bind HostField only to \
+                                     &[T] kernel parameters"
+                                )));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -864,9 +940,9 @@ impl GpuDevice for CpuDevice {
                 let handle = wave.texture_bindings[i];
                 if handle != 0
                     && let Some(tex) = slot.take()
-                    && let Some(buf) = bufs.get_mut(&handle)
+                    && let Some(CpuBuffer::Owned { data }) = bufs.get_mut(&handle)
                 {
-                    buf.data = tex.data.into_inner().unwrap();
+                    *data = tex.data.into_inner().unwrap();
                 }
             }
         }

@@ -229,6 +229,21 @@ impl GpuDevice for VulkanDevice {
         self.field_create_mapped_impl(size, usage)
     }
 
+    fn field_import_host(&self, ptr: *const u8, len: usize) -> Result<u64, QuantaError> {
+        self.field_import_host_impl(ptr, len)
+    }
+
+    fn supports_host_import(&self) -> bool {
+        self.host_import_min_align.is_some() && self.get_mem_host_ptr_props_fn.is_some()
+    }
+
+    fn host_import_alignment(&self) -> Option<usize> {
+        match (self.host_import_min_align, self.get_mem_host_ptr_props_fn) {
+            (Some(align), Some(_)) => Some(align as usize),
+            _ => None,
+        }
+    }
+
     // === Timestamps ===
 
     fn timestamp_query_create(&self, count: u32) -> Result<u64, QuantaError> {

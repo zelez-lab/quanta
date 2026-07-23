@@ -124,6 +124,40 @@ pub struct VkPhysicalDeviceProperties2 {
     pub properties: VkPhysicalDeviceProperties,
 }
 
+/// `VkPhysicalDeviceExternalMemoryHostPropertiesEXT`
+/// (`VK_EXT_external_memory_host`) — chained onto
+/// [`VkPhysicalDeviceProperties2`] at discovery to learn the
+/// granularity host pointers must satisfy for import
+/// (`minImportedHostPointerAlignment`, typically 4096).
+#[repr(C)]
+pub struct VkPhysicalDeviceExternalMemoryHostPropertiesEXT {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub min_imported_host_pointer_alignment: u64,
+}
+
+/// `VkImportMemoryHostPointerInfoEXT` — chained onto
+/// `VkMemoryAllocateInfo.p_next` to make `vkAllocateMemory` wrap the
+/// given host pointer instead of allocating. `vkFreeMemory` on the
+/// resulting memory releases the import, never the host pages.
+#[repr(C)]
+pub struct VkImportMemoryHostPointerInfoEXT {
+    pub s_type: u32,
+    pub p_next: *const core::ffi::c_void,
+    pub handle_type: u32,
+    pub p_host_pointer: *const core::ffi::c_void,
+}
+
+/// `VkMemoryHostPointerPropertiesEXT` — out-struct of
+/// `vkGetMemoryHostPointerPropertiesEXT`: the memory types that can
+/// import the queried host pointer.
+#[repr(C)]
+pub struct VkMemoryHostPointerPropertiesEXT {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub memory_type_bits: u32,
+}
+
 /// `VkPhysicalDeviceFeatures2` (core Vulkan 1.1) — the base features
 /// plus an extensible `p_next` chain. Used at device discovery to hang
 /// the 16-/8-bit storage feature queries off it; the base `features`

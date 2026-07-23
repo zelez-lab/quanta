@@ -210,6 +210,32 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         Err(QuantaError::not_supported("mapped buffers not supported"))
     }
 
+    /// Import caller-owned host memory as a read-only field without
+    /// copying. `ptr` and `len` must both be multiples of
+    /// [`host_import_alignment`](Self::host_import_alignment); the
+    /// backend rejects violations with `InvalidParam` — never a
+    /// silent staged copy. Freeing the returned handle releases the
+    /// imported view, never the caller's pages. Default: no import
+    /// path — the `Gpu` wrapper falls back to a staged copy.
+    fn field_import_host(&self, _ptr: *const u8, _len: usize) -> Result<u64, QuantaError> {
+        Err(QuantaError::not_supported(
+            "host-memory import not supported on this backend",
+        ))
+    }
+
+    /// Whether `field_import_host` has a native zero-copy path.
+    fn supports_host_import(&self) -> bool {
+        false
+    }
+
+    /// The import granularity: base pointer and byte length passed to
+    /// `field_import_host` must be multiples of this (Metal:
+    /// `vm_page_size`; Vulkan: `minImportedHostPointerAlignment`).
+    /// `None` when no import path exists.
+    fn host_import_alignment(&self) -> Option<usize> {
+        None
+    }
+
     // === Textures ===
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError>;

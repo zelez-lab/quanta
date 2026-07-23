@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::{
-    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, MappedField, MemoryTopology,
+    Caps, Field, FieldUsage, Format, FormatCaps, GpuDevice, HostField, MappedField, MemoryTopology,
     QuantaError, ResourceState, Texture, TextureDesc, TextureView, TextureViewDesc, TimestampQuery,
 };
 #[cfg(feature = "compute")]
@@ -273,6 +273,98 @@ impl Gpu {
             device: self.inner.clone(),
             _marker: PhantomData,
         })
+    }
+
+    /// Import caller-owned host memory as a read-only field — the
+    /// inverse of [`field_mapped`](Self::field_mapped): the host
+    /// already owns the memory (typically an mmap'd file region) and
+    /// the device gets a view of it, with zero copies where the
+    /// backend supports import
+    /// ([`supports_host_import`](Self::supports_host_import)).
+    ///
+    /// Contract: the base pointer AND the byte length must be
+    /// multiples of [`host_import_alignment`](Self::host_import_alignment)
+    /// (violations return `InvalidParam` — never a silent copy).
+    /// mmap'd regions satisfy the base by construction; pass the
+    /// page-padded slice and keep your logical element count in your
+    /// own metadata. On backends without an import path the same call
+    /// succeeds through one staged copy and
+    /// [`HostField::is_imported`] reports `false`.
+    pub fn field_from_host<'a, T: Copy>(
+        &self,
+        data: &'a [T],
+    ) -> Result<HostField<'a, T>, QuantaError> {
+        // Safety of the raw call: `data` is a live shared borrow for
+        // 'a, and HostField carries 'a, so the region outlives the
+        // field and stays immutable while it exists.
+        unsafe { self.field_from_host_raw(data.as_ptr(), data.len()) }
+    }
+
+    /// Raw-pointer variant of [`field_from_host`](Self::field_from_host)
+    /// for owners whose lifetime the borrow checker can't see (e.g. a
+    /// long-lived process owning an mmap).
+    ///
+    /// # Safety
+    ///
+    /// The region `[ptr, ptr + count * size_of::<T>())` must be valid,
+    /// initialized, and unmutated for the whole life of the returned
+    /// field AND of every in-flight wave that binds it. The alignment
+    /// contract of `field_from_host` applies unchanged.
+    pub unsafe fn field_from_host_ptr<T: Copy>(
+        &self,
+        ptr: *const T,
+        count: usize,
+    ) -> Result<HostField<'static, T>, QuantaError> {
+        unsafe { self.field_from_host_raw(ptr, count) }
+    }
+
+    unsafe fn field_from_host_raw<'a, T: Copy>(
+        &self,
+        ptr: *const T,
+        count: usize,
+    ) -> Result<HostField<'a, T>, QuantaError> {
+        if count == 0 {
+            return Err(QuantaError::invalid_param(
+                "cannot import an empty host region",
+            ));
+        }
+        let bytes_ptr = ptr as *const u8;
+        let len = count * size_of::<T>();
+        let (handle, imported) = if self.inner.supports_host_import() {
+            (self.inner.field_import_host(bytes_ptr, len)?, true)
+        } else {
+            // Staged-copy fallback: same API, exactly one copy, and
+            // the difference stays queryable via `is_imported`.
+            let usage = FieldUsage::READ
+                .union(FieldUsage::COMPUTE)
+                .union(FieldUsage::TRANSFER);
+            let handle = self.inner.field_alloc(len, usage)?;
+            let bytes = unsafe { core::slice::from_raw_parts(bytes_ptr, len) };
+            self.inner.field_write_bytes(handle, bytes)?;
+            (handle, false)
+        };
+        Ok(HostField {
+            handle,
+            count,
+            imported,
+            device: self.inner.clone(),
+            _borrow: PhantomData,
+        })
+    }
+
+    /// Whether [`field_from_host`](Self::field_from_host) has a
+    /// native zero-copy path on the active backend. `false` means the
+    /// call still succeeds but stages one copy.
+    pub fn supports_host_import(&self) -> bool {
+        self.inner.supports_host_import()
+    }
+
+    /// The granularity the host-import contract checks pointers and
+    /// lengths against (Metal: the VM page size; Vulkan:
+    /// `minImportedHostPointerAlignment`). `None` when the backend
+    /// has no import path.
+    pub fn host_import_alignment(&self) -> Option<usize> {
+        self.inner.host_import_alignment()
     }
 
     // === Textures ===

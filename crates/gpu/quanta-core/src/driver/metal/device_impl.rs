@@ -121,6 +121,18 @@ impl GpuDevice for MetalDevice {
         self.field_unmap_impl(handle)
     }
 
+    fn field_import_host(&self, ptr: *const u8, len: usize) -> Result<u64, QuantaError> {
+        self.field_import_host_impl(ptr, len)
+    }
+
+    fn supports_host_import(&self) -> bool {
+        true
+    }
+
+    fn host_import_alignment(&self) -> Option<usize> {
+        Some(unsafe { ffi::getpagesize() } as usize)
+    }
+
     // === Textures ===
 
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {

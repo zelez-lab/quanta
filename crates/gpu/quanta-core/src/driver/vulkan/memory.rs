@@ -142,6 +142,142 @@ impl VulkanDevice {
         Ok(handle)
     }
 
+    pub(crate) fn field_import_host_impl(
+        &self,
+        ptr: *const u8,
+        len: usize,
+    ) -> Result<u64, QuantaError> {
+        let (Some(min_align), Some(get_host_ptr_props)) =
+            (self.host_import_min_align, self.get_mem_host_ptr_props_fn)
+        else {
+            return Err(QuantaError::not_supported(
+                "VK_EXT_external_memory_host not available on this device",
+            ));
+        };
+        let align = min_align as usize;
+        if len == 0 || !(ptr as usize).is_multiple_of(align) || !len.is_multiple_of(align) {
+            return Err(QuantaError::invalid_param(
+                "host import requires pointer and length aligned to \
+                 minImportedHostPointerAlignment",
+            )
+            .with_context(&format!("ptr {ptr:p}, len {len}, alignment {align}")));
+        }
+
+        // Plain storage buffer; TRANSFER_SRC so diagnostic readbacks
+        // can staging-copy out of it. No TRANSFER_DST — the region is
+        // read-only by contract.
+        let buf_info = ffi::VkBufferCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: 0,
+            size: len as u64,
+            usage: ffi::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | ffi::VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            sharing_mode: ffi::VK_SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: core::ptr::null(),
+        };
+        let mut buffer = ffi::null_handle();
+        let result =
+            unsafe { ffi::vkCreateBuffer(self.device, &buf_info, core::ptr::null(), &mut buffer) };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::out_of_memory());
+        }
+        let destroy_buffer = || unsafe {
+            ffi::vkDestroyBuffer(self.device, buffer, core::ptr::null());
+        };
+
+        let mut mem_reqs = unsafe { core::mem::zeroed::<ffi::VkMemoryRequirements>() };
+        unsafe { ffi::vkGetBufferMemoryRequirements(self.device, buffer, &mut mem_reqs) };
+        if mem_reqs.size > len as u64 {
+            destroy_buffer();
+            return Err(QuantaError::invalid_param(
+                "device needs more backing bytes than the imported region provides",
+            )
+            .with_context(&format!("requires {}, imported {len}", mem_reqs.size)));
+        }
+
+        // Which memory types can wrap this exact pointer — intersect
+        // with the buffer's own requirements.
+        let mut host_props = ffi::VkMemoryHostPointerPropertiesEXT {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
+            p_next: core::ptr::null_mut(),
+            memory_type_bits: 0,
+        };
+        let result = unsafe {
+            get_host_ptr_props(
+                self.device,
+                ffi::VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                ptr as *const c_void,
+                &mut host_props,
+            )
+        };
+        let type_filter = mem_reqs.memory_type_bits & host_props.memory_type_bits;
+        if result != ffi::VK_SUCCESS || type_filter == 0 {
+            destroy_buffer();
+            return Err(
+                QuantaError::invalid_param("no memory type can import this host pointer")
+                    .with_context(&format!("ptr {ptr:p}")),
+            );
+        }
+        let mem_type =
+            match self.find_memory_type(type_filter, ffi::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+                Ok(t) => t,
+                Err(e) => {
+                    destroy_buffer();
+                    return Err(e);
+                }
+            };
+
+        // allocation_size is the full imported range: `len` is a
+        // min_align multiple (checked above) and covers mem_reqs.size.
+        let import_info = ffi::VkImportMemoryHostPointerInfoEXT {
+            s_type: ffi::VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+            p_next: core::ptr::null(),
+            handle_type: ffi::VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+            p_host_pointer: ptr as *const c_void,
+        };
+        let alloc_info = ffi::VkMemoryAllocateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: &import_info as *const _ as *const c_void,
+            allocation_size: len as u64,
+            memory_type_index: mem_type,
+        };
+        let mut memory = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkAllocateMemory(self.device, &alloc_info, core::ptr::null(), &mut memory)
+        };
+        if result != ffi::VK_SUCCESS {
+            destroy_buffer();
+            return Err(QuantaError::invalid_param("host-pointer import failed")
+                .with_context(&format!("vkAllocateMemory: {result}")));
+        }
+        let result = unsafe { ffi::vkBindBufferMemory(self.device, buffer, memory, 0) };
+        if result != ffi::VK_SUCCESS {
+            unsafe { ffi::vkFreeMemory(self.device, memory, core::ptr::null()) };
+            destroy_buffer();
+            return Err(QuantaError::out_of_memory());
+        }
+
+        // mapped_ptr stays None: imported memory was never
+        // vkMapMemory'd, so the free path must not unmap it. Freeing
+        // the entry releases the import (vkFreeMemory), never the
+        // caller's pages.
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(
+                handle,
+                super::VkBuffer {
+                    buffer,
+                    memory,
+                    size: len as u64,
+                    mapped_ptr: None,
+                },
+            );
+        Ok(handle)
+    }
+
     pub(crate) fn field_free_impl(&self, handle: u64) {
         if let Some(buf) = self
             .buffers

@@ -29,6 +29,43 @@ impl MetalDevice {
         Ok(handle)
     }
 
+    pub(crate) fn field_import_host_impl(
+        &self,
+        ptr: *const u8,
+        len: usize,
+    ) -> Result<u64, QuantaError> {
+        let page = unsafe { ffi::getpagesize() } as usize;
+        if len == 0 || !(ptr as usize).is_multiple_of(page) || !len.is_multiple_of(page) {
+            return Err(QuantaError::invalid_param(
+                "host import requires page-aligned pointer and page-multiple length",
+            )
+            .with_context(&format!("ptr {ptr:p}, len {len}, page {page}")));
+        }
+        // Shared storage: the buffer is a coherent view of the
+        // caller's pages; the nil deallocator means Metal never frees
+        // them.
+        let buffer = unsafe {
+            ffi::msg_new_buffer_no_copy(
+                self.device,
+                ptr,
+                len as u64,
+                ffi::MTL_RESOURCE_STORAGE_MODE_SHARED,
+            )
+        };
+        if buffer.is_null() {
+            return Err(
+                QuantaError::invalid_param("Metal rejected the host-memory import")
+                    .with_context(&format!("ptr {ptr:p}, len {len}")),
+            );
+        }
+        let handle = self.alloc_handle();
+        self.buffers
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .insert(handle, buffer);
+        Ok(handle)
+    }
+
     pub(crate) fn field_free_impl(&self, handle: u64) {
         if let Ok(mut buffers) = self.buffers.write() {
             buffers.remove(&handle);

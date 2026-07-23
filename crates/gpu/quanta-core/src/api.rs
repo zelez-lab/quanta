@@ -83,7 +83,7 @@ pub use async_copy::AsyncCopyQueue;
 pub use bindless::{BindlessBufferArray, BindlessTextureArray};
 pub use device::{GpuDevice, RegistryCounts};
 pub use error::{QuantaError, QuantaErrorKind};
-pub use field::{Field, MappedField};
+pub use field::{Field, HostField, MappedField};
 pub use gpu::Gpu;
 pub use printf::PrintfBuffer;
 pub use pulse::{OcclusionQuery, Pulse, Timeline, TimestampQuery};

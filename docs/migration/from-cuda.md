@@ -109,6 +109,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `cudaMemcpy2D` (to a texture sub-region) | `texture.write_region(origin, size, &data)` (texel offset + extent, tightly packed rows; gated on `supports_texture_write_region`) |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
+| `cudaHostRegister` + `cudaHostGetDevicePointer` | `gpu.field_from_host(&data)` (zero-copy import of caller-owned page-aligned memory, read-only; staged-copy fallback is queryable via `is_imported()`) |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
 | `cudaDeviceSynchronize()` | `pulse.wait()` / `gpu.wait_idle()` |
 | `cudaLaunchHostFunc` / `cudaStreamAddCallback` | `pulse.on_complete(f)` (run `f` on a background waiter at completion — the event-driven alternative to `wait()`) |

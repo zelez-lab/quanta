@@ -39,6 +39,9 @@ unsafe extern "C" {
     pub fn dispatch_semaphore_signal(dsema: *mut c_void) -> isize;
     pub fn dispatch_semaphore_wait(dsema: *mut c_void, timeout: u64) -> isize;
     pub fn dispatch_release(object: *mut c_void);
+    /// POSIX page size — the granularity `newBufferWithBytesNoCopy`
+    /// requires for both pointer and length (16 KiB on Apple silicon).
+    pub fn getpagesize() -> core::ffi::c_int;
 }
 
 // _NSConcreteGlobalBlock — the ISA for global (heap-safe) blocks.
@@ -165,6 +168,29 @@ pub unsafe fn msg_ptr_f32(obj: Id, name: &[u8]) -> *mut f32 {
     let f: unsafe extern "C" fn(Id, Sel) -> *mut f32 =
         mem::transmute(objc_msgSend as *const c_void);
     f(obj, sel(name))
+}
+
+/// newBufferWithBytesNoCopy:length:options:deallocator: — wrap
+/// caller-owned page-aligned memory as an MTLBuffer without copying.
+/// The nil deallocator means Metal never frees the pages; releasing
+/// the buffer releases only the view. Returns nil when the pointer or
+/// length violates Metal's page-alignment contract.
+pub unsafe fn msg_new_buffer_no_copy(
+    device: Id,
+    ptr: *const u8,
+    len: u64,
+    options: NSUInteger,
+) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, *const c_void, u64, NSUInteger, Id) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        device,
+        sel(b"newBufferWithBytesNoCopy:length:options:deallocator:\0"),
+        ptr as *const c_void,
+        len,
+        options,
+        NIL,
+    )
 }
 
 /// Send message with no arguments, returning BOOL — used for

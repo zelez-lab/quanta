@@ -261,6 +261,16 @@ pub struct VulkanDevice {
     /// usage bit (free when feature is on, illegal when off).
     /// Step 063 slice 23.
     pub(super) buffer_device_address_enabled: bool,
+    /// `VK_EXT_external_memory_host` granularity
+    /// (`minImportedHostPointerAlignment`) — `Some` iff the extension
+    /// was enabled at vkCreateDevice. Host pointers and byte lengths
+    /// passed to `field_import_host_impl` must be multiples of it.
+    pub(super) host_import_min_align: Option<u64>,
+    /// `vkGetMemoryHostPointerPropertiesEXT`, resolved at device
+    /// creation alongside the extension. The import path needs it to
+    /// intersect the pointer's importable memory types with the
+    /// buffer's requirements.
+    pub(super) get_mem_host_ptr_props_fn: Option<ffi::PfnVkGetMemoryHostPointerPropertiesEXT>,
     /// Acceleration structure registry. Each entry holds the AS
     /// handle plus the storage buffer + memory it lives in;
     /// destroy_acceleration_structure (and Drop) walks the map to
@@ -1175,6 +1185,33 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         //     render-encoder / dispatch arm.
         let has_vrs_ext = physical_device_has_extension(pd, b"VK_KHR_fragment_shading_rate\0");
         let has_mesh_ext = physical_device_has_extension(pd, b"VK_EXT_mesh_shader\0");
+
+        // VK_EXT_external_memory_host — host-pointer import for the
+        // zero-copy HostField path. Cache the import granularity
+        // (minImportedHostPointerAlignment) at discovery; the import
+        // itself resolves per-pointer memory types at allocation time.
+        // None ⇒ no import path; the API layer stages a copy instead.
+        let has_host_import_ext =
+            physical_device_has_extension(pd, b"VK_EXT_external_memory_host\0");
+        let host_import_min_align: Option<u64> = match (has_host_import_ext, get_props2) {
+            (true, Some(get_props2)) => {
+                let mut host_props = ffi::VkPhysicalDeviceExternalMemoryHostPropertiesEXT {
+                    s_type:
+                        ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT,
+                    p_next: core::ptr::null_mut(),
+                    min_imported_host_pointer_alignment: 0,
+                };
+                let mut props2 = ffi::VkPhysicalDeviceProperties2 {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                    p_next: &mut host_props as *mut _ as *mut core::ffi::c_void,
+                    properties: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceProperties>() },
+                };
+                unsafe { get_props2(pd, &mut props2) };
+                (host_props.min_imported_host_pointer_alignment > 0)
+                    .then_some(host_props.min_imported_host_pointer_alignment)
+            }
+            _ => None,
+        };
         let has_accel_ext = physical_device_has_extension(pd, b"VK_KHR_acceleration_structure\0");
         let has_rt_pipeline_ext =
             physical_device_has_extension(pd, b"VK_KHR_ray_tracing_pipeline\0");
@@ -1262,6 +1299,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
         if has_mesh_ext {
             enabled_extensions.push(c"VK_EXT_mesh_shader".as_ptr());
+        }
+        if host_import_min_align.is_some() {
+            enabled_extensions.push(c"VK_EXT_external_memory_host".as_ptr());
         }
         if has_rt {
             enabled_extensions.push(c"VK_KHR_acceleration_structure".as_ptr());
@@ -1373,6 +1413,25 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         } else {
             None
         };
+        let get_mem_host_ptr_props_fn: Option<ffi::PfnVkGetMemoryHostPointerPropertiesEXT> =
+            if host_import_min_align.is_some() {
+                let name = b"vkGetMemoryHostPointerPropertiesEXT\0";
+                let p = unsafe {
+                    ffi::vkGetDeviceProcAddr(device, name.as_ptr() as *const core::ffi::c_char)
+                };
+                if p.is_null() {
+                    None
+                } else {
+                    Some(unsafe {
+                        core::mem::transmute::<
+                            *const core::ffi::c_void,
+                            ffi::PfnVkGetMemoryHostPointerPropertiesEXT,
+                        >(p)
+                    })
+                }
+            } else {
+                None
+            };
         let mesh_draw_fn: Option<ffi::PfnVkCmdDrawMeshTasksEXT> = if has_mesh_ext {
             let name = b"vkCmdDrawMeshTasksEXT\0";
             let p = unsafe {
@@ -1632,6 +1691,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             dispatch_base_fn,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
             buffer_device_address_enabled: has_accel_ext,
+            host_import_min_align,
+            get_mem_host_ptr_props_fn,
             acceleration_structures: RwLock::new(HashMap::new()),
         }));
 

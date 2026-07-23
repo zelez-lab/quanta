@@ -158,6 +158,39 @@ mapped.write(0, 3.14);   // CPU writes directly to GPU-visible memory
 Use mapped memory for small, frequently-updated data (camera matrices, UI
 state). For large compute buffers, dedicated Fields are faster for the GPU.
 
+## Importing caller-owned memory (zero-copy)
+
+The inverse of mapped memory: the host already owns the data -- an mmap'd
+file region, a page-aligned arena -- and the GPU imports a view of it
+without copying:
+
+```rust
+let region: &[f32] = /* mmap'd, page-aligned */;
+let vectors = gpu.field_from_host(region)?;   // zero-copy where supported
+let mut wave = my_kernel(&gpu)?;
+wave.bind_host(0, &vectors);                  // read-only binding
+```
+
+The contract: the base pointer AND the byte length are multiples of
+`gpu.host_import_alignment()`, checked at import -- violations are
+`InvalidParam`, never a silent copy. mmap'd regions satisfy the base by
+construction; pass the page-padded slice and keep the logical element
+count in your own metadata. The field is **read-only**: bind it only to
+`&[T]` kernel parameters, and complete in-flight dispatches that bind it
+before dropping it or unmapping the region (the shared borrow already
+prevents mutation on the safe path).
+
+Where no import path exists (`gpu.supports_host_import()` is false --
+WebGPU, or Vulkan without `VK_EXT_external_memory_host`) the same call
+succeeds through **one** staged copy and `is_imported()` reports `false`
+-- the cost is queryable, never silent.
+
+Per backend: Metal wraps the pages with `newBufferWithBytesNoCopy`
+(granularity = VM page size, 16 KiB on Apple silicon); Vulkan imports
+through `VK_EXT_external_memory_host` (`minImportedHostPointerAlignment`,
+typically 4 KiB); the software driver reads through the pointer directly
+(granularity 1); WebGPU always stages.
+
 ## Transfers and memory topology
 
 Data crosses the PCIe bus (or no bus at all, on unified-memory devices) when
@@ -233,6 +266,9 @@ Is it data shared between quarks in one workgroup?
 
 Does the CPU update it every frame?
   YES --> Mapped memory (gpu.field_mapped)
+
+Does the host already own it in kernel layout? (an mmap'd file)
+  YES --> Host import (gpu.field_from_host, read-only)
 
 Is it a local variable in your kernel?
   YES --> Register (automatic, no annotation needed)
