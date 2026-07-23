@@ -79,6 +79,9 @@ import Quanta.Vrs
 -- Sparse textures (steps 030 + 031)
 import Quanta.SparseTexture
 
+-- Zero-copy host-memory field import
+import Quanta.HostImport
+
 -- Multi-queue (steps 018 + 019)
 import Quanta.MultiQueue
 

@@ -332,6 +332,13 @@ Empirical cross-checks (Cat-language litmus tests, runnable with herd7):
 | T752 | CommandBuffer consumed by submit; no double-submit | Verus | proven |
 | T753 | Pulse position ↔ submission index correspondence | Verus | proven |
 | T754 | `raw_hazard_free` declared (per-backend driver discharges) | Verus | proven |
+| T760 | Host import is zero-copy by construction (`copies = 0`) | Lean + Verus | proven |
+| T761 | Staged fallback copies exactly once, `imported = false` | Lean + Verus | proven |
+| T762 | Host-import view released exactly once on drop | Lean + Verus | proven |
+| T763 | Releasing the view never frees the caller's pages | Lean + Verus | proven |
+| T764 | A freed host-import view is not bindable | Lean + Verus | proven |
+| T765 | Unaligned import rejected, never silently staged | Lean + Verus | proven |
+| T766 | Post-creation op set never writes host bytes (read-only v1) | Lean + Verus | proven |
 
 ## WebGPU Host Axioms (A10, A11) — TCB
 
@@ -548,6 +555,13 @@ T720-T754 are the API-layer Verus proofs (step 075). They cover the
 Pulse / Field / Wave / submission-queue lifetimes — closing the gap
 between "proven kernel" and "proven library." T741 is the
 capability-monotonicity property the roadmap names explicitly.
+
+T760-T766 extend the same layer to host-memory import (`HostField`):
+zero-copy is a theorem of the import path rather than a comment, the
+staged fallback copies exactly once, releasing the view never frees
+the caller's pages, unaligned import is rejected, and the v1 op set
+is read-only. Proven twice — Lean (`Quanta.HostImport`) and the Verus
+mirror (`quanta-api/host_field_import.rs`).
 
 T1710–T1713 are the B″ (WebIDL grammar mirror) deliverables.
 T1710 discharges enum-string conformance, T1711 method-presence,

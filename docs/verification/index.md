@@ -254,7 +254,7 @@ covered: SPIR-V, MSL, WGSL (build-time + JIT), LLVM, CPU.
   template applied to all three drivers; the discipline caught the
   same VRS silent-drop bug on each.
 
-### API surface (step 075)
+### API surface (steps 075 + 094)
 
 * **T720–T722** — Pulse lifecycle. Wait closure (FnOnce) consumed
   exactly once: no double-fire.
@@ -264,6 +264,10 @@ covered: SPIR-V, MSL, WGSL (build-time + JIT), LLVM, CPU.
   `binding_count` and `texture_count` never shrink.
 * **T750–T754** — Submission queue. No double-submit, fence ordering,
   raw_hazard_free as a per-backend obligation.
+* **T760–T766** — Host-memory import (`HostField`). Zero-copy by
+  construction, the staged fallback copies exactly once, the view is
+  released exactly once — never the caller's pages — and the v1 op
+  set is read-only. Lean + Verus pair.
 
 ### Memory models (steps 055–056)
 

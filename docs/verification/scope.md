@@ -50,16 +50,18 @@ verdicts; `tests/litmus.rs` runs the same shapes as real GPU kernels
 
 ### Level 5: API Invariants -- ACHIEVED
 
-**What is proven:** Pulse/Field/Wave/Texture lifecycle invariants, capability
+**What is proven:** Pulse/Field/Wave/Texture lifecycle invariants, host-memory
+import lifecycle, capability
 monotonicity, batch ordering, blend state consistency, derive macro correctness,
 render builder sequencing, field/texture delegation.
 
-**Tool:** Verus (82 mirror files, ~1,150 proof functions across all levels)
+**Tool:** Verus (83 mirror files, ~1,150 proof functions across all levels)
 
-**Theorems (37 total):**
+**Theorems (44 total):**
 
 | Range | Category | Count | What |
 |-------|----------|------:|------|
+| T760-T766 | Host-Memory Import | 7 | zero-copy by construction (T760), staged fallback copies exactly once (T761), view released exactly once (T762), caller pages never freed (T763), freed view not bindable (T764), alignment contract (T765), read-only op set (T766) |
 | T800-T810 | Core API | 11 | Wave slot bounds (T800), push alignment (T801), binding monotonicity (T802), push mask bijection (T803), Pulse monotonic completion (T804), Pulse once-consume (T805), Field byte_size (T806), Field write-read preservation (T807), MappedField pointer validity (T808), Batch dispatch equivalence (T809), blend state consistency (T810) |
 | T2000-T2003 | Render Builder | 4 | Each method appends exactly one RenderOp (T2000), pulse delegates correctly (T2001), move semantics prevent reuse (T2002), method-to-op mapping (T2003) |
 | T2010-T2014 | Vertex Derive | 5 | Type-to-format mapping (T2010), cumulative offsets (T2011), stride = total size (T2012), location = field index (T2013), repr(C) requirement (T2014) |
@@ -70,6 +72,13 @@ render builder sequencing, field/texture delegation.
 | T2060 | Batch Alias | 1 | batch.pulse() == batch.submit() (T2060) |
 
 **Status:** 100% production file coverage. Every public API type has a Verus mirror.
+
+The host-import range (T760–T766) is proven in both Lean
+(`Quanta.HostImport`) and its Verus mirror. Its `'a`-outlives and
+no-writable-alias halves are discharged by Rust's borrow checker on the
+safe path (`&'a [T]` held by the wrapper) — stated here, not
+ghost-modeled, the same split the other lifecycle mirrors use for
+use-after-free.
 
 ---
 
@@ -88,6 +97,7 @@ bijection, type mapping, format tables, cross-emitter exhaustiveness.
 
 | Range | Category | Count | What |
 |-------|----------|------:|------|
+| T760-T766 | Host-Memory Import | 7 | zero-copy by construction (T760), staged fallback copies exactly once (T761), view released exactly once (T762), caller pages never freed (T763), freed view not bindable (T764), alignment contract (T765), read-only op set (T766) |
 | T100-T119 | SPIR-V Emitter | 20 | Header magic/version (T100), word encoding (T101), section order (T102), type dedup (T103), constant dedup (T104), BinOp/CmpOp/UnaryOp/Cast opcodes (T105-T108), no collisions among 96 opcodes (T109), StorageBuffer decorations (T110), PushConstant offset (T111), entry point variables (T112), loop structure (T113), phi nodes (T114), shared memory (T115), barrier (T116), vertex/fragment builtins (T117-T119) |
 | T200-T217 | Wire Format | 18 | Tag roundtrip for all enum types (T200-T208), full structure roundtrip: KernelDef (T209), CompilerOutput (T210), ShaderDef (T211), string/option/bytes encoding (T212-T214), ConstValue/KernelParam/DeviceFnDef roundtrip (T215-T217) |
 | T300-T307 | MSL Emitter | 8 | BinOp/CmpOp/MathFn operators (T300-T302), param declarations (T303), threadgroup arrays (T304), barrier (T305), device functions (T306), type names (T307) |
@@ -124,6 +134,7 @@ formalized as Lean axioms (A6-A9).
 
 | Range | Category | Count | What |
 |-------|----------|------:|------|
+| T760-T766 | Host-Memory Import | 7 | zero-copy by construction (T760), staged fallback copies exactly once (T761), view released exactly once (T762), caller pages never freed (T763), freed view not bindable (T764), alignment contract (T765), read-only op set (T766) |
 | T1200-T1204 | Driver Lifecycle | 5 | Vulkan image layout transitions (T1200), buffer alignment (T1201), command buffer ordering (T1202), workgroup size bounds (T1203), GPU handle freed exactly once (T1204) |
 | T1300-T1301 | Precision | 2 | F16-F32 round-trip within 1 ULP (T1300), metallib magic bytes (T1301) |
 | T1400-T1413 | GPU Optimizations | 14 | AtomicCAS correctness (T1400), AcqRel|Workgroup semantics 0x108 (T1401), rsqrt fast path (T1402), metal3.1 flag (T1403), F16 capability (T1404), loop unroll constant (T1405), aligned load/store (T1406), barrier stage flags (T1407), pipeline cache (T1408), persistent mapping (T1409), staging pool (T1410), restrict decoration (T1411), spirv-opt fallback (T1412), descriptor cache (T1413) |
