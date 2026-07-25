@@ -38,38 +38,35 @@ impl Gpu {
     /// Metal uses dispatchThreads (clips to exact count).
     /// Vulkan uses dispatchGroups with ceil(quarks/workgroup_size[0]).
     ///
-    /// On a [deferred](Gpu::deferred) handle the dispatch is encoded
-    /// into the shared per-device batch and the returned pulse's
-    /// `wait` flushes the lane; on backends without batch support the
-    /// deferred handle dispatches and waits inline (completed pulse).
-    /// Only this 1-D entry point defers — `wave_dispatch` (explicit
-    /// groups), `dispatch_indirect`, and `async_compute_dispatch`
-    /// always commit eagerly.
+    /// Dispatch is **deferred**: the wave is encoded into the shared
+    /// per-device batch and the returned pulse's `wait` flushes the
+    /// lane (see [`crate::api::deferred`]). On backends without batch
+    /// support — and for texture-binding waves, which the lane
+    /// declines — the dispatch commits and completes inline (the
+    /// returned pulse is already done). Only this 1-D entry point
+    /// defers — `wave_dispatch` (explicit groups),
+    /// `dispatch_indirect`, and `async_compute_dispatch` always
+    /// commit, after ordering themselves against the lane.
     pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         #[cfg(feature = "std")]
         {
-            if self.deferred {
-                if self.pending.encode(self.device_handle(), wave, quarks)? {
-                    return Ok(crate::api::deferred::lazy_pulse(
-                        self.pending.clone(),
-                        self.device_handle().clone(),
-                    ));
-                }
-                // Not encodable (batch-less backend, or a
-                // texture-binding wave the lane declines): commit any
-                // pending work first for ordering, then dispatch
-                // eagerly and wait — a dropped pulse leaks nothing and
-                // reads stay correct without a flush point.
-                self.pending.submit_pending()?;
-                let mut pulse = self.inner.wave_dispatch_threads(wave, quarks)?;
-                pulse.wait()?;
-                return Ok(pulse);
+            if self.pending.encode(self.device_handle(), wave, quarks)? {
+                return Ok(crate::api::deferred::lazy_pulse(
+                    self.pending.clone(),
+                    self.device_handle().clone(),
+                ));
             }
-            // Eager handle on a device with deferred work pending:
-            // commit the pending batch first so this dispatch cannot
-            // overtake encoded producers of its inputs.
+            // Not encodable (batch-less backend, or a texture-binding
+            // wave the lane declines): commit any pending work first
+            // for ordering, then dispatch eagerly and wait — a dropped
+            // pulse leaks nothing and reads stay correct without a
+            // flush point.
             self.pending.submit_pending()?;
+            let mut pulse = self.inner.wave_dispatch_threads(wave, quarks)?;
+            pulse.wait()?;
+            Ok(pulse)
         }
+        #[cfg(not(feature = "std"))]
         self.inner.wave_dispatch_threads(wave, quarks)
     }
 
@@ -161,7 +158,7 @@ impl Gpu {
         let handle = self.inner.async_copy_create()?;
         Ok(crate::AsyncCopyQueue {
             handle,
-            device: self.inner.clone(),
+            gpu: self.clone(),
             live: true,
         })
     }
@@ -177,7 +174,7 @@ impl Gpu {
         Ok(crate::Queue {
             handle,
             kind: queue_type,
-            device: self.inner.clone(),
+            gpu: self.clone(),
             live: true,
         })
     }
@@ -225,7 +222,7 @@ impl Gpu {
             handle,
             cap: max_commands,
             recorded: 0,
-            device: self.inner.clone(),
+            gpu: self.clone(),
             live: true,
         })
     }

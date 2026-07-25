@@ -44,7 +44,7 @@ pub struct IndirectCommandBuffer {
     pub(crate) handle: u64,
     pub(crate) cap: u32,
     pub(crate) recorded: u32,
-    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) gpu: crate::Gpu,
     pub(crate) live: bool,
 }
 
@@ -89,7 +89,8 @@ impl IndirectCommandBuffer {
         if self.recorded >= self.cap {
             return Err(QuantaError::invalid_param("ICB is full"));
         }
-        self.device
+        self.gpu
+            .device_handle()
             .icb_record_dispatch(self.handle, self.recorded, wave, groups)?;
         self.recorded += 1;
         Ok(())
@@ -126,7 +127,7 @@ impl IndirectCommandBuffer {
         if self.recorded >= self.cap {
             return Err(QuantaError::invalid_param("ICB is full"));
         }
-        self.device.icb_record_draw(
+        self.gpu.device_handle().icb_record_draw(
             self.handle,
             self.recorded,
             pipeline.handle(),
@@ -152,7 +153,13 @@ impl IndirectCommandBuffer {
                 "ICB execute count exceeds recorded length",
             ));
         }
-        self.device.indirect_buffer_execute(self.handle, count)
+        // An ICB execute is its own submission — complete deferred
+        // work first so recorded dispatches cannot read half-produced
+        // lane outputs.
+        self.gpu.__flush_pending()?;
+        self.gpu
+            .device_handle()
+            .indirect_buffer_execute(self.handle, count)
     }
 
     /// Execute every recorded command. Equivalent to
@@ -166,7 +173,10 @@ impl IndirectCommandBuffer {
 impl Drop for IndirectCommandBuffer {
     fn drop(&mut self) {
         if self.live {
-            let _ = self.device.indirect_buffer_destroy(self.handle);
+            let _ = self
+                .gpu
+                .device_handle()
+                .indirect_buffer_destroy(self.handle);
             self.live = false;
         }
     }

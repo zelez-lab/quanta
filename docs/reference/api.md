@@ -124,13 +124,11 @@ trait below.
 |--------|---------|-------------|
 | `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel |
 | `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile KernelDef and create wave |
-| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count) |
-| `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts |
-| `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch |
+| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count), **deferred**: encodes into the per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-dispatch)) |
+| `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts (commits, ordered after pending deferred work) |
+| `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch (commits, ordered after pending deferred work) |
 | `reload_wave(wave, kernel)` | `Result<()>` | Hot-reload kernel binary |
-| `batch()` | `Result<Batch>` | Begin multi-dispatch batch |
-| `deferred()` | `Gpu` | Handle whose `dispatch` encodes into a shared per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-dispatch)) |
-| `is_deferred()` | `bool` | Whether this handle defers its dispatches |
+| `batch()` | `Result<Batch>` | Begin an explicit multi-dispatch batch |
 | `flush()` | `Result<()>` | Submit all deferred dispatches and block until they complete |
 | `indirect_command_buffer(cap)` | `Result<IndirectCommandBuffer>` | Pre-record `cap` dispatch / draw commands then `execute(n)` |
 | `async_copy_queue()` | `Result<AsyncCopyQueue>` | Transfer queue concurrent with compute / graphics |

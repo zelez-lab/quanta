@@ -63,6 +63,7 @@
 - [Particle System](computation/how-to/particle-system.md)
 - [Mandelbrot](computation/how-to/mandelbrot.md)
 - [Zero-Copy Input from mmap](computation/how-to/zero-copy-host-import.md)
+- [Batching and Synchronization](computation/how-to/batching-and-sync.md)
 - [Array Math (NumPy on the GPU)](computation/how-to/arrays-numpy.md)
 - [Training with Autodiff](computation/how-to/autograd-training.md)
 - [FFT (Fourier Transforms)](computation/how-to/fft.md)

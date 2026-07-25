@@ -4,11 +4,11 @@
 //! autodiff tape op costs end to end; A–E isolate where the time goes.
 //!
 //! Layers measured (small [4096] f32 arrays, nn-test scale):
-//!   0. full composed path: Array::add (now deferred-lane encoded)
+//!   0. full composed path: Array::add (deferred-lane encoded)
 //!   A. wave_jit alone (per-op JIT compile cost)
-//!   B. pre-JIT'd wave: eager dispatch + wait per op
-//!   C. pre-JIT'd wave: eager dispatch per op, single wait at end
-//!   D. batch API: N encodes, one commit, one wait
+//!   B. pre-JIT'd wave: dispatch + pulse-wait (= lane flush) per op
+//!   C. pre-JIT'd wave: dispatch (encode) per op, single flush at end
+//!   D. explicit batch API: N encodes, one commit, one wait
 //!   E. 1-element field.read() (the `sum` scalar round-trip)
 //!
 //! Run: cargo run --release --features "sci metal jit compute" \

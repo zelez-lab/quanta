@@ -493,13 +493,9 @@ pub fn sdpa_forward(
     wave.set_value(9, scale);
     wave.set_value(10, if causal { 1u32 } else { 0u32 });
     wave.set_value(11, kv_len);
-    // Eager handle: keep the synchronous contract (`Ok(())` = OUT/STATS
-    // ready — no pulse escapes this fn). Deferred handle: encode into
-    // the lane; the caller's next sync point completes it.
-    let mut pulse = gpu.dispatch(&wave, seq_q * dv)?;
-    if !gpu.is_deferred() {
-        pulse.wait()?;
-    }
+    // Deferred like every dispatch: OUT/STATS complete at the caller's
+    // next sync point (a pulse wait, flush, or a Field read of them).
+    gpu.dispatch(&wave, seq_q * dv)?;
     Ok(())
 }
 
@@ -593,10 +589,7 @@ pub fn sdpa_backward(
         wave.bind(2, &delta);
         wave.set_value(3, seq_q);
         wave.set_value(4, dv);
-        let mut pulse = gpu.dispatch(&wave, seq_q)?;
-        if !gpu.is_deferred() {
-            pulse.wait()?;
-        }
+        gpu.dispatch(&wave, seq_q)?;
     }
 
     // 2. dQ: one thread per (query row, head dim).
@@ -616,10 +609,7 @@ pub fn sdpa_backward(
         wave.set_value(11, scale);
         wave.set_value(12, causal_u);
         wave.set_value(13, kv_len);
-        let mut pulse = gpu.dispatch(&wave, seq_q * d)?;
-        if !gpu.is_deferred() {
-            pulse.wait()?;
-        }
+        gpu.dispatch(&wave, seq_q * d)?;
     }
 
     // 3. dK: one thread per (key row, head dim).
@@ -639,10 +629,7 @@ pub fn sdpa_backward(
         wave.set_value(11, scale);
         wave.set_value(12, causal_u);
         wave.set_value(13, kv_len);
-        let mut pulse = gpu.dispatch(&wave, seq_k * d)?;
-        if !gpu.is_deferred() {
-            pulse.wait()?;
-        }
+        gpu.dispatch(&wave, seq_k * d)?;
     }
 
     // 4. dV: one thread per (key row, value dim).
@@ -660,10 +647,7 @@ pub fn sdpa_backward(
         wave.set_value(9, scale);
         wave.set_value(10, causal_u);
         wave.set_value(11, kv_len);
-        let mut pulse = gpu.dispatch(&wave, seq_k * dv)?;
-        if !gpu.is_deferred() {
-            pulse.wait()?;
-        }
+        gpu.dispatch(&wave, seq_k * dv)?;
     }
 
     Ok(())

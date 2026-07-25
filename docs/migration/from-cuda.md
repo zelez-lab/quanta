@@ -112,7 +112,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `cudaHostRegister` + `cudaHostGetDevicePointer` | `gpu.field_from_host(&data)` (zero-copy import of caller-owned page-aligned memory, read-only; staged-copy fallback is queryable via `is_imported()`) |
 | `kernel<<<blocks, threads>>>(...)` | `gpu.dispatch(&wave, n)` |
 | `cudaDeviceSynchronize()` | `pulse.wait()` / `gpu.wait_idle()` |
-| stream-ordered launches (async kernels, sync at the read) | `gpu.deferred()` — dispatches encode into one per-device batch, submitted at the next sync point (`flush()` / `pulse.wait()` / a `Field` read) — see [Execution model](../concepts/execution-model.md#deferred-dispatch) |
+| stream-ordered launches (async kernels, sync at the read) | the default: `gpu.dispatch()` encodes into one per-device batch, submitted at the next sync point (`flush()` / `pulse.wait()` / a `Field` read) — see [Execution model](../concepts/execution-model.md#deferred-dispatch) |
 | `cudaLaunchHostFunc` / `cudaStreamAddCallback` | `pulse.on_complete(f)` (run `f` on a background waiter at completion — the event-driven alternative to `wait()`) |
 | `cudaGetDeviceProperties` | `gpu.caps()` |
 | `prop.integrated` / unified-memory checks | `gpu.memory_topology()` (`Unified` \| `Discrete` — see [Memory Model](../concepts/memory-model.md#transfers-and-memory-topology)) |

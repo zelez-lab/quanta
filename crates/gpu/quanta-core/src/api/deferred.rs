@@ -1,26 +1,25 @@
-//! Deferred dispatch — the per-device pending lane behind
-//! [`Gpu::deferred`](crate::Gpu::deferred).
+//! Deferred dispatch — the per-device pending lane, and the ONLY
+//! dispatch model: every [`Gpu::dispatch`](crate::Gpu::dispatch)
+//! encodes into a shared [`Batch`] instead of committing its own
+//! command buffer, and the batch submits when something needs the
+//! results: a [`Pulse::wait`](crate::Pulse::wait) on any returned
+//! pulse, an explicit [`Gpu::flush`](crate::Gpu::flush),
+//! [`Gpu::wait_idle`](crate::Gpu::wait_idle), or a `Field` byte op
+//! touching a buffer the lane still owes work to. The sync contract
+//! is the async one the API always had — reads require a wait — with
+//! deferral only moving *when* work submits, never what a sync point
+//! means.
 //!
-//! A deferred handle encodes its dispatches into a shared [`Batch`]
-//! instead of committing each one, and submits the batch only when
-//! something needs the results: a [`Pulse::wait`](crate::Pulse::wait)
-//! on any pulse a deferred dispatch returned, an explicit
-//! [`Gpu::flush`](crate::Gpu::flush), or
-//! [`Gpu::wait_idle`](crate::Gpu::wait_idle). Host reads keep their
-//! documented contract unchanged — `Field::read` does no implicit
-//! sync, so a caller that waits its pulse before reading (the contract
-//! today) is correct under deferral too: the wait flushes.
+//! There is exactly ONE lane per device, shared by every `Gpu` clone —
+//! the same anchoring as the MSAA pool. Two independent lanes on one
+//! queue would commit in arbitrary order, and the queue executes
+//! commit-order, so a dispatch in one lane could read a peer lane's
+//! not-yet-committed write. One lane = one submission order = the
+//! recorded program order.
 //!
-//! There is exactly ONE lane per device, shared by every `Gpu` clone
-//! (deferred or not) — the same anchoring as the MSAA pool. Two
-//! independent lanes on one queue would commit in arbitrary order, and
-//! the queue executes commit-order, so a dispatch in one lane could
-//! read a peer lane's not-yet-committed write. One lane = one
-//! submission order = the recorded program order.
-//!
-//! Backends without a [`Batch`] implementation stay eager: the
-//! deferred handle dispatches and waits inline, returning a completed
-//! pulse. Semantics are identical, only the batching win is absent.
+//! Backends without a [`Batch`] implementation stay eager: dispatch
+//! commits and waits inline, returning a completed pulse. Semantics
+//! are identical, only the batching win is absent.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;

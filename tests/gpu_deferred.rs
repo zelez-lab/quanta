@@ -1,14 +1,15 @@
 #![cfg(all(feature = "compute", feature = "std"))]
-//! Deferred dispatch (`Gpu::deferred`) — lane semantics.
+//! Deferred dispatch — lane semantics. Deferral is THE dispatch
+//! model: every `Gpu::dispatch` encodes into the per-device lane.
 //!
-//! The contract under test: a deferred handle encodes dispatches
-//! instead of committing them, program order is preserved (including
-//! chains through distinct buffers — the autodiff tape's shape), and
-//! every documented sync point (`Pulse::wait`, `Gpu::flush`,
-//! `Gpu::wait_idle`) completes all pending work before returning.
-//! Runs on every batch-capable backend (Metal, CPU); on backends
-//! without a batch path the deferred handle degrades to eager
-//! dispatch-and-wait, and the same assertions must still hold.
+//! The contract under test: dispatches encode instead of committing,
+//! program order is preserved (including chains through distinct
+//! buffers — the autodiff tape's shape), and every documented sync
+//! point (`Pulse::wait`, `Gpu::flush`, `Gpu::wait_idle`, a `Field`
+//! byte op on an owed buffer) completes all pending work before
+//! returning. Runs on every batch-capable backend (Metal, CPU); on
+//! backends without a batch path dispatch degrades to
+//! commit-and-wait, and the same assertions must still hold.
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -32,29 +33,28 @@ fn deferred_chain_through_distinct_buffers() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 256usize;
 
-    let a = dgpu.field::<f32>(count).unwrap();
+    let a = gpu.field::<f32>(count).unwrap();
     a.write(&vec![3.0f32; count]).unwrap();
-    let b = dgpu.field::<f32>(count).unwrap();
-    let c = dgpu.field::<f32>(count).unwrap();
+    let b = gpu.field::<f32>(count).unwrap();
+    let c = gpu.field::<f32>(count).unwrap();
 
     // a -+1-> a, a -*2-> b, b -*2-> c: three dependent dispatches, two
     // of them chained through different buffers. Encode order must be
     // execution order or c reads stale data.
-    let mut w1 = add_one(&dgpu).unwrap();
+    let mut w1 = add_one(&gpu).unwrap();
     w1.bind(0, &a);
-    let mut w2 = double_into(&dgpu).unwrap();
+    let mut w2 = double_into(&gpu).unwrap();
     w2.bind(0, &a);
     w2.bind(1, &b);
-    let mut w3 = double_into(&dgpu).unwrap();
+    let mut w3 = double_into(&gpu).unwrap();
     w3.bind(0, &b);
     w3.bind(1, &c);
 
-    let _ = dgpu.dispatch(&w1, count as u32).unwrap();
-    let _ = dgpu.dispatch(&w2, count as u32).unwrap();
-    let mut last = dgpu.dispatch(&w3, count as u32).unwrap();
+    let _ = gpu.dispatch(&w1, count as u32).unwrap();
+    let _ = gpu.dispatch(&w2, count as u32).unwrap();
+    let mut last = gpu.dispatch(&w3, count as u32).unwrap();
     last.wait().unwrap();
 
     let out = c.read().unwrap();
@@ -71,19 +71,18 @@ fn pulse_wait_flushes_everything_encoded() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 64usize;
-    let field = dgpu.field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     field.write(&vec![0.0f32; count]).unwrap();
 
-    let mut wave = add_one(&dgpu).unwrap();
+    let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &field);
 
     // Wait the FIRST pulse after encoding all three: a lane wait is a
     // full flush, not a per-dispatch fence.
-    let mut first = dgpu.dispatch(&wave, count as u32).unwrap();
-    let _ = dgpu.dispatch(&wave, count as u32).unwrap();
-    let _ = dgpu.dispatch(&wave, count as u32).unwrap();
+    let mut first = gpu.dispatch(&wave, count as u32).unwrap();
+    let _ = gpu.dispatch(&wave, count as u32).unwrap();
+    let _ = gpu.dispatch(&wave, count as u32).unwrap();
     first.wait().unwrap();
     assert!(first.is_done());
 
@@ -97,20 +96,19 @@ fn gpu_flush_completes_dropped_pulses() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 64usize;
-    let field = dgpu.field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     field.write(&vec![0.0f32; count]).unwrap();
 
-    let mut wave = add_one(&dgpu).unwrap();
+    let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &field);
 
     // The array-layer usage shape: pulses dropped un-waited, one
     // explicit flush before the host read.
     for _ in 0..5 {
-        let _ = dgpu.dispatch(&wave, count as u32).unwrap();
+        let _ = gpu.dispatch(&wave, count as u32).unwrap();
     }
-    dgpu.flush().unwrap();
+    gpu.flush().unwrap();
 
     let out = field.read().unwrap();
     assert!(out.iter().all(|&v| v == 5.0), "got {:?}…", &out[..4]);
@@ -122,14 +120,13 @@ fn wait_idle_flushes_the_lane() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 64usize;
-    let field = dgpu.field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     field.write(&vec![0.0f32; count]).unwrap();
 
-    let mut wave = add_one(&dgpu).unwrap();
+    let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &field);
-    let _ = dgpu.dispatch(&wave, count as u32).unwrap();
+    let _ = gpu.dispatch(&wave, count as u32).unwrap();
 
     // wait_idle on the ORIGINAL (eager) handle: the lane is
     // per-device, so any handle's wait_idle must see deferred work.
@@ -145,12 +142,11 @@ fn threshold_auto_submit_preserves_order() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 64usize;
-    let field = dgpu.field::<f32>(count).unwrap();
+    let field = gpu.field::<f32>(count).unwrap();
     field.write(&vec![0.0f32; count]).unwrap();
 
-    let mut wave = add_one(&dgpu).unwrap();
+    let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &field);
 
     // 600 chained increments cross the 512-encode auto-submit, so the
@@ -158,9 +154,9 @@ fn threshold_auto_submit_preserves_order() {
     // boundary, not only inside one batch.
     let iters = 600u32;
     for _ in 0..iters {
-        let _ = dgpu.dispatch(&wave, count as u32).unwrap();
+        let _ = gpu.dispatch(&wave, count as u32).unwrap();
     }
-    dgpu.flush().unwrap();
+    gpu.flush().unwrap();
 
     let out = field.read().unwrap();
     assert!(
@@ -177,29 +173,28 @@ fn field_dropped_between_encode_and_flush() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
     let count = 64usize;
 
-    let src = dgpu.field::<f32>(count).unwrap();
+    let src = gpu.field::<f32>(count).unwrap();
     src.write(&vec![5.0f32; count]).unwrap();
-    let out = dgpu.field::<f32>(count).unwrap();
+    let out = gpu.field::<f32>(count).unwrap();
 
     {
         // `tmp` is an intermediate a composed expression would drop as
         // soon as the next op consumes it — before any flush. The
         // encoded dispatches must keep the underlying buffer alive.
-        let tmp = dgpu.field::<f32>(count).unwrap();
-        let mut w1 = double_into(&dgpu).unwrap();
+        let tmp = gpu.field::<f32>(count).unwrap();
+        let mut w1 = double_into(&gpu).unwrap();
         w1.bind(0, &src);
         w1.bind(1, &tmp);
-        let mut w2 = double_into(&dgpu).unwrap();
+        let mut w2 = double_into(&gpu).unwrap();
         w2.bind(0, &tmp);
         w2.bind(1, &out);
-        let _ = dgpu.dispatch(&w1, count as u32).unwrap();
-        let _ = dgpu.dispatch(&w2, count as u32).unwrap();
+        let _ = gpu.dispatch(&w1, count as u32).unwrap();
+        let _ = gpu.dispatch(&w2, count as u32).unwrap();
     } // tmp (and both waves) drop here, flush hasn't happened yet
 
-    dgpu.flush().unwrap();
+    gpu.flush().unwrap();
     let v = out.read().unwrap();
     assert!(
         v.iter().all(|&x| x == 20.0),
@@ -209,27 +204,22 @@ fn field_dropped_between_encode_and_flush() {
 }
 
 #[test]
-fn deferred_flag_is_per_clone() {
+fn field_read_completes_owed_work() {
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let dgpu = gpu.deferred();
-    assert!(dgpu.is_deferred());
-    assert!(dgpu.clone().is_deferred(), "clones inherit deferral");
-    assert!(!gpu.is_deferred(), "the original handle stays eager");
-
-    // Eager dispatch through the original handle still works and its
-    // pulse still completes (regression guard around the routing).
+    // No pulse wait, no explicit flush: `Field::read` itself must
+    // complete the encoded producer of the buffer it reads — the
+    // lane's referenced-handles contract.
     let count = 64usize;
     let field = gpu.field::<f32>(count).unwrap();
     field.write(&vec![0.0f32; count]).unwrap();
     let mut wave = add_one(&gpu).unwrap();
     wave.bind(0, &field);
-    let mut pulse = gpu.dispatch(&wave, count as u32).unwrap();
-    pulse.wait().unwrap();
+    let _ = gpu.dispatch(&wave, count as u32).unwrap();
     let out = field.read().unwrap();
-    assert!(out.iter().all(|&v| v == 1.0));
+    assert!(out.iter().all(|&v| v == 1.0), "got {:?}…", &out[..4]);
 }
 
 #[test]
@@ -239,6 +229,5 @@ fn flush_with_nothing_pending_is_a_noop() {
         return;
     };
     gpu.flush().unwrap();
-    gpu.deferred().flush().unwrap();
     gpu.wait_idle().unwrap();
 }

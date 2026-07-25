@@ -17,9 +17,7 @@
 //!   queue is destroyed.
 //! - `Drop` releases the backend handle.
 
-use alloc::sync::Arc;
-
-use crate::{GpuDevice, QuantaError, QueueType, Wave};
+use crate::{Gpu, QuantaError, QueueType, Wave};
 
 /// A typed queue handle. Drop releases the backend handle.
 ///
@@ -27,7 +25,7 @@ use crate::{GpuDevice, QuantaError, QueueType, Wave};
 pub struct Queue {
     pub(crate) handle: u64,
     pub(crate) kind: QueueType,
-    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) gpu: Gpu,
     pub(crate) live: bool,
 }
 
@@ -50,7 +48,13 @@ impl Queue {
         if !self.live {
             return Err(QuantaError::invalid_param("queue is not live"));
         }
-        self.device.queue_dispatch(self.handle, wave, groups)
+        // Cross-queue: no implicit ordering against the main queue, so
+        // deferred work this submission might read must be COMPLETE
+        // (not merely committed) first.
+        self.gpu.__flush_pending()?;
+        self.gpu
+            .device_handle()
+            .queue_dispatch(self.handle, wave, groups)
     }
 
     /// Signal `(sem, value)` from this queue.
@@ -58,7 +62,9 @@ impl Queue {
         if !self.live {
             return Err(QuantaError::invalid_param("queue is not live"));
         }
-        self.device.queue_signal(self.handle, semaphore)
+        self.gpu
+            .device_handle()
+            .queue_signal(self.handle, semaphore)
     }
 
     /// Wait on `semaphore` before executing more work on this queue.
@@ -66,14 +72,14 @@ impl Queue {
         if !self.live {
             return Err(QuantaError::invalid_param("queue is not live"));
         }
-        self.device.queue_wait(self.handle, semaphore)
+        self.gpu.device_handle().queue_wait(self.handle, semaphore)
     }
 }
 
 impl Drop for Queue {
     fn drop(&mut self) {
         if self.live {
-            let _ = self.device.queue_destroy(self.handle);
+            let _ = self.gpu.device_handle().queue_destroy(self.handle);
             self.live = false;
         }
     }

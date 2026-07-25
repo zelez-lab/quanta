@@ -249,9 +249,9 @@ impl RenderGpu for quanta_core::Gpu {
         // can size/key the pooled intermediate and aim the resolve
         // without re-borrowing the texture.
         #[cfg(feature = "std")]
-        let builder = RenderBuilder::new(device.clone(), pass, self.__msaa_pool().clone(), target);
+        let builder = RenderBuilder::new(self.clone(), pass, self.__msaa_pool().clone(), target);
         #[cfg(not(feature = "std"))]
-        let builder = RenderBuilder::new(device.clone(), pass);
+        let builder = RenderBuilder::new(self.clone(), pass);
         Ok(builder)
     }
 

@@ -11,7 +11,7 @@ while maintaining the same performance (it generates the same API calls under th
 | Pipeline state objects | `#[quanta::kernel]` (automatic) |
 | Shader compilation at runtime | Build-time (proc macro) |
 | Platform `#ifdef` / `#if __METAL__` | One source, all backends |
-| Command buffer/encoder management | Automatic submit on dispatch |
+| Command buffer/encoder management | Automatic — dispatches encode into a per-device batch, submitted at sync points |
 | Memory type selection (Vulkan) | Automatic (driver picks optimal) |
 | `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary` |
 | Fence/semaphore creation | `Pulse` returned from dispatch |
@@ -113,7 +113,9 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 
 ## What you give up
 
-- Per-call control over command buffer submission order.
+- Per-call control over command buffer boundaries (dispatches batch
+  automatically; `gpu.flush()` and pulse waits are the submission points,
+  `gpu.batch()` the explicit form).
 - Custom memory allocators (Quanta picks optimal memory types automatically).
 - Window creation (Quanta never creates windows — you hand it a
   presentation target). Presentation itself is covered: a `Surface`

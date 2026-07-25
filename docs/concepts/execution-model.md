@@ -186,26 +186,28 @@ wait; same-queue ordering covers it.
 
 Committing one command buffer per dispatch costs far more than the dispatch
 itself for small kernels (~200 µs per op on Apple silicon, almost all of it
-the per-op commit + host wait). `gpu.deferred()` returns a handle that
-**encodes** its `dispatch` calls into a shared per-device batch instead of
-committing them; the batch is submitted when something needs the results —
-a `pulse.wait()` on any pulse a deferred dispatch returned, an explicit
+the per-op commit + host wait). So deferral is the dispatch model, not a
+mode: `gpu.dispatch()` **encodes** into a shared per-device batch instead
+of committing, and the batch is submitted when something needs the
+results — a `pulse.wait()` on any returned pulse, an explicit
 `gpu.flush()`, `gpu.wait_idle()`, or a `Field` byte operation (`read`,
 `write`, `copy_from`, `native_handle`) touching a buffer the pending batch
-references. Program order is preserved: dispatches execute in encode order,
-and a submission that bypasses the lane (`wave_dispatch`, an explicit
-`batch()`, an indirect dispatch) first commits pending work so queue order
-stays program order.
+references. Program order is preserved: dispatches execute in encode
+order; a submission that bypasses the lane (`wave_dispatch`, an explicit
+`batch()`, an indirect dispatch, a render pass, an ICB execute) first
+commits pending work so queue order stays program order; and cross-queue
+paths (`Queue::submit`, async compute/copy) complete pending work outright
+before touching their queue.
 
 The sync contract is unchanged — reads still require a wait, and a wait
 still completes everything the read needs; deferral only moves *when* work
 is submitted, never what a sync point means. On backends without a batch
-path the deferred handle simply dispatches eagerly. `quanta::sci`'s
-`Array` (and everything built on it: autograd, `quanta-nn`) runs on
-deferred handles internally — a composed expression executes as a handful
-of submissions instead of one per op, which is where define-by-run
-training gets its throughput. Exception: `MappedField` views are raw
-memory the lane cannot intercept — flush explicitly before reading one.
+path, and for texture-binding waves, `dispatch` commits and completes
+inline (the returned pulse is already done). A composed `quanta::sci`
+expression therefore executes as a handful of submissions instead of one
+per op — where define-by-run training gets its throughput. Exception:
+`MappedField` views are raw memory the lane cannot intercept — flush
+explicitly before reading one.
 
 ## Queues
 

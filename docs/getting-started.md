@@ -378,7 +378,11 @@ the results back from the same struct.
    - Read results back into `data.result`
 
 4. **`.wait()?`**: Blocked until the GPU finished. Returns a `Pulse`
-   (a completion signal) that you wait on.
+   (a completion signal) that you wait on. Under the hood dispatches
+   are *batched*: they encode into one per-device submission and the
+   wait is what submits and completes it — so chains of dispatches
+   cost one submission, not one each (see
+   [Execution model](concepts/execution-model.md#deferred-dispatch)).
 
 No shader files. No intermediate representations. No runtime compilation.
 No manual slot numbers. No `gpu.write_field`. The GPU binary is baked into

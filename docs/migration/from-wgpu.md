@@ -131,7 +131,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 - Pipeline creation descriptors
 - Bind group creation
 - Command encoder + compute pass management
-- `queue.submit()` (dispatch submits automatically)
+- `queue.submit()` (dispatches are encoded and batch-submitted automatically at sync points)
 - Async buffer mapping + polling
 
 ## API mapping
@@ -153,7 +153,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `pass.set_bind_group(0, &bg, &[])` | `wave.bind(slot, &field)` |
 | `pass.dispatch_workgroups(x, y, z)` | `gpu.dispatch(&wave, n)` |
 | `encoder.copy_buffer_to_buffer(...)` | `dst.copy_from(&src)` |
-| `queue.submit(...)` | automatic (dispatch submits) |
+| `queue.submit(...)` | automatic — dispatches encode into a per-device batch, submitted at the next sync point (`pulse.wait()` / `flush()` / a read); see [Execution model](../concepts/execution-model.md#deferred-dispatch) |
 | `buffer.slice(..).map_async(...)` | `field.read()` |
 | `device.poll(Maintain::Wait)` | `pulse.wait()` / `gpu.wait_idle()` |
 | `queue.on_submitted_work_done(callback)` | `pulse.on_complete(\|\| { .. })` (runs on a waiter thread; consumes the pulse) |
@@ -174,7 +174,9 @@ all of this from the kernel function signature.
 
 **No async adapter/device creation.** `quanta::init()` discovers and initializes synchronously.
 
-**No command encoder.** Dispatch submits immediately. No manual encoder/pass management.
+**No command encoder.** Quanta encodes for you: `dispatch` records into a
+per-device batch and submission happens at the next sync point — the
+batching you build by hand with wgpu's encoder, without the encoder.
 
 **Typed buffers.** `Field<f32>` vs wgpu's untyped `Buffer`. Read/write operations are
 type-safe -- no manual byte slicing.

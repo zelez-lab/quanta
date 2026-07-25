@@ -16,16 +16,14 @@
 //! - `copy_buffer(dst, src, size)` fails when the queue is destroyed.
 //! - `Drop` releases the backend handle.
 
-use alloc::sync::Arc;
-
-use crate::{Field, GpuDevice, QuantaError};
+use crate::{Field, QuantaError};
 
 /// A typed async-copy queue. Drop releases the backend handle.
 ///
 /// Refines `Quanta.AsyncCopy.Queue`.
 pub struct AsyncCopyQueue {
     pub(crate) handle: u64,
-    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) gpu: crate::Gpu,
     pub(crate) live: bool,
 }
 
@@ -51,7 +49,11 @@ impl AsyncCopyQueue {
         if !self.live {
             return Err(QuantaError::invalid_param("async copy queue is not live"));
         }
-        self.device
+        // Transfer queue = cross-queue: complete deferred producers of
+        // `src` (and pending writers of `dst`) before copying.
+        self.gpu.__flush_pending()?;
+        self.gpu
+            .device_handle()
             .async_copy_submit(self.handle, dst.handle(), src.handle(), size)
     }
 
@@ -61,14 +63,17 @@ impl AsyncCopyQueue {
         if !self.live {
             return Err(QuantaError::invalid_param("async copy queue is not live"));
         }
-        self.device.async_copy_submit(self.handle, dst, src, size)
+        self.gpu.__flush_pending()?;
+        self.gpu
+            .device_handle()
+            .async_copy_submit(self.handle, dst, src, size)
     }
 }
 
 impl Drop for AsyncCopyQueue {
     fn drop(&mut self) {
         if self.live {
-            let _ = self.device.async_copy_destroy(self.handle);
+            let _ = self.gpu.device_handle().async_copy_destroy(self.handle);
             self.live = false;
         }
     }

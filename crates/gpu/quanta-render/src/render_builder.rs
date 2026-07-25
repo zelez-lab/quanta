@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use quanta_core::render_pass::{ColorTarget, DepthTarget};
 use quanta_core::texture::SamplerDesc;
 use quanta_core::{
-    Color, Field, GpuDevice, OcclusionQuery, Pipeline, Pulse, QuantaError, RenderPass, ShadingRate,
+    Color, Field, Gpu, OcclusionQuery, Pipeline, Pulse, QuantaError, RenderPass, ShadingRate,
     Texture,
 };
 #[cfg(feature = "std")]
@@ -82,7 +82,7 @@ impl MsaaState {
 /// early makes `pulse()` fail with `NotFound` instead of silently
 /// skipping the bind.
 pub struct RenderBuilder {
-    device: Arc<dyn GpuDevice>,
+    gpu: Gpu,
     pass: RenderPass,
     #[cfg(feature = "std")]
     msaa: MsaaState,
@@ -90,14 +90,9 @@ pub struct RenderBuilder {
 
 impl RenderBuilder {
     #[cfg(feature = "std")]
-    pub(crate) fn new(
-        device: Arc<dyn GpuDevice>,
-        pass: RenderPass,
-        pool: Arc<MsaaPool>,
-        target: &Texture,
-    ) -> Self {
+    pub(crate) fn new(gpu: Gpu, pass: RenderPass, pool: Arc<MsaaPool>, target: &Texture) -> Self {
         Self {
-            device,
+            gpu,
             pass,
             msaa: MsaaState {
                 pool,
@@ -118,8 +113,8 @@ impl RenderBuilder {
     }
 
     #[cfg(not(feature = "std"))]
-    pub(crate) fn new(device: Arc<dyn GpuDevice>, pass: RenderPass) -> Self {
-        Self { device, pass }
+    pub(crate) fn new(gpu: Gpu, pass: RenderPass) -> Self {
+        Self { gpu, pass }
     }
 
     // === Pipeline ===
@@ -478,7 +473,13 @@ impl RenderBuilder {
     pub fn pulse(mut self) -> Result<Pulse, QuantaError> {
         #[cfg(feature = "std")]
         self.assemble_msaa()?;
-        self.device.render_end(self.pass)
+        // A render submission bypasses the deferred compute lane:
+        // complete pending compute work first, so a pass sampling a
+        // compute-written field or vertex-pulling from one can never
+        // overtake its producer (submit order alone is not a memory
+        // dependency on Vulkan).
+        self.gpu.__flush_pending()?;
+        self.gpu.device_handle().render_end(self.pass)
     }
 
     /// The `pulse()`-time half of the builder-managed MSAA path:
@@ -539,7 +540,7 @@ impl RenderBuilder {
         let intermediate = st
             .pool
             .intermediate_color_target(
-                &self.device,
+                self.gpu.device_handle(),
                 st.target_handle,
                 st.target_width,
                 st.target_height,

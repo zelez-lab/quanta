@@ -33,13 +33,7 @@ impl<T: GpuType> Array<T> {
         Array {
             field: Arc::new(field),
             layout,
-            // Every array runs on a deferred handle: ops encode their
-            // dispatches into the device's shared lane and the lane is
-            // flushed at the host boundaries (`to_vec`, the prims
-            // scalar reduces' own waits, blas host-side routines).
-            // Idempotent for the internally-propagated handles that
-            // are already deferred.
-            gpu: gpu.deferred(),
+            gpu,
         }
     }
 
