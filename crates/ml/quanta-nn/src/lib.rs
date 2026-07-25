@@ -35,6 +35,7 @@ pub mod conv;
 pub mod dropout;
 pub mod embedding;
 pub mod functional;
+pub mod init;
 pub mod kernel;
 pub mod layer;
 pub mod loss;

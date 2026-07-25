@@ -4,7 +4,7 @@
 //! rank-4 layers, so the 2-D last-dim width contracts don't apply —
 //! `in_dim` is `None` and the ops themselves check shapes loudly.
 
-use quanta_array::{Array, ArrayError, ToF64};
+use quanta_array::{ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::Gpu;
 
@@ -44,19 +44,16 @@ impl<T: DiffScalar + ToF64> Layer<T> for Conv2d {
         if self.cin == 0 || self.cout == 0 || self.kh == 0 || self.kw == 0 || self.stride == 0 {
             return Err(bad("Conv2d: cin/cout/kh/kw/stride must be nonzero"));
         }
-        let fan_in = self.cin * self.kh * self.kw;
-        let bound = (6.0 / fan_in as f32).sqrt();
-        let (kw_key, _kb) = key.split();
-        let w_host: Vec<T> = kw_key
-            .uniform(self.cout * fan_in, -bound, bound)
-            .iter()
-            .map(|&v| T::from_f64(v as f64))
-            .collect();
-        let w = Array::from_slice(gpu, &w_host, &[self.cout, self.cin, self.kh, self.kw])
-            .map_err(AutogradError::from)?;
+        // Kaiming-uniform via the named family — [Cout, Cin, kh, kw]
+        // derives fan_in = Cin·kh·kw, the original inline formula.
+        let (kw_key, kb_key) = key.split();
+        let w = crate::init::Init::KaimingUniform.sample::<T>(
+            gpu,
+            kw_key,
+            &[self.cout, self.cin, self.kh, self.kw],
+        )?;
         let b = if self.bias {
-            let zeros: Vec<T> = (0..self.cout).map(|_| T::from_f64(0.0)).collect();
-            Some(Array::from_slice(gpu, &zeros, &[self.cout]).map_err(AutogradError::from)?)
+            Some(crate::init::Init::Zeros.sample::<T>(gpu, kb_key, &[self.cout])?)
         } else {
             None
         };

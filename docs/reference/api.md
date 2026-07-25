@@ -1045,7 +1045,8 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 |------|-------------|
 | `trait Layer<T>` | Configuration + shapes: `in_dim() -> Option<usize>`, `out_dim(in)`, `init(&gpu, key) -> Params`, `apply(&tape, &vars, &x) -> Var`, and the TRAINING forward `apply_train(&tape, &vars, &x, key) -> (Var, Key)` — key in, remainder out; deterministic layers inherit the pass-through default, stochastic layers (Dropout) split; tuple stacks thread it member-to-member. No mode flag exists: the signature says which forward you run |
 | `trait ParamTree<T>` | Typed parameter tree: `bind(&tape) -> Vars`, `flatten() -> Vec<Array<T>>`, `unflatten(iter)`, `grads(vars, loss)` / `grads_from`, `map(f)`, and the NAMED view `collect_named(prefix, out)` / `named_flatten() -> Vec<(String, Array<T>)>` — derived structs name by field, tuples by index, `Option` transparent, `.`-joined, in flatten order |
-| `Key` | Splittable PRNG key; `split(self)`, `uniform(self, …)`, and `raw(self)` **consume** it — linear by ownership |
+| `Key` | Splittable PRNG key; `split(self)`, `uniform(self, …)` / `normal(self, …)`, and `raw(self)` **consume** it — linear by ownership |
+| `init::Init` | Named weight initializers — `Zeros` / `Ones` / `Uniform` / `Normal` / `XavierUniform` / `XavierNormal` / `KaimingUniform` / `KaimingNormal`; `sample(&gpu, key, shape)` derives fans from the shape (`init::fans`: `[in, out]`, `[Cout, Cin, k…]`), `sample_with_fans` for exotic layouts. Layer defaults delegate here |
 | `Linear { in_dim, out_dim, bias }` | Dense affine `[N, in] → [N, out]`; Kaiming-uniform init; params `LinearParams { w, b: Option }` |
 | `LayerNorm { dim, eps }` / `RmsNorm { dim, eps }` | Norm layers over the fused kernels; params `NormParams { gamma, beta: Option }` |
 | `GroupNorm { dim, groups, eps }` | Per-group row normalization (the T9210 core over the `[N·G, C/G]` view) + per-channel affine; `GroupNorm(1)` ≡ LayerNorm; `C % groups` is loud |

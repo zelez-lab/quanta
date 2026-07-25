@@ -10,7 +10,7 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 | Item | Status | Notes |
 |---|---|---|
-| `Linear` | planned | blas gemm-backed; bias optional |
+| `Linear` | **shipped (Layer)** | `layer::Linear` — `y = x @ w (+ b)`, `w: [in, out]`; gemm-backed through `Var::matmul` in BOTH directions (the VJP's two products are gemms); optional bias; kaiming-uniform default delegating to `init::Init::KaimingUniform`. Recorded deferral: fusing the bias into the gemm epilogue — measure the dispatch-count delta first. |
 | `Embedding` | **shipped (module)** | `embedding::Embedding` — configuration + unit-std init around the existing `Var::embedding` op (gather forward, scatter-add backward; repeated ids accumulate). Deliberately NOT a `Layer` impl: its input is `ids: Array<u32>`, not a `Var` — it heads the chain (the MHA `attend` precedent); revisit if a use-case needs mid-stack lookup. |
 | `LayerNorm` ⚗ | **shipped (functional)** | `norm::layer_norm_var` — fused fwd (saves `(μ, rstd)` stats) + the proven T9210 three-term backward via `custom_vjp`; composed `Var::layer_norm` retained as oracle. Module form arrives with the Layer slice. |
 | `RMSNorm` ⚗ | **shipped (functional)** | `norm::rms_norm_var` — fused fwd/bwd (T9211, no centering term); composed `Var::rms_norm` as oracle. Module form with the Layer slice. |
@@ -60,8 +60,8 @@ recipe (Lean proof foundation, then implementation with differential tests).
 
 | Item | Status |
 |---|---|
-| zeros/ones/uniform (kaiming) | **shipped (in layer init)** — full standalone init family with the derive increment |
-| Xavier/Glorot (u+n), Kaiming/He (u+n) | planned |
+| Standalone named family | **shipped** — `init::Init` (`Zeros`/`Ones`/`Uniform`/`Normal`/`XavierUniform`/`XavierNormal`/`KaimingUniform`/`KaimingNormal`) + `init::fans` shape convention (`[in, out]`; `[Cout, Cin, k…]` folds the receptive field); deterministic per `Key` (Box-Muller `Key::normal` joins `uniform`). Custom schemes = build the params struct with `Init::sample`; explicit-fan escape via `sample_with_fans`. |
+| Xavier/Glorot (u+n), Kaiming/He (u+n) | **shipped** — the four scaled schemes above; `Linear`/`Conv2d` defaults now DELEGATE to `KaimingUniform` + `Zeros` (bit-identical to their former inline formulas — checkpoint reproducibility tested). |
 
 ## State
 

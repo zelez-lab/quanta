@@ -77,6 +77,26 @@ impl Key {
         let mut rng = Rng::from_seed((mixed ^ (mixed >> 32)) as u32);
         (0..n).map(|_| lo + (hi - lo) * rng.next_f32()).collect()
     }
+
+    /// Fill `n` values from `N(mean, std²)` (Box-Muller over the same
+    /// deterministic stream as [`Key::uniform`]), consuming the key.
+    pub fn normal(self, n: usize, mean: f32, std: f32) -> Vec<f32> {
+        let mixed = self.seed ^ self.stream.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let mut rng = Rng::from_seed((mixed ^ (mixed >> 32)) as u32);
+        let mut out = Vec::with_capacity(n);
+        while out.len() < n {
+            // u1 clamped away from 0 so ln stays finite.
+            let u1 = rng.next_f32().max(f32::MIN_POSITIVE);
+            let u2 = rng.next_f32();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * core::f32::consts::PI * u2;
+            out.push(mean + std * r * theta.cos());
+            if out.len() < n {
+                out.push(mean + std * r * theta.sin());
+            }
+        }
+        out
+    }
 }
 
 // ── Parameter trees ──────────────────────────────────────────────────────
@@ -350,19 +370,14 @@ impl<T: DiffScalar + ToF64> Layer<T> for Linear {
     }
 
     fn init(&self, gpu: &Gpu, key: Key) -> Result<Self::Params, AutogradError> {
-        let bound = (6.0 / self.in_dim as f32).sqrt(); // kaiming-uniform
+        // Kaiming-uniform via the named family — [in, out] derives
+        // fan_in = in, matching the original inline formula exactly.
         let (kw, kb) = key.split();
-        let w_host: Vec<T> = kw
-            .uniform(self.in_dim * self.out_dim, -bound, bound)
-            .iter()
-            .map(|&v| T::from_f64(v as f64))
-            .collect();
-        let w = Array::from_slice(gpu, &w_host, &[self.in_dim, self.out_dim])
-            .map_err(AutogradError::from)?;
+        let w =
+            crate::init::Init::KaimingUniform.sample::<T>(gpu, kw, &[self.in_dim, self.out_dim])?;
         let b = if self.bias {
-            let _ = kb; // key consumed even when zero-init (linearity discipline)
-            let zeros: Vec<T> = (0..self.out_dim).map(|_| T::from_f64(0.0)).collect();
-            Some(Array::from_slice(gpu, &zeros, &[self.out_dim]).map_err(AutogradError::from)?)
+            // Key consumed even for a zero init (linearity discipline).
+            Some(crate::init::Init::Zeros.sample::<T>(gpu, kb, &[self.out_dim])?)
         } else {
             None
         };
