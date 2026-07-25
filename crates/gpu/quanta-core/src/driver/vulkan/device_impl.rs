@@ -1,5 +1,6 @@
 //! `GpuDevice` trait implementation for `VulkanDevice`.
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -182,6 +183,14 @@ impl GpuDevice for VulkanDevice {
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_indirect_impl(wave, buffer, offset)
+    }
+
+    // === Batch ===
+
+    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+        Ok(crate::Batch {
+            inner: Box::new(super::compute::VulkanBatch::begin(self)?),
+        })
     }
 
     // === Render === (render-gated, step 085)
@@ -445,10 +454,17 @@ impl GpuDevice for VulkanDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
         if let Some(cp) = cp {
-            unsafe {
-                ffi::vkDestroyPipeline(self.device, cp.pipeline, core::ptr::null());
-                ffi::vkDestroyPipelineLayout(self.device, cp.layout, core::ptr::null());
-            }
+            // Deferred-lane callers drop their `Wave` right after the
+            // encode, while a submission (or an open batch) may still
+            // reference the pipeline — destruction defers behind the
+            // submission serial (or the batch pins), like buffers.
+            self.retire_or_park(
+                handle,
+                super::retire::Retired::Pipeline {
+                    pipeline: cp.pipeline,
+                    layout: cp.layout,
+                },
+            );
         }
         Ok(())
     }

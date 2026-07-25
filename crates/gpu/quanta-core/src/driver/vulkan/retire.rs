@@ -42,6 +42,13 @@ pub(super) enum Retired {
     },
     View(ffi::VkImageView),
     Sampler(ffi::VkSampler),
+    /// A compute pipeline + its per-wave pipeline layout
+    /// (`wave_destroy` routes here: a lane-deferred dispatch may still
+    /// reference the pipeline after the caller drops its `Wave`).
+    Pipeline {
+        pipeline: ffi::VkPipeline,
+        layout: ffi::VkPipelineLayout,
+    },
 }
 
 // Raw Vulkan handles are plain pointers. The bin only ever holds its
@@ -142,6 +149,10 @@ unsafe fn destroy(device: ffi::VkDevice, resources: Retired) {
             }
             Retired::View(view) => {
                 ffi::vkDestroyImageView(device, view, core::ptr::null());
+            }
+            Retired::Pipeline { pipeline, layout } => {
+                ffi::vkDestroyPipeline(device, pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(device, layout, core::ptr::null());
             }
             Retired::Sampler(sampler) => {
                 ffi::vkDestroySampler(device, sampler, core::ptr::null());

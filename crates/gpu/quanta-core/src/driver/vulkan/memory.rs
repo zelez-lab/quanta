@@ -292,13 +292,17 @@ impl VulkanDevice {
             if buf.mapped_ptr.is_some() {
                 unsafe { ffi::vkUnmapMemory(self.device, buf.memory) };
             }
-            self.retire_bin.retire(
-                self.device,
-                super::retire::Retired::Buffer {
-                    buffer: buf.buffer,
-                    memory: buf.memory,
-                },
-            );
+            let entry = super::retire::Retired::Buffer {
+                buffer: buf.buffer,
+                memory: buf.memory,
+            };
+            // An OPEN batch referencing this handle has no submission
+            // serial yet, so the retire bin's gate can't see it — park
+            // behind the batch pins instead (`retire_or_park`).
+            #[cfg(feature = "compute")]
+            self.retire_or_park(handle, entry);
+            #[cfg(not(feature = "compute"))]
+            self.retire_bin.retire(self.device, entry);
         }
     }
 

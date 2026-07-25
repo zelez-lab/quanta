@@ -752,6 +752,17 @@ pub struct VkRenderPassBeginInfo {
     pub p_clear_values: *const VkClearValue,
 }
 
+/// The global (all-memory) barrier for `vkCmdPipelineBarrier` — the
+/// batch path places one between dependent compute dispatches
+/// (SHADER_WRITE -> SHADER_READ|SHADER_WRITE).
+#[repr(C)]
+pub struct VkMemoryBarrier {
+    pub s_type: u32,
+    pub p_next: *const core::ffi::c_void,
+    pub src_access_mask: u32,
+    pub dst_access_mask: u32,
+}
+
 #[repr(C)]
 pub struct VkImageMemoryBarrier {
     pub s_type: u32,
