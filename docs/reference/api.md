@@ -1048,6 +1048,7 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 | `Key` | Splittable PRNG key; `split(self)`, `uniform(self, …)` / `normal(self, …)`, and `raw(self)` **consume** it — linear by ownership |
 | `init::Init` | Named weight initializers — `Zeros` / `Ones` / `Uniform` / `Normal` / `XavierUniform` / `XavierNormal` / `KaimingUniform` / `KaimingNormal`; `sample(&gpu, key, shape)` derives fans from the shape (`init::fans`: `[in, out]`, `[Cout, Cin, k…]`), `sample_with_fans` for exotic layouts. Layer defaults delegate here |
 | `safetensors::{save, load}` | HF-format checkpoint interop, dependency-free: tree save under hierarchical names, NAME-keyed load with loud missing/extra/shape errors; `save_named`/`load_named` for raw tensor lists + `__metadata__`; loads `F32`/`F16`/`BF16` |
+| `optim::LossScale` | Dynamic loss scaling (the AMP recipe), state-passing: `scale(tape, loss, state)`, `unscale(grads, state) -> (Option<grads>, state)` — `None` skips the step and backs off; growth after a finite streak; power-of-two scales are exact |
 | `Linear { in_dim, out_dim, bias }` | Dense affine `[N, in] → [N, out]`; Kaiming-uniform init; params `LinearParams { w, b: Option }` |
 | `LayerNorm { dim, eps }` / `RmsNorm { dim, eps }` | Norm layers over the fused kernels; params `NormParams { gamma, beta: Option }` |
 | `GroupNorm { dim, groups, eps }` | Per-group row normalization (the T9210 core over the `[N·G, C/G]` view) + per-channel affine; `GroupNorm(1)` ≡ LayerNorm; `C % groups` is loud |

@@ -53,7 +53,7 @@ recipe (Lean proof foundation, then implementation with differential tests).
 | Adam / AdamW ⚗ | **shipped** | `optim::Adam` (`decoupled` flag = AdamW) — one fused kernel per leaf: both moment recurrences, exact bias correction (T9220), both weight-decay spellings (T9221 licenses the shared kernel); step magnitude scale-invariance (T9222) checked empirically. Supersedes `autograd::optim`'s composed per-slot Adam (kept as-is where it's used). |
 | Grad clipping (by norm, by value) | **shipped** | `optim::{clip_grad_norm, clip_grad_value}` — global L2 norm over ALL leaves (torch semantics), returns the pre-clip norm. |
 | LR schedulers: constant, step, cosine, linear-warmup | **shipped** | `optim::Schedule` — a pure `lr(t)` enum; feed back by rebuilding the `Copy` config (`Adam { lr: sched.lr(t), ..opt }`). Warmup+cosine is the transformer default. |
-| Dynamic loss scaling (mixed precision, bf16) | planned | dtypes shipped in 084.1; arrives with the mixed-precision training increment |
+| Dynamic loss scaling (mixed precision) | **shipped** | `optim::{LossScale, ScaleState}` — state-passing like the optimizers: `scale` multiplies the loss on the tape, `unscale` probes every leaf with `Σ(g·0)` (NaN-propagating — a `max` reduce may DROP NaNs on GPU), returns `None` + backed-off scale on overflow (skip the step), grows after the streak. Power-of-two scales make scaled runs BITWISE equal to unscaled ones (tested over 5 SGD steps). The machinery is dtype-agnostic; a bf16 tape dtype remains 084.1's scope. |
 | RMSprop / Adagrad / LAMB / Lion | **deferred** | on demand — the fused-kernel + tree-state recipe above extends directly |
 
 ## Initialization (quanta-rand backed)

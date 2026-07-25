@@ -24,7 +24,7 @@
 use crate::functional::{adopt_f32_field, f32_input, lift, to_f32_host};
 use crate::layer::ParamTree;
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar};
+use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]
@@ -571,4 +571,126 @@ pub fn clip_grad_norm<T: DiffScalar + ToF64, P: ParamTree<T>>(
         Array::from_slice(leaf.gpu(), &s, leaf.shape()).map_err(AutogradError::from)
     })?;
     Ok((scaled, norm))
+}
+
+// ── Dynamic loss scaling (mixed precision) ───────────────────────────────
+
+/// Dynamic loss-scale configuration — the AMP recipe: multiply the
+/// loss by the scale before backward (so small gradients survive
+/// reduced precision), divide the gradients back out, and adapt the
+/// scale to the observed range: back off on overflow, grow after a
+/// streak of finite steps. Scales are powers of two by construction,
+/// so scaling is EXACT in floating point — a run with scaling on
+/// reproduces an unscaled run bit for bit when nothing overflows.
+///
+/// The state passes through [`LossScale::unscale`] like optimizer
+/// state through `step` (D2): consumed, returned updated.
+#[derive(Debug, Clone, Copy)]
+pub struct LossScale {
+    /// Starting scale (default `2^16`).
+    pub init_scale: f32,
+    /// Multiplier after `growth_interval` consecutive finite steps
+    /// (default 2).
+    pub growth_factor: f32,
+    /// Multiplier on overflow (default 0.5).
+    pub backoff_factor: f32,
+    /// Finite steps required before growing (default 2000).
+    pub growth_interval: u32,
+}
+
+impl Default for LossScale {
+    fn default() -> Self {
+        LossScale {
+            init_scale: 65536.0,
+            growth_factor: 2.0,
+            backoff_factor: 0.5,
+            growth_interval: 2000,
+        }
+    }
+}
+
+/// The scaler's state: the live scale and the finite-step streak.
+#[derive(Debug, Clone, Copy)]
+pub struct ScaleState {
+    pub scale: f32,
+    pub good_steps: u32,
+}
+
+impl LossScale {
+    /// Fresh state at `init_scale`.
+    pub fn init(&self) -> ScaleState {
+        ScaleState {
+            scale: self.init_scale,
+            good_steps: 0,
+        }
+    }
+
+    /// Multiply the loss by the live scale ON THE TAPE, so backward
+    /// produces scaled gradients.
+    pub fn scale<T: DiffScalar + ToF64>(
+        &self,
+        tape: &Tape<T>,
+        loss: &Var<T>,
+        state: &ScaleState,
+    ) -> Result<Var<T>, AutogradError> {
+        let shape = loss.value().shape().to_vec();
+        let s = Array::full(loss.value().gpu(), T::from_f64(state.scale as f64), &[1])
+            .and_then(|a| a.broadcast_to(&shape))
+            .and_then(|a| a.contiguous())
+            .map_err(AutogradError::from)?;
+        loss.mul(&tape.var(s))
+    }
+
+    /// Inspect a scaled gradient tree: if every leaf is finite, divide
+    /// the scale back out and return `Some(grads)` (with the streak
+    /// advanced, growing the scale at `growth_interval`); on overflow
+    /// return `None` — SKIP the optimizer step — with the scale backed
+    /// off and the streak reset.
+    ///
+    /// The finiteness probe is `Σ(g·0)` per leaf: `0·x` is `0` for
+    /// every finite `x` and `NaN` for `±Inf`/`NaN`, and `NaN`
+    /// propagates through the add reduction — unlike a `max` reduce,
+    /// which hardware may define to DROP NaNs.
+    pub fn unscale<T: DiffScalar + ToF64, P: ParamTree<T>>(
+        &self,
+        grads: P,
+        state: ScaleState,
+    ) -> Result<(Option<P>, ScaleState), AutogradError> {
+        for leaf in grads.flatten() {
+            let zero = Array::full(leaf.gpu(), T::from_f64(0.0), &[1])
+                .and_then(|a| a.broadcast_to(leaf.shape()))
+                .map_err(AutogradError::from)?;
+            let probe = leaf.mul(&zero).map_err(AutogradError::from)?;
+            let total = probe.sum().map_err(AutogradError::from)?;
+            if !total.to_f64().is_finite() {
+                return Ok((
+                    None,
+                    ScaleState {
+                        scale: state.scale * self.backoff_factor,
+                        good_steps: 0,
+                    },
+                ));
+            }
+        }
+        let inv = 1.0 / state.scale as f64;
+        let unscaled = grads.map(&mut |leaf: &Array<T>| {
+            let s = Array::full(leaf.gpu(), T::from_f64(inv), &[1])
+                .and_then(|a| a.broadcast_to(leaf.shape()))
+                .map_err(AutogradError::from)?;
+            leaf.mul(&s).map_err(AutogradError::from)
+        })?;
+        let good = state.good_steps + 1;
+        let next = if good >= self.growth_interval {
+            ScaleState {
+                scale: state.scale * self.growth_factor,
+                good_steps: 0,
+            }
+        } else {
+            ScaleState {
+                scale: state.scale,
+                good_steps: good,
+            }
+        };
+        Ok((Some(unscaled), next))
+    }
 }
