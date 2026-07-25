@@ -54,6 +54,11 @@ struct LaneState {
     /// fresh-buffer uploads mid-graph (scalar constants, input
     /// batches) never break an open batch.
     referenced: HashSet<u64>,
+    /// Handles READ by the current hazard-free run (pure reads: bound
+    /// slots whose `write_mask` bit is clear).
+    run_reads: HashSet<u64>,
+    /// Handles WRITTEN by the current run (`&mut` slots — read-write).
+    run_writes: HashSet<u64>,
     /// A flush error that had no caller to surface to (it happened
     /// inside a pulse's deferred wait, which cannot return one). The
     /// next encode or flush takes and returns it.
@@ -78,6 +83,8 @@ impl Default for PendingLane {
                 encoded: 0,
                 outstanding: Vec::new(),
                 referenced: HashSet::new(),
+                run_reads: HashSet::new(),
+                run_writes: HashSet::new(),
                 poisoned: None,
                 batch_capable: None,
             }),
@@ -115,7 +122,7 @@ impl PendingLane {
             return Ok(false);
         }
         if state.batch.is_none() {
-            match device.batch_begin() {
+            match device.batch_begin_concurrent() {
                 Ok(b) => {
                     state.batch_capable = Some(true);
                     state.batch = Some(b);
@@ -130,16 +137,56 @@ impl PendingLane {
                 Err(e) => return Err(e),
             }
         }
+        // Hazard-run grouping: this dispatch joins the current run
+        // unless it conflicts with it — W∩(R'∪W') (its writes touch
+        // anything the run used) or R∩W' (it reads something the run
+        // wrote). Read-read sharing never orders (the common case:
+        // many ops reading one input). On conflict, a batch barrier
+        // closes the run BEFORE this encode. `&mut` slots count as
+        // read-write, so they sit in the write set only and the
+        // W-terms cover their reads.
+        let mut reads: [u64; 16] = [0; 16];
+        let mut writes: [u64; 16] = [0; 16];
+        let (mut nr, mut nw) = (0usize, 0usize);
+        for slot in 0..wave.binding_count as usize {
+            let handle = wave.bindings[slot];
+            if handle == 0 {
+                continue;
+            }
+            if wave.write_mask & (1 << slot) != 0 {
+                writes[nw] = handle;
+                nw += 1;
+            } else {
+                reads[nr] = handle;
+                nr += 1;
+            }
+        }
+        let hazard = writes[..nw]
+            .iter()
+            .any(|h| state.run_reads.contains(h) || state.run_writes.contains(h))
+            || reads[..nr].iter().any(|h| state.run_writes.contains(h));
+        if hazard {
+            state
+                .batch
+                .as_mut()
+                .expect("open batch present after begin")
+                .encode_barrier()?;
+            state.run_reads.clear();
+            state.run_writes.clear();
+        }
         state
             .batch
             .as_mut()
             .expect("open batch present after begin")
             .dispatch(wave, quarks)?;
         state.encoded += 1;
-        for slot in 0..wave.binding_count as usize {
-            if wave.bindings[slot] != 0 {
-                state.referenced.insert(wave.bindings[slot]);
-            }
+        for &h in &reads[..nr] {
+            state.run_reads.insert(h);
+            state.referenced.insert(h);
+        }
+        for &h in &writes[..nw] {
+            state.run_writes.insert(h);
+            state.referenced.insert(h);
         }
         if state.encoded >= AUTO_SUBMIT_ENCODES {
             Self::submit_open_batch(&mut state)?;
@@ -171,10 +218,15 @@ impl PendingLane {
         Self::submit_open_batch(&mut state)
     }
 
-    /// Submit the open batch (no wait) and stash its pulse.
+    /// Submit the open batch (no wait) and stash its pulse. The next
+    /// batch starts a fresh hazard run: cross-batch ordering is the
+    /// backends' (Metal hazard tracking; the Vulkan batch's leading
+    /// submission-order barrier).
     fn submit_open_batch(state: &mut LaneState) -> Result<(), QuantaError> {
         if let Some(batch) = state.batch.take() {
             state.encoded = 0;
+            state.run_reads.clear();
+            state.run_writes.clear();
             let pulse = batch.pulse()?;
             state.outstanding.push(pulse);
         }

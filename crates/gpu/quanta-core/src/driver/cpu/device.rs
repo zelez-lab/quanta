@@ -581,6 +581,7 @@ impl GpuDevice for CpuDevice {
         def.body = hoist_barriers(core::mem::take(&mut def.body));
         let handle = self.alloc_handle();
         let workgroup_size = def.workgroup_size;
+        let write_mask = quanta_ir::field_write_mask(&def);
         let segments = barrier_segment_ranges(&def.body);
         self.kernels
             .lock()
@@ -593,6 +594,7 @@ impl GpuDevice for CpuDevice {
             texture_bindings: [0u64; 16],
             texture_count: 0,
             storage_texture_kinds: [0; 16],
+            write_mask,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -1497,6 +1499,7 @@ impl GpuDevice for CpuDevice {
                         // ICB replay does not carry the storage-texture mask;
                         // format validation runs on the direct dispatch path.
                         storage_texture_kinds: [0; 16],
+                        write_mask: u16::MAX,
                         push_data: *push_data,
                         push_len: *push_len,
                         push_mask: *push_mask,

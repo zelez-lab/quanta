@@ -231,3 +231,38 @@ fn flush_with_nothing_pending_is_a_noop() {
     gpu.flush().unwrap();
     gpu.wait_idle().unwrap();
 }
+
+#[test]
+fn independent_dispatches_share_a_run() {
+    let Some(gpu) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    // Two independent chains (disjoint buffers) plus a shared
+    // READ-ONLY input: under hazard-run grouping these encode without
+    // barriers between them (read-read never orders) and may execute
+    // concurrently — results must still be exact.
+    let count = 256usize;
+    let src = gpu.field::<f32>(count).unwrap();
+    src.write(&vec![7.0f32; count]).unwrap();
+    let a = gpu.field::<f32>(count).unwrap();
+    let b = gpu.field::<f32>(count).unwrap();
+
+    let mut wa = double_into(&gpu).unwrap();
+    wa.bind(0, &src);
+    wa.bind(1, &a);
+    let mut wb = double_into(&gpu).unwrap();
+    wb.bind(0, &src);
+    wb.bind(1, &b);
+
+    for _ in 0..8 {
+        let _ = gpu.dispatch(&wa, count as u32).unwrap();
+        let _ = gpu.dispatch(&wb, count as u32).unwrap();
+    }
+    gpu.flush().unwrap();
+
+    let va = a.read().unwrap();
+    let vb = b.read().unwrap();
+    assert!(va.iter().all(|&v| v == 14.0), "a: got {:?}…", &va[..4]);
+    assert!(vb.iter().all(|&v| v == 14.0), "b: got {:?}…", &vb[..4]);
+}

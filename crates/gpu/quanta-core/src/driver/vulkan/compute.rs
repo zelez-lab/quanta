@@ -77,6 +77,7 @@ impl VulkanDevice {
         let spirv = quanta_ir::emit_spirv::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT SPIR-V emit: {}", e)))?;
         let mut wave = self.wave_impl(&spirv)?;
+        wave.write_mask = quanta_ir::field_write_mask(&kernel);
         // The KernelDef is authoritative for the workgroup size. If the Wave
         // carried a different value, `wave_dispatch_threads` would compute a
         // group count for the wrong local size and silently under-dispatch
@@ -269,6 +270,7 @@ impl VulkanDevice {
             texture_bindings: [0u64; 16],
             texture_count: 0,
             storage_texture_kinds: [0; 16],
+            write_mask: u16::MAX,
             push_data: [0u8; 256],
             push_len: 0,
             push_mask: 0,
@@ -994,6 +996,11 @@ pub(super) struct VulkanBatch {
     /// unpin decrements per occurrence).
     pinned: Vec<u64>,
     any_encoded: bool,
+    /// Serial mode (the public batch): a global barrier goes between
+    /// EVERY pair of encodes. Concurrent mode (the deferred lane):
+    /// barriers come only from `encode_barrier` at hazard-run
+    /// boundaries.
+    auto_barrier: bool,
 }
 
 // Safety: a `Batch` may be created on one thread and encoded/submitted
@@ -1006,7 +1013,7 @@ pub(super) struct VulkanBatch {
 unsafe impl Send for VulkanBatch {}
 
 impl VulkanBatch {
-    pub(super) fn begin(device: &VulkanDevice) -> Result<Self, QuantaError> {
+    pub(super) fn begin(device: &VulkanDevice, auto_barrier: bool) -> Result<Self, QuantaError> {
         let cmd = device.alloc_command_buffer()?;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1021,13 +1028,52 @@ impl VulkanBatch {
             }
             return Err(QuantaError::submit_failed());
         }
+        // Leading global barrier: Vulkan pipeline-barrier scopes cover
+        // SUBMISSION order, not command-buffer extent — this one line
+        // orders the whole batch after every previously submitted
+        // compute (the lane's threshold submits chain batches without
+        // host waits, and nothing else provides that dependency).
+        unsafe {
+            emit_global_compute_barrier(cmd);
+        }
         Ok(VulkanBatch {
             device: device as *const VulkanDevice,
             cmd,
             pools: Vec::new(),
             pinned: Vec::new(),
             any_encoded: false,
+            auto_barrier,
         })
+    }
+}
+
+/// The global COMPUTE→COMPUTE memory barrier both batch modes use:
+/// prior shader writes become visible to later shader reads and
+/// writes, across the whole queue up to this point in submission
+/// order.
+///
+/// # Safety
+/// `cmd` must be in the recording state.
+unsafe fn emit_global_compute_barrier(cmd: ffi::VkCommandBuffer) {
+    let barrier = ffi::VkMemoryBarrier {
+        s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        p_next: core::ptr::null(),
+        src_access_mask: ffi::VK_ACCESS_SHADER_WRITE_BIT,
+        dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT | ffi::VK_ACCESS_SHADER_WRITE_BIT,
+    };
+    unsafe {
+        ffi::vkCmdPipelineBarrier(
+            cmd,
+            ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0,
+            1,
+            &barrier as *const ffi::VkMemoryBarrier as *const c_void,
+            0,
+            core::ptr::null(),
+            0,
+            core::ptr::null(),
+        );
     }
 }
 
@@ -1073,26 +1119,9 @@ impl crate::batch::BatchInner for VulkanBatch {
         // shader writes visible to this one's reads and writes — the
         // chain shape the deferred lane records (op N+1 consumes op
         // N's output).
-        if self.any_encoded {
-            let barrier = ffi::VkMemoryBarrier {
-                s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                p_next: core::ptr::null(),
-                src_access_mask: ffi::VK_ACCESS_SHADER_WRITE_BIT,
-                dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT | ffi::VK_ACCESS_SHADER_WRITE_BIT,
-            };
+        if self.auto_barrier && self.any_encoded {
             unsafe {
-                ffi::vkCmdPipelineBarrier(
-                    self.cmd,
-                    ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0,
-                    1,
-                    &barrier as *const ffi::VkMemoryBarrier as *const c_void,
-                    0,
-                    core::ptr::null(),
-                    0,
-                    core::ptr::null(),
-                );
+                emit_global_compute_barrier(self.cmd);
             }
         }
 
@@ -1109,6 +1138,15 @@ impl crate::batch::BatchInner for VulkanBatch {
                 Err(e)
             }
         }
+    }
+
+    fn encode_barrier(&mut self) -> Result<(), QuantaError> {
+        // Meaningful in concurrent mode (the lane's hazard-run
+        // boundary); harmless over-ordering in serial mode.
+        unsafe {
+            emit_global_compute_barrier(self.cmd);
+        }
+        Ok(())
     }
 
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {

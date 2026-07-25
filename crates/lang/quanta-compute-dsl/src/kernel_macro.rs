@@ -264,6 +264,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     // that can't reflect the per-slot format at dispatch (Metal's AOT path,
     // Vulkan's descriptor_kinds) use this to enforce the format contract.
     let storage_texture_kinds = storage_texture_kinds(&kernel_def);
+    let write_mask = quanta_ir::field_write_mask(&kernel_def);
 
     let wave_fn = quote! {
         pub static #binary_name: #krate::KernelBinary = #krate::KernelBinary {
@@ -290,6 +291,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
             };
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
             wave.set_storage_texture_kinds(#storage_texture_kinds);
+            wave.set_write_mask(#write_mask);
             #const_generic_setters
             Ok(wave)
         }
@@ -420,6 +422,7 @@ fn emit_jit_kernel(
     let wg_y = kernel_def.workgroup_size[1];
     let wg_z = kernel_def.workgroup_size[2];
     let kinds = storage_texture_kinds(kernel_def);
+    let write_mask = quanta_ir::field_write_mask(kernel_def);
     let krate = crate_path.types();
 
     let expanded = quote! {
@@ -429,6 +432,7 @@ fn emit_jit_kernel(
             let mut wave = device.wave_jit(#def_name)?;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
             wave.set_storage_texture_kinds(#kinds);
+            wave.set_write_mask(#write_mask);
             Ok(wave)
         }
     };

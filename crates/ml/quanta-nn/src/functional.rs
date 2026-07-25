@@ -114,26 +114,18 @@ pub fn scaled_dot_product_attention(
     let scale = opts.resolve_scale(d);
     let kv_len = opts.resolve_kv_len(seq_k);
 
-    // Host-bridge KEPT ON PURPOSE (measured 2026-07): a zero-copy
-    // variant (f32_input + adopted outputs) made the attention suites
-    // ~5x SLOWER — these reads pace the deferred lane, keeping batches
-    // small and the host/GPU pipeline overlapped, where the fully
-    // deferred form piles independent per-head/per-case work into one
-    // serialized batch (Metal's serial encoder barriers every
-    // dispatch). Revisit only WITH dependency-aware batch encoding;
-    // see roadmap/_design/deferred_dispatch.md (follow-ups).
-    let q_host = q.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
-    let k_host = k.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
-    let v_host = v.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
-
-    let qf = gpu.field::<f32>(seq_q * d).map_err(lift)?;
-    let kf = gpu.field::<f32>(seq_k * d).map_err(lift)?;
-    let vf = gpu.field::<f32>(seq_k * dv).map_err(lift)?;
+    // Device-resident (the form the dependency-aware lane makes
+    // profitable — hazard runs let independent heads/cases encode
+    // barrier-free instead of serializing): bind the inputs' own
+    // buffers, adopt the kernel's outputs. History: with the OLD
+    // serial batch encoder this exact shape measured ~5x slower than
+    // a host bridge; the concurrent encoder + write-mask runs is what
+    // flipped it.
+    let qi = f32_input(gpu, q)?;
+    let ki = f32_input(gpu, k)?;
+    let vi = f32_input(gpu, v)?;
     let of = gpu.field::<f32>(seq_q * dv).map_err(lift)?;
     let sf = gpu.field::<f32>(seq_q * 2).map_err(lift)?;
-    qf.write(&q_host).map_err(lift)?;
-    kf.write(&k_host).map_err(lift)?;
-    vf.write(&v_host).map_err(lift)?;
 
     crate::kernel::sdpa_forward(
         gpu,
@@ -144,18 +136,16 @@ pub fn scaled_dot_product_attention(
         scale,
         opts.causal,
         kv_len as u32,
-        &qf,
-        &kf,
-        &vf,
+        qi.field(),
+        ki.field(),
+        vi.field(),
         &of,
         &sf,
     )
     .map_err(lift)?;
 
-    let out_host = of.read().map_err(lift)?;
-    let stats_host = sf.read().map_err(lift)?;
-    let output = Array::from_slice(gpu, &out_host, &[seq_q, dv]).map_err(map_err)?;
-    let stats = Array::from_slice(gpu, &stats_host, &[seq_q, 2]).map_err(map_err)?;
+    let output = Array::from_field(gpu, of, &[seq_q, dv]).map_err(map_err)?;
+    let stats = Array::from_field(gpu, sf, &[seq_q, 2]).map_err(map_err)?;
     Ok(SdpaOutput { output, stats })
 }
 
@@ -205,47 +195,43 @@ pub fn sdpa_var<T: DiffScalar + ToF64>(
     let scale = opts.resolve_scale(d);
     let kv_len = opts.resolve_kv_len(seq_k);
 
-    // Forward: fused online-softmax kernel over f32, producing O and the per-row
-    // (m, l) stats. `DiffScalar` is f32 in practice, but stay generic by moving
-    // through host f32 vectors (the fused kernel is f32-only). Capture the
-    // forward tensors as f32 host vecs for the backward closure.
-    let q_f32 = to_f32_host(&q.value())?;
-    let k_f32 = to_f32_host(&k.value())?;
-    let v_f32 = to_f32_host(&v.value())?;
+    // Forward: the fused online-softmax kernel, fully device-resident —
+    // zero-copy f32 bindings of Q/K/V, output adopted as the tape
+    // value, the (m, l) stats field captured by the backward.
+    let qi = f32_input(&gpu, &q.value())?;
+    let ki = f32_input(&gpu, &k.value())?;
+    let vi = f32_input(&gpu, &v.value())?;
+    let of = gpu.field::<f32>(seq_q * dv).map_err(lift)?;
+    let sf = gpu.field::<f32>(seq_q * 2).map_err(lift)?;
+    crate::kernel::sdpa_forward(
+        &gpu,
+        seq_q as u32,
+        seq_k as u32,
+        d as u32,
+        dv as u32,
+        scale,
+        opts.causal,
+        kv_len as u32,
+        qi.field(),
+        ki.field(),
+        vi.field(),
+        &of,
+        &sf,
+    )
+    .map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[seq_q, dv])?;
+    // The backward reconstructs the softmax weights from O and the
+    // stats — alias the adopted output before the tape takes it.
+    let oi = f32_input(&gpu, &out_arr)?;
 
-    let qa = Array::from_slice(&gpu, &q_f32, &[seq_q, d]).map_err(AutogradError::from)?;
-    let ka = Array::from_slice(&gpu, &k_f32, &[seq_k, d]).map_err(AutogradError::from)?;
-    let va = Array::from_slice(&gpu, &v_f32, &[seq_k, dv]).map_err(AutogradError::from)?;
-    let fwd = scaled_dot_product_attention(&gpu, &qa, &ka, &va, opts)?;
-    let o_f32 = fwd.output.to_vec().map_err(AutogradError::from)?;
-    let stats_f32 = fwd.stats.to_vec().map_err(AutogradError::from)?;
-
-    // The forward value, back in `T` for the tape.
-    let out_t: Vec<T> = o_f32.iter().map(|&x| T::from_f64(x as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[seq_q, dv]).map_err(AutogradError::from)?;
-
-    // Backward closure: upstream grad g == dO (shaped [seq_q, dv]). Upload the
-    // captured forward tensors + g to fresh fields, dispatch the fused
-    // backward, read (dq, dk, dv) back, and return them (in T) for [q, k, v].
+    // Backward closure: upstream grad g == dO (shaped [seq_q, dv]).
+    // Everything it needs is captured device-resident.
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let do_f32 = to_f32_host(g)?;
-
-        let qf = gpu_b.field::<f32>(seq_q * d).map_err(lift)?;
-        let kf = gpu_b.field::<f32>(seq_k * d).map_err(lift)?;
-        let vf = gpu_b.field::<f32>(seq_k * dv).map_err(lift)?;
-        let of = gpu_b.field::<f32>(seq_q * dv).map_err(lift)?;
-        let sf = gpu_b.field::<f32>(seq_q * 2).map_err(lift)?;
-        let dof = gpu_b.field::<f32>(seq_q * dv).map_err(lift)?;
+        let doi = f32_input(&gpu_b, g)?;
         let dqf = gpu_b.field::<f32>(seq_q * d).map_err(lift)?;
         let dkf = gpu_b.field::<f32>(seq_k * d).map_err(lift)?;
         let dvf = gpu_b.field::<f32>(seq_k * dv).map_err(lift)?;
-        qf.write(&q_f32).map_err(lift)?;
-        kf.write(&k_f32).map_err(lift)?;
-        vf.write(&v_f32).map_err(lift)?;
-        of.write(&o_f32).map_err(lift)?;
-        sf.write(&stats_f32).map_err(lift)?;
-        dof.write(&do_f32).map_err(lift)?;
 
         crate::kernel::sdpa_backward(
             &gpu_b,
@@ -256,21 +242,21 @@ pub fn sdpa_var<T: DiffScalar + ToF64>(
             scale,
             opts.causal,
             kv_len as u32,
-            &qf,
-            &kf,
-            &vf,
-            &of,
+            qi.field(),
+            ki.field(),
+            vi.field(),
+            oi.field(),
             &sf,
-            &dof,
+            doi.field(),
             &dqf,
             &dkf,
             &dvf,
         )
         .map_err(lift)?;
 
-        let dq = f32_field_to_array::<T>(&gpu_b, &dqf, &[seq_q, d])?;
-        let dk = f32_field_to_array::<T>(&gpu_b, &dkf, &[seq_k, d])?;
-        let dv_g = f32_field_to_array::<T>(&gpu_b, &dvf, &[seq_k, dv])?;
+        let dq = adopt_f32_field::<T>(&gpu_b, dqf, &[seq_q, d])?;
+        let dk = adopt_f32_field::<T>(&gpu_b, dkf, &[seq_k, d])?;
+        let dv_g = adopt_f32_field::<T>(&gpu_b, dvf, &[seq_k, dv])?;
         Ok(vec![dq, dk, dv_g])
     };
 
@@ -287,17 +273,6 @@ pub(crate) fn to_f32_host<T: DiffScalar + ToF64>(a: &Array<T>) -> Result<Vec<f32
         .to_vec()
         .map_err(AutogradError::from)?;
     Ok(host.into_iter().map(|x| x.to_f64() as f32).collect())
-}
-
-/// Read an `f32` field back into an `Array<T>` of `shape` (via `T::from_f64`).
-pub(crate) fn f32_field_to_array<T: DiffScalar>(
-    gpu: &Gpu,
-    f: &quanta_core::Field<f32>,
-    shape: &[usize],
-) -> Result<Array<T>, AutogradError> {
-    let host = f.read().map_err(lift)?;
-    let t_host: Vec<T> = host.iter().map(|&x| T::from_f64(x as f64)).collect();
-    Array::from_slice(gpu, &t_host, shape).map_err(AutogradError::from)
 }
 
 /// An f32 binding for a fused-kernel input: the array's own backing

@@ -131,6 +131,24 @@ pub enum KernelParam {
     },
 }
 
+/// Bit N set = binding slot N is a [`KernelParam::FieldWrite`] — the
+/// kernel may WRITE (and read: `&mut [T]` is read-write) that buffer.
+/// Clear bits with a bound field are read-only. The deferred lane uses
+/// this to order only genuinely dependent dispatches; drivers stamp it
+/// onto the `Wave` at JIT time, the `#[quanta::kernel]` wrapper stamps
+/// it from the signature.
+pub fn field_write_mask(def: &KernelDef) -> u16 {
+    let mut mask = 0u16;
+    for p in &def.params {
+        if let KernelParam::FieldWrite { slot, .. } = p
+            && *slot < 16
+        {
+            mask |= 1 << *slot;
+        }
+    }
+    mask
+}
+
 /// Binary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {

@@ -138,6 +138,11 @@ pub const MTL_BLEND_OP_MAX: NSUInteger = 4;
 
 // ─── Metal sampler min/mag filter ───────────────────────────────────────────
 
+/// MTLDispatchType.concurrent — dispatches in the encoder may overlap;
+/// ordering comes only from explicit memory barriers.
+pub const MTL_DISPATCH_TYPE_CONCURRENT: u64 = 1;
+/// MTLBarrierScope.buffers.
+pub const MTL_BARRIER_SCOPE_BUFFERS: u64 = 1;
 pub const MTL_SAMPLER_MIN_MAG_FILTER_NEAREST: NSUInteger = 0;
 pub const MTL_SAMPLER_MIN_MAG_FILTER_LINEAR: NSUInteger = 1;
 

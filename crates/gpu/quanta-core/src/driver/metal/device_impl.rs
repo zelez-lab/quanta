@@ -213,6 +213,9 @@ impl GpuDevice for MetalDevice {
 
     #[cfg(feature = "compute")]
     fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+        // The default compute encoder is SERIAL dispatch type: every
+        // dispatch implicitly orders against the previous one — the
+        // ordering the public Batch documents.
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
         Ok(crate::Batch {
@@ -220,6 +223,32 @@ impl GpuDevice for MetalDevice {
                 device: self as *const MetalDevice,
                 cmd,
                 encoder,
+                concurrent: false,
+                ended: false,
+            }),
+        })
+    }
+
+    #[cfg(feature = "compute")]
+    fn batch_begin_concurrent(&self) -> Result<crate::Batch, QuantaError> {
+        // CONCURRENT dispatch type: dispatches may overlap; ordering
+        // exists only at explicit `memoryBarrierWithScope:` points —
+        // which `encode_barrier` emits at the lane's hazard-run
+        // boundaries.
+        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
+        let encoder = unsafe {
+            ffi::msg_id_u64(
+                cmd,
+                b"computeCommandEncoderWithDispatchType:\0",
+                ffi::MTL_DISPATCH_TYPE_CONCURRENT,
+            )
+        };
+        Ok(crate::Batch {
+            inner: Box::new(MetalBatch {
+                device: self as *const MetalDevice,
+                cmd,
+                encoder,
+                concurrent: true,
                 ended: false,
             }),
         })
@@ -1734,6 +1763,10 @@ struct MetalBatch {
     device: *const MetalDevice,
     cmd: ffi::Id,
     encoder: ffi::Id,
+    /// Concurrent dispatch type: dispatches may overlap and
+    /// `encode_barrier` is a real memory barrier. Serial (the public
+    /// batch): implicit per-dispatch ordering, barrier a no-op.
+    concurrent: bool,
     /// Set by `submit` so `Drop` doesn't end the encoding twice. A
     /// batch dropped WITHOUT submit is abandoned: its encoder is ended
     /// (Metal asserts on releasing an open encoder) and the command
@@ -1766,6 +1799,22 @@ impl crate::batch::BatchInner for MetalBatch {
         // encode order.
         device.validate_compute_texture_formats(wave)?;
         device.encode_wave_dispatch_threads(self.encoder, wave, quarks)
+    }
+
+    fn encode_barrier(&mut self) -> Result<(), QuantaError> {
+        // Serial encoders are already fully ordered; on the concurrent
+        // encoder this is the run-boundary fence: everything encoded
+        // before completes before anything encoded after.
+        if self.concurrent {
+            unsafe {
+                ffi::msg_void_u64(
+                    self.encoder,
+                    b"memoryBarrierWithScope:\0",
+                    ffi::MTL_BARRIER_SCOPE_BUFFERS,
+                );
+            }
+        }
+        Ok(())
     }
 
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {

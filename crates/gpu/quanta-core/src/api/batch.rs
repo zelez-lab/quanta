@@ -29,6 +29,12 @@ impl Batch {
     pub fn pulse(self) -> Result<Pulse, QuantaError> {
         self.inner.submit()
     }
+
+    /// Internal (deferred lane): a full ordering point between the
+    /// dispatches encoded so far and those still to come.
+    pub(crate) fn encode_barrier(&mut self) -> Result<(), QuantaError> {
+        self.inner.encode_barrier()
+    }
 }
 
 /// `Send` so a `Batch` can live in the shared deferred-dispatch lane
@@ -39,5 +45,14 @@ impl Batch {
 /// guarantee exclusive access.
 pub(crate) trait BatchInner: Send {
     fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError>;
+    /// Order every dispatch encoded after this call against every one
+    /// encoded before it. A no-op on batches that are already fully
+    /// ordered (the serial public batch, the synchronous CPU shim);
+    /// on a CONCURRENT batch (the deferred lane's) this is the only
+    /// ordering there is — the lane emits one at each hazard-run
+    /// boundary.
+    fn encode_barrier(&mut self) -> Result<(), QuantaError> {
+        Ok(())
+    }
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError>;
 }

@@ -320,6 +320,15 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         Err(QuantaError::not_supported("batch dispatch not supported"))
     }
 
+    /// A batch whose dispatches may run CONCURRENTLY: ordering exists
+    /// only at explicit `encode_barrier` points. The deferred lane
+    /// uses this with hazard-run analysis. Default falls back to the
+    /// serial batch — always correct, merely maximally ordered.
+    #[cfg(feature = "compute")]
+    fn batch_begin_concurrent(&self) -> Result<crate::Batch, QuantaError> {
+        self.batch_begin()
+    }
+
     // === Render === (render-typed; gated with the `render` feature, step 085)
 
     #[cfg(feature = "render")]

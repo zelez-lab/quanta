@@ -66,7 +66,9 @@ impl WebgpuDevice {
             },
         );
 
-        Ok(make_wave(handle, kernel.workgroup_size))
+        let mut wave = make_wave(handle, kernel.workgroup_size);
+        wave.write_mask = quanta_ir::field_write_mask(&kernel);
+        Ok(wave)
     }
 
     pub(super) fn wave_dispatch_impl(

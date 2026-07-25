@@ -27,6 +27,15 @@ pub struct Wave {
     /// says "storage image" not which format) use it to enforce the
     /// scalar-driven format contract at dispatch.
     pub(crate) storage_texture_kinds: [u8; 16],
+    /// Bit N set = binding slot N is WRITTEN by the kernel (a
+    /// `&mut [T]` / `FieldWrite` param); clear = read-only. The
+    /// deferred lane uses this to group independent dispatches into
+    /// barrier-free runs (read-read sharing never orders). Defaults
+    /// to ALL-writes — the conservative value that reproduces
+    /// barrier-between-everything — and is stamped precisely by the
+    /// JIT path (drivers read it off the deserialized KernelDef) and
+    /// by the `#[quanta::kernel]` wrapper (off the signature).
+    pub(crate) write_mask: u16,
     /// Inline push constant data — 16-byte aligned slots.
     pub(crate) push_data: [u8; PUSH_DATA_CAP],
     pub(crate) push_len: u16,
@@ -130,6 +139,16 @@ impl Wave {
     /// format contract at dispatch.
     pub fn set_storage_texture_kinds(&mut self, kinds: [u8; 16]) {
         self.storage_texture_kinds = kinds;
+    }
+
+    /// Stamp which binding slots the kernel WRITES (bit N = slot N is
+    /// a `&mut [T]` param). Read-only slots let the deferred lane run
+    /// this dispatch concurrently with others that only read the same
+    /// buffers. Leaving it unset (all-writes) is always correct —
+    /// merely maximally ordered. Called by the generated kernel
+    /// wrapper and the drivers' JIT paths.
+    pub fn set_write_mask(&mut self, mask: u16) {
+        self.write_mask = mask;
     }
 }
 

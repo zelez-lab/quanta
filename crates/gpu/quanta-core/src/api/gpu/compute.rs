@@ -190,6 +190,7 @@ impl Gpu {
         new_wave.device = Some(self.inner.clone());
         new_wave.bindings = wave.bindings;
         new_wave.binding_count = wave.binding_count;
+        new_wave.write_mask = wave.write_mask;
         new_wave.texture_bindings = wave.texture_bindings;
         new_wave.texture_count = wave.texture_count;
         new_wave.storage_texture_kinds = wave.storage_texture_kinds;
