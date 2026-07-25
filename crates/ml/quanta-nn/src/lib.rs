@@ -42,6 +42,7 @@ pub mod loss;
 pub mod norm;
 pub mod optim;
 pub mod rope;
+pub mod safetensors;
 pub mod state;
 pub mod transformer;
 
