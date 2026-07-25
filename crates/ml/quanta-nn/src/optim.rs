@@ -151,7 +151,7 @@ pub fn sgd_step_field(
     w.set_value(7, mu);
     w.set_value(8, wd);
     w.set_value(9, nesterov);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
     Ok(())
 }
 
@@ -207,7 +207,7 @@ pub fn adam_step_field(
     w.set_value(13, bc2_inv);
     w.set_value(14, wd_c);
     w.set_value(15, wd_d);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
     Ok(())
 }
 

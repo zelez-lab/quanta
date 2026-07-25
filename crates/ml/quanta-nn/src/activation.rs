@@ -220,7 +220,7 @@ pub fn softmax_forward(
     w.bind(1, stats);
     w.set_value(2, n);
     w.set_value(3, c);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::sm_fwd(gpu)?;
     w.bind(0, x);
@@ -229,7 +229,7 @@ pub fn softmax_forward(
     w.set_value(3, n);
     w.set_value(4, c);
     w.set_value(5, logf);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
     Ok(())
 }
 
@@ -261,7 +261,7 @@ pub fn softmax_backward(
     w.set_value(3, n);
     w.set_value(4, c);
     w.set_value(5, logf);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::sm_bwd_dx(gpu)?;
     w.bind(0, y);
@@ -271,7 +271,7 @@ pub fn softmax_backward(
     w.set_value(4, n);
     w.set_value(5, c);
     w.set_value(6, logf);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
     Ok(())
 }
 
@@ -364,10 +364,7 @@ pub fn gelu_var<T: DiffScalar + ToF64>(
         w.bind(1, &of);
         w.bind(2, &tf);
         w.set_value(3, n as u32);
-        gpu.dispatch(&w, n as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu.dispatch(&w, n as u32).map_err(lift)?;
         (of.read().map_err(lift)?, tf.read().map_err(lift)?)
     };
 
@@ -387,11 +384,7 @@ pub fn gelu_var<T: DiffScalar + ToF64>(
         w.bind(2, &gf);
         w.bind(3, &dxf);
         w.set_value(4, n as u32);
-        gpu_b
-            .dispatch(&w, n as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu_b.dispatch(&w, n as u32).map_err(lift)?;
         let dx = f32_field_to_array::<T>(&gpu_b, &dxf, g.shape())?;
         Ok(vec![dx])
     };
@@ -422,10 +415,7 @@ pub fn swiglu_var<T: DiffScalar + ToF64>(
         w.bind(1, &of);
         w.set_value(2, n as u32);
         w.set_value(3, h as u32);
-        gpu.dispatch(&w, (n * h) as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu.dispatch(&w, (n * h) as u32).map_err(lift)?;
         of.read().map_err(lift)?
     };
 
@@ -444,11 +434,7 @@ pub fn swiglu_var<T: DiffScalar + ToF64>(
         w.bind(2, &dxf);
         w.set_value(3, n as u32);
         w.set_value(4, h as u32);
-        gpu_b
-            .dispatch(&w, (n * h) as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu_b.dispatch(&w, (n * h) as u32).map_err(lift)?;
         let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, 2 * h])?;
         Ok(vec![dx])
     };

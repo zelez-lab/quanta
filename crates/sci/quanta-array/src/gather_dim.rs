@@ -155,7 +155,7 @@ impl<T: ArrayScalar> Array<T> {
         wave.bind(0, src.field_ref());
         wave.bind(1, idxc.field_ref());
         wave.bind(2, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,
@@ -343,7 +343,7 @@ impl<T: ArrayScalar> Array<T> {
         wave.bind(0, grad.field_ref());
         wave.bind(1, idxc.field_ref());
         wave.bind(2, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
 
         let mut out_dims = g_dims;
         *out_dims.last_mut().unwrap() = d;

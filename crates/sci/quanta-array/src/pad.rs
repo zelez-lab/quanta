@@ -197,7 +197,7 @@ impl<T: ArrayScalar> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
 
         let mut out_dims = dims;
         out_dims[0] = out_rows;

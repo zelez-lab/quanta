@@ -345,7 +345,7 @@ pub fn layer_norm_forward(
     w.set_value(2, n);
     w.set_value(3, c);
     w.set_value(4, eps);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::ln_fwd(gpu)?;
     w.bind(0, x);
@@ -355,7 +355,7 @@ pub fn layer_norm_forward(
     w.bind(4, out);
     w.set_value(5, n);
     w.set_value(6, c);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
     Ok(())
 }
 
@@ -405,7 +405,7 @@ pub fn layer_norm_backward(
     w.bind(4, bstats);
     w.set_value(5, n);
     w.set_value(6, c);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::ln_bwd_dx(gpu)?;
     w.bind(0, x);
@@ -416,7 +416,7 @@ pub fn layer_norm_backward(
     w.bind(5, dx);
     w.set_value(6, n);
     w.set_value(7, c);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
 
     let mut w = dsl::ln_bwd_dparams(gpu)?;
     w.bind(0, x);
@@ -426,7 +426,7 @@ pub fn layer_norm_backward(
     w.bind(4, dbeta);
     w.set_value(5, n);
     w.set_value(6, c);
-    gpu.dispatch(&w, c)?.wait()?;
+    gpu.dispatch(&w, c)?;
     Ok(())
 }
 
@@ -457,7 +457,7 @@ pub fn rms_norm_forward(
     w.set_value(2, n);
     w.set_value(3, c);
     w.set_value(4, eps);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::rms_fwd(gpu)?;
     w.bind(0, x);
@@ -466,7 +466,7 @@ pub fn rms_norm_forward(
     w.bind(3, out);
     w.set_value(4, n);
     w.set_value(5, c);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
     Ok(())
 }
 
@@ -505,7 +505,7 @@ pub fn rms_norm_backward(
     w.bind(4, bstats);
     w.set_value(5, n);
     w.set_value(6, c);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
 
     let mut w = dsl::rms_bwd_dx(gpu)?;
     w.bind(0, x);
@@ -516,7 +516,7 @@ pub fn rms_norm_backward(
     w.bind(5, dx);
     w.set_value(6, n);
     w.set_value(7, c);
-    gpu.dispatch(&w, n * c)?.wait()?;
+    gpu.dispatch(&w, n * c)?;
 
     let mut w = dsl::rms_bwd_dgamma(gpu)?;
     w.bind(0, x);
@@ -525,7 +525,7 @@ pub fn rms_norm_backward(
     w.bind(3, dgamma);
     w.set_value(4, n);
     w.set_value(5, c);
-    gpu.dispatch(&w, c)?.wait()?;
+    gpu.dispatch(&w, c)?;
     Ok(())
 }
 

@@ -128,7 +128,7 @@ pub fn dropout_mask_scale(
     w.set_value(6, k_hi);
     w.set_value(7, s_lo);
     w.set_value(8, s_hi);
-    gpu.dispatch(&w, n)?.wait()?;
+    gpu.dispatch(&w, n)?;
     Ok(())
 }
 

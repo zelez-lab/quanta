@@ -240,10 +240,7 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
         w.bind(1, &sf);
         w.set_value(2, n as u32);
         w.set_value(3, c as u32);
-        gpu.dispatch(&w, n as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu.dispatch(&w, n as u32).map_err(lift)?;
 
         let mut w = dsl::ce_rows(&gpu).map_err(lift)?;
         w.bind(0, &xf);
@@ -252,10 +249,7 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
         w.bind(3, &rf);
         w.set_value(4, n as u32);
         w.set_value(5, c as u32);
-        gpu.dispatch(&w, n as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu.dispatch(&w, n as u32).map_err(lift)?;
         (rf.read().map_err(lift)?, sf.read().map_err(lift)?)
     };
 
@@ -287,11 +281,7 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
         w.set_value(4, n as u32);
         w.set_value(5, c as u32);
         w.set_value(6, scale);
-        gpu_b
-            .dispatch(&w, (n * c) as u32)
-            .map_err(lift)?
-            .wait()
-            .map_err(lift)?;
+        gpu_b.dispatch(&w, (n * c) as u32).map_err(lift)?;
         let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, c])?;
         Ok(vec![dx])
     };

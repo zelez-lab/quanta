@@ -128,7 +128,7 @@ impl<T: GpuType> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, self.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,

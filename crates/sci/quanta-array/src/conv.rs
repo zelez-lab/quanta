@@ -60,7 +60,7 @@ impl<T: FloatScalar> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,
@@ -98,7 +98,7 @@ impl<T: FloatScalar> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,

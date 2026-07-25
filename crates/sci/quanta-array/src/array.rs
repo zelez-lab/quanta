@@ -33,7 +33,13 @@ impl<T: GpuType> Array<T> {
         Array {
             field: Arc::new(field),
             layout,
-            gpu,
+            // Every array runs on a deferred handle: ops encode their
+            // dispatches into the device's shared lane and the lane is
+            // flushed at the host boundaries (`to_vec`, the prims
+            // scalar reduces' own waits, blas host-side routines).
+            // Idempotent for the internally-propagated handles that
+            // are already deferred.
+            gpu: gpu.deferred(),
         }
     }
 
@@ -181,6 +187,8 @@ impl<T: GpuType> Array<T> {
     /// Contiguous arrays read the field directly; strided views are
     /// gathered on the host from the raw buffer via the layout.
     pub fn to_vec(&self) -> Result<Vec<T>, ArrayError> {
+        // `Field::read` completes any deferred-lane work referencing
+        // this buffer — the host boundary needs no explicit flush.
         let raw = self.field.read()?;
         if self.is_contiguous() {
             return Ok(raw[..self.len()].to_vec());

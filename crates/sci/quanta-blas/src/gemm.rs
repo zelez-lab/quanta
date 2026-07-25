@@ -264,7 +264,15 @@ fn dispatch_naive(
     wave.set_value(5, k);
     wave.set_value(6, alpha);
     wave.set_value(7, beta);
-    gpu.dispatch(&wave, m * n)?.wait()?;
+    // An eager handle keeps gemm's synchronous contract (`Ok(())` =
+    // C is ready — no pulse is returned to wait later); a deferred
+    // handle encodes into the lane and completes at the caller's next
+    // sync point (flush / pulse wait / host read), which is where the
+    // tape-driven matmul chains get their batching.
+    let mut pulse = gpu.dispatch(&wave, m * n)?;
+    if !gpu.is_deferred() {
+        pulse.wait()?;
+    }
     Ok(())
 }
 
@@ -292,7 +300,11 @@ fn dispatch_tiled(
     wave.set_value(5, k);
     wave.set_value(6, alpha);
     wave.set_value(7, beta);
-    gpu.dispatch(&wave, total_threads)?.wait()?;
+    // Same eager/deferred split as `dispatch_naive` above.
+    let mut pulse = gpu.dispatch(&wave, total_threads)?;
+    if !gpu.is_deferred() {
+        pulse.wait()?;
+    }
     Ok(())
 }
 

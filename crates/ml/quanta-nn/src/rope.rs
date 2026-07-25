@@ -94,7 +94,7 @@ pub fn rope_apply(
     w.set_value(4, n);
     w.set_value(5, d);
     w.set_value(6, sign);
-    gpu.dispatch(&w, n * d)?.wait()?;
+    gpu.dispatch(&w, n * d)?;
     Ok(())
 }
 

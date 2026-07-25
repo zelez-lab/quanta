@@ -29,6 +29,9 @@ vulkan = ["quanta-core/vulkan", "quanta/vulkan", "quanta-prims/gpu-vulkan", "qua
 # on unconditionally because `GpuType` is named regardless of backend.
 quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.5", default-features = false, features = [
     "compute",
+    # Deferred dispatch (`Gpu::deferred` / `flush`) is std-gated in
+    # quanta-core; this crate is std-only, so demand it unconditionally.
+    "std",
 ] }
 quanta-tensor.workspace = true
 quanta-ir.workspace = true

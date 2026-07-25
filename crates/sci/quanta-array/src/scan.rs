@@ -144,7 +144,7 @@ impl<T: ArrayScalar> Array<T> {
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
         // one thread per row
-        self.gpu().dispatch(&wave, r as u32)?.wait()?;
+        self.gpu().dispatch(&wave, r as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,

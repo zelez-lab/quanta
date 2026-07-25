@@ -49,7 +49,7 @@ impl<T: FloatScalar> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,
@@ -88,7 +88,7 @@ impl<T: FloatScalar> Array<T> {
         let mut wave = self.gpu().wave_jit(&bytes)?;
         wave.bind(0, src.field_ref());
         wave.bind(1, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,
@@ -121,7 +121,7 @@ impl<T: FloatScalar> Array<T> {
         wave.bind(0, src.field_ref());
         wave.bind(1, &vals);
         wave.bind(2, &argi);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         let layout = Layout::row_major(&[n, c, oh, ow])?;
         Ok((
             Array::from_parts(self.gpu().clone(), vals, layout.clone()),
@@ -168,7 +168,7 @@ impl<T: FloatScalar> Array<T> {
         wave.bind(0, grad.field_ref());
         wave.bind(1, argc.field_ref());
         wave.bind(2, &out);
-        self.gpu().dispatch(&wave, n_out as u32)?.wait()?;
+        self.gpu().dispatch(&wave, n_out as u32)?;
         Ok(Array::from_parts(
             self.gpu().clone(),
             out,
