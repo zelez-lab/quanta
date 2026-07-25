@@ -531,7 +531,7 @@ pub fn rms_norm_backward(
 
 // ── Tape integration ─────────────────────────────────────────────────────
 
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use quanta_array::Array;
 use quanta_array::ToF64;
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
@@ -564,49 +564,58 @@ pub fn layer_norm_var<T: DiffScalar + ToF64>(
     }
     let gpu = x.value().gpu().clone();
 
-    let x_f32 = to_f32_host(&x.value())?;
-    let ga_f32 = to_f32_host(&gamma.value())?;
-    let be_f32 = to_f32_host(&beta.value())?;
+    // f32 bindings: zero-copy aliases of the inputs' own buffers for
+    // f32 (staged conversions otherwise) — see `functional::f32_input`.
+    let xi = f32_input(&gpu, &x.value())?;
+    let gi = f32_input(&gpu, &gamma.value())?;
+    let bi = f32_input(&gpu, &beta.value())?;
 
-    // Fused forward.
-    let (out_f32, stats_f32) = {
-        let xf = gpu.field::<f32>(n * c).map_err(lift)?;
-        let gf = gpu.field::<f32>(c).map_err(lift)?;
-        let bf = gpu.field::<f32>(c).map_err(lift)?;
-        let of = gpu.field::<f32>(n * c).map_err(lift)?;
-        let sf = gpu.field::<f32>(n * 2).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        gf.write(&ga_f32).map_err(lift)?;
-        bf.write(&be_f32).map_err(lift)?;
-        layer_norm_forward(&gpu, n as u32, c as u32, eps, &xf, &gf, &bf, &of, &sf).map_err(lift)?;
-        (of.read().map_err(lift)?, sf.read().map_err(lift)?)
-    };
-
-    let out_t: Vec<T> = out_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[n, c]).map_err(AutogradError::from)?;
+    // Fused forward. The output is ADOPTED as the op's value (no
+    // read-back); the `(μ, rstd)` stats stay a device field, captured
+    // by the backward closure.
+    let of = gpu.field::<f32>(n * c).map_err(lift)?;
+    let sf = gpu.field::<f32>(n * 2).map_err(lift)?;
+    layer_norm_forward(
+        &gpu,
+        n as u32,
+        c as u32,
+        eps,
+        xi.field(),
+        gi.field(),
+        bi.field(),
+        &of,
+        &sf,
+    )
+    .map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[n, c])?;
 
     let gpu_b = gpu.clone();
+    // Captures `xi`, `gi` (the forward inputs' f32 bindings) and `sf`
+    // (the stats field) — everything stays device-resident across the
+    // forward/backward boundary.
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let xf = gpu_b.field::<f32>(n * c).map_err(lift)?;
-        let gaf = gpu_b.field::<f32>(c).map_err(lift)?;
-        let sf = gpu_b.field::<f32>(n * 2).map_err(lift)?;
-        let gf = gpu_b.field::<f32>(n * c).map_err(lift)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let bsf = gpu_b.field::<f32>(n * 2).map_err(lift)?;
         let dxf = gpu_b.field::<f32>(n * c).map_err(lift)?;
         let dgf = gpu_b.field::<f32>(c).map_err(lift)?;
         let dbf = gpu_b.field::<f32>(c).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        gaf.write(&ga_f32).map_err(lift)?;
-        sf.write(&stats_f32).map_err(lift)?;
-        gf.write(&g_f32).map_err(lift)?;
         layer_norm_backward(
-            &gpu_b, n as u32, c as u32, &xf, &gaf, &sf, &gf, &bsf, &dxf, &dgf, &dbf,
+            &gpu_b,
+            n as u32,
+            c as u32,
+            xi.field(),
+            gi.field(),
+            &sf,
+            ginp.field(),
+            &bsf,
+            &dxf,
+            &dgf,
+            &dbf,
         )
         .map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, c])?;
-        let dgamma = f32_field_to_array::<T>(&gpu_b, &dgf, &[c])?;
-        let dbeta = f32_field_to_array::<T>(&gpu_b, &dbf, &[c])?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, c])?;
+        let dgamma = adopt_f32_field::<T>(&gpu_b, dgf, &[c])?;
+        let dbeta = adopt_f32_field::<T>(&gpu_b, dbf, &[c])?;
         Ok(vec![dx, dgamma, dbeta])
     };
 
@@ -632,43 +641,47 @@ pub fn rms_norm_var<T: DiffScalar + ToF64>(
     }
     let gpu = x.value().gpu().clone();
 
-    let x_f32 = to_f32_host(&x.value())?;
-    let ga_f32 = to_f32_host(&gamma.value())?;
+    // Same device-resident shape as `layer_norm_var` above: zero-copy
+    // f32 bindings in, adopted output, stats field captured.
+    let xi = f32_input(&gpu, &x.value())?;
+    let gi = f32_input(&gpu, &gamma.value())?;
 
-    let (out_f32, stats_f32) = {
-        let xf = gpu.field::<f32>(n * c).map_err(lift)?;
-        let gf = gpu.field::<f32>(c).map_err(lift)?;
-        let of = gpu.field::<f32>(n * c).map_err(lift)?;
-        let sf = gpu.field::<f32>(n).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        gf.write(&ga_f32).map_err(lift)?;
-        rms_norm_forward(&gpu, n as u32, c as u32, eps, &xf, &gf, &of, &sf).map_err(lift)?;
-        (of.read().map_err(lift)?, sf.read().map_err(lift)?)
-    };
-
-    let out_t: Vec<T> = out_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[n, c]).map_err(AutogradError::from)?;
+    let of = gpu.field::<f32>(n * c).map_err(lift)?;
+    let sf = gpu.field::<f32>(n).map_err(lift)?;
+    rms_norm_forward(
+        &gpu,
+        n as u32,
+        c as u32,
+        eps,
+        xi.field(),
+        gi.field(),
+        &of,
+        &sf,
+    )
+    .map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[n, c])?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let xf = gpu_b.field::<f32>(n * c).map_err(lift)?;
-        let gaf = gpu_b.field::<f32>(c).map_err(lift)?;
-        let sf = gpu_b.field::<f32>(n).map_err(lift)?;
-        let gf = gpu_b.field::<f32>(n * c).map_err(lift)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let bsf = gpu_b.field::<f32>(n).map_err(lift)?;
         let dxf = gpu_b.field::<f32>(n * c).map_err(lift)?;
         let dgf = gpu_b.field::<f32>(c).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        gaf.write(&ga_f32).map_err(lift)?;
-        sf.write(&stats_f32).map_err(lift)?;
-        gf.write(&g_f32).map_err(lift)?;
         rms_norm_backward(
-            &gpu_b, n as u32, c as u32, &xf, &gaf, &sf, &gf, &bsf, &dxf, &dgf,
+            &gpu_b,
+            n as u32,
+            c as u32,
+            xi.field(),
+            gi.field(),
+            &sf,
+            ginp.field(),
+            &bsf,
+            &dxf,
+            &dgf,
         )
         .map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, c])?;
-        let dgamma = f32_field_to_array::<T>(&gpu_b, &dgf, &[c])?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, c])?;
+        let dgamma = adopt_f32_field::<T>(&gpu_b, dgf, &[c])?;
         Ok(vec![dx, dgamma])
     };
 

@@ -21,7 +21,7 @@
 //! rebuilding, `Sgd { lr: sched.lr(t), ..opt }` — no callbacks, no
 //! registration, nothing ambient (decision D4).
 
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift, to_f32_host};
 use crate::layer::ParamTree;
 use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar};
@@ -213,14 +213,6 @@ pub fn adam_step_field(
 
 // ── Leaf plumbing ────────────────────────────────────────────────────────
 
-/// Upload a leaf as an f32 field.
-fn upload<T: DiffScalar + ToF64>(gpu: &Gpu, a: &Array<T>) -> Result<Field<f32>, AutogradError> {
-    let host = to_f32_host(a)?;
-    let f = gpu.field::<f32>(host.len()).map_err(lift)?;
-    f.write(&host).map_err(lift)?;
-    Ok(f)
-}
-
 fn zeros_like<T: DiffScalar>(a: &Array<T>) -> Result<Array<T>, AutogradError> {
     Array::<T>::zeros(a.gpu(), a.shape()).map_err(AutogradError::from)
 }
@@ -307,10 +299,10 @@ impl Sgd {
             same_shape(p, g, "sgd: param/grad leaf shapes differ")?;
             same_shape(p, v, "sgd: param/state leaf shapes differ")?;
             let gpu = p.gpu().clone();
-            let n = p.to_vec().map_err(AutogradError::from)?.len();
-            let pf = upload(&gpu, p)?;
-            let gf = upload(&gpu, g)?;
-            let vf = upload(&gpu, v)?;
+            let n = p.len();
+            let pi = f32_input(&gpu, p)?;
+            let gi = f32_input(&gpu, g)?;
+            let vi = f32_input(&gpu, v)?;
             let pof = gpu.field::<f32>(n).map_err(lift)?;
             let vof = gpu.field::<f32>(n).map_err(lift)?;
             sgd_step_field(
@@ -320,15 +312,15 @@ impl Sgd {
                 self.momentum,
                 self.weight_decay,
                 if self.nesterov { 1.0 } else { 0.0 },
-                &pf,
-                &gf,
-                &vf,
+                pi.field(),
+                gi.field(),
+                vi.field(),
                 &pof,
                 &vof,
             )
             .map_err(lift)?;
-            new_p.push(f32_field_to_array::<T>(&gpu, &pof, p.shape())?);
-            new_v.push(f32_field_to_array::<T>(&gpu, &vof, p.shape())?);
+            new_p.push(adopt_f32_field::<T>(&gpu, pof, p.shape())?);
+            new_v.push(adopt_f32_field::<T>(&gpu, vof, p.shape())?);
         }
         let params = params.unflatten(&mut new_p.into_iter())?;
         Ok((params, SgdState { velocity: new_v }))
@@ -431,22 +423,37 @@ impl Adam {
             same_shape(p, m, "adam: param/state leaf shapes differ")?;
             same_shape(p, v, "adam: param/state leaf shapes differ")?;
             let gpu = p.gpu().clone();
-            let n = p.to_vec().map_err(AutogradError::from)?.len();
-            let pf = upload(&gpu, p)?;
-            let gf = upload(&gpu, g)?;
-            let mf = upload(&gpu, m)?;
-            let vf = upload(&gpu, v)?;
+            let n = p.len();
+            let pi = f32_input(&gpu, p)?;
+            let gi = f32_input(&gpu, g)?;
+            let mi = f32_input(&gpu, m)?;
+            let vi = f32_input(&gpu, v)?;
             let pof = gpu.field::<f32>(n).map_err(lift)?;
             let mof = gpu.field::<f32>(n).map_err(lift)?;
             let vof = gpu.field::<f32>(n).map_err(lift)?;
             adam_step_field(
-                &gpu, n as u32, self.lr, self.beta1, self.beta2, self.eps, bc1_inv, bc2_inv, wd_c,
-                wd_d, &pf, &gf, &mf, &vf, &pof, &mof, &vof,
+                &gpu,
+                n as u32,
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                bc1_inv,
+                bc2_inv,
+                wd_c,
+                wd_d,
+                pi.field(),
+                gi.field(),
+                mi.field(),
+                vi.field(),
+                &pof,
+                &mof,
+                &vof,
             )
             .map_err(lift)?;
-            new_p.push(f32_field_to_array::<T>(&gpu, &pof, p.shape())?);
-            new_m.push(f32_field_to_array::<T>(&gpu, &mof, p.shape())?);
-            new_v.push(f32_field_to_array::<T>(&gpu, &vof, p.shape())?);
+            new_p.push(adopt_f32_field::<T>(&gpu, pof, p.shape())?);
+            new_m.push(adopt_f32_field::<T>(&gpu, mof, p.shape())?);
+            new_v.push(adopt_f32_field::<T>(&gpu, vof, p.shape())?);
         }
         let params = params.unflatten(&mut new_p.into_iter())?;
         Ok((

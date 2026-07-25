@@ -14,7 +14,7 @@
 //! `[T, d]` case; leading batch/head dims are a host loop, like the SDPA
 //! and norm cores.
 
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use quanta_array::{Array, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, RopeCache, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
@@ -127,51 +127,49 @@ pub fn rope_var<T: DiffScalar + ToF64>(
     }
     let gpu = x.value().gpu().clone();
 
-    let x_f32 = to_f32_host(&x.value())?;
-    let cos_f32 = to_f32_host(
-        &cache
-            .cos
-            .narrow(0, 0, n)
-            .map_err(AutogradError::from)?
-            .contiguous()
-            .map_err(AutogradError::from)?,
+    // Zero-copy bindings; the narrowed cos/sin windows contiguous-ify
+    // on device and are captured by the backward (the VJP is the
+    // rotation by −θ over the same tables).
+    let xi = f32_input(&gpu, &x.value())?;
+    let ci = f32_input(
+        &gpu,
+        &cache.cos.narrow(0, 0, n).map_err(AutogradError::from)?,
     )?;
-    let sin_f32 = to_f32_host(
-        &cache
-            .sin
-            .narrow(0, 0, n)
-            .map_err(AutogradError::from)?
-            .contiguous()
-            .map_err(AutogradError::from)?,
+    let si = f32_input(
+        &gpu,
+        &cache.sin.narrow(0, 0, n).map_err(AutogradError::from)?,
     )?;
 
-    let out_f32 = {
-        let xf = gpu.field::<f32>(n * d).map_err(lift)?;
-        let cf = gpu.field::<f32>(n * d).map_err(lift)?;
-        let sf = gpu.field::<f32>(n * d).map_err(lift)?;
-        let of = gpu.field::<f32>(n * d).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        cf.write(&cos_f32).map_err(lift)?;
-        sf.write(&sin_f32).map_err(lift)?;
-        rope_apply(&gpu, n as u32, d as u32, 1.0, &xf, &cf, &sf, &of).map_err(lift)?;
-        of.read().map_err(lift)?
-    };
-
-    let out_t: Vec<T> = out_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[n, d]).map_err(AutogradError::from)?;
+    let of = gpu.field::<f32>(n * d).map_err(lift)?;
+    rope_apply(
+        &gpu,
+        n as u32,
+        d as u32,
+        1.0,
+        xi.field(),
+        ci.field(),
+        si.field(),
+        &of,
+    )
+    .map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[n, d])?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let gf = gpu_b.field::<f32>(n * d).map_err(lift)?;
-        let cf = gpu_b.field::<f32>(n * d).map_err(lift)?;
-        let sf = gpu_b.field::<f32>(n * d).map_err(lift)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let dxf = gpu_b.field::<f32>(n * d).map_err(lift)?;
-        gf.write(&g_f32).map_err(lift)?;
-        cf.write(&cos_f32).map_err(lift)?;
-        sf.write(&sin_f32).map_err(lift)?;
-        rope_apply(&gpu_b, n as u32, d as u32, -1.0, &gf, &cf, &sf, &dxf).map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, d])?;
+        rope_apply(
+            &gpu_b,
+            n as u32,
+            d as u32,
+            -1.0,
+            ginp.field(),
+            ci.field(),
+            si.field(),
+            &dxf,
+        )
+        .map_err(lift)?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, d])?;
         Ok(vec![dx])
     };
 

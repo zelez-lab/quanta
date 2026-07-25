@@ -14,9 +14,14 @@
 //! command buffers, WebGPU `GPURenderBundle`) are responsible for
 //! refining this model.
 
+// The compute half now reaches its device through the stored `Gpu`
+// handle; only the render bundle still holds a raw device Arc.
+#[cfg(feature = "render")]
 use alloc::sync::Arc;
 
-use crate::{GpuDevice, QuantaError};
+#[cfg(feature = "render")]
+use crate::GpuDevice;
+use crate::QuantaError;
 // `Wave` is a compute type; only the compute-gated `IndirectCommandBuffer`
 // half of this module references it.
 #[cfg(feature = "compute")]

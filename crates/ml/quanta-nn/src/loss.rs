@@ -14,7 +14,7 @@
 //! branches carry the knee constants T9230 pins down.
 
 use crate::activation::dsl as act_dsl;
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift, to_f32_host};
 use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::QuantaError;
@@ -225,33 +225,32 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
         return Err(bad("cross_entropy: label out of range"));
     }
     let gpu = logits.value().gpu().clone();
-    let x_f32 = to_f32_host(&logits.value())?;
 
-    let (rows, stats_f32) = {
-        let xf = gpu.field::<f32>(n * c).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        let sf = gpu.field::<f32>(n * 2).map_err(lift)?;
-        let lf = gpu.field::<u32>(n).map_err(lift)?;
-        lf.write(labels).map_err(lift)?;
-        let rf = gpu.field::<f32>(n).map_err(lift)?;
+    // Zero-copy logits binding; stats + labels stay device fields the
+    // backward captures. The per-row loss values are the one genuine
+    // host read here — the scalar total is a host sum.
+    let xi = f32_input(&gpu, &logits.value())?;
+    let sf = gpu.field::<f32>(n * 2).map_err(lift)?;
+    let lf = gpu.field::<u32>(n).map_err(lift)?;
+    lf.write(labels).map_err(lift)?;
+    let rf = gpu.field::<f32>(n).map_err(lift)?;
 
-        let mut w = act_dsl::sm_stats(&gpu).map_err(lift)?;
-        w.bind(0, &xf);
-        w.bind(1, &sf);
-        w.set_value(2, n as u32);
-        w.set_value(3, c as u32);
-        gpu.dispatch(&w, n as u32).map_err(lift)?;
+    let mut w = act_dsl::sm_stats(&gpu).map_err(lift)?;
+    w.bind(0, xi.field());
+    w.bind(1, &sf);
+    w.set_value(2, n as u32);
+    w.set_value(3, c as u32);
+    gpu.dispatch(&w, n as u32).map_err(lift)?;
 
-        let mut w = dsl::ce_rows(&gpu).map_err(lift)?;
-        w.bind(0, &xf);
-        w.bind(1, &sf);
-        w.bind(2, &lf);
-        w.bind(3, &rf);
-        w.set_value(4, n as u32);
-        w.set_value(5, c as u32);
-        gpu.dispatch(&w, n as u32).map_err(lift)?;
-        (rf.read().map_err(lift)?, sf.read().map_err(lift)?)
-    };
+    let mut w = dsl::ce_rows(&gpu).map_err(lift)?;
+    w.bind(0, xi.field());
+    w.bind(1, &sf);
+    w.bind(2, &lf);
+    w.bind(3, &rf);
+    w.set_value(4, n as u32);
+    w.set_value(5, c as u32);
+    gpu.dispatch(&w, n as u32).map_err(lift)?;
+    let rows = rf.read().map_err(lift)?;
 
     let red_scale = match reduction {
         Reduction::Mean => 1.0 / n as f64,
@@ -261,20 +260,13 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
     let out_arr =
         Array::from_slice(&gpu, &[T::from_f64(total)], &[1]).map_err(AutogradError::from)?;
 
-    let labels_own: Vec<u32> = labels.to_vec();
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
         let g0 = to_f32_host(g)?[0];
         let scale = g0 * red_scale as f32;
-        let xf = gpu_b.field::<f32>(n * c).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        let sf = gpu_b.field::<f32>(n * 2).map_err(lift)?;
-        sf.write(&stats_f32).map_err(lift)?;
-        let lf = gpu_b.field::<u32>(n).map_err(lift)?;
-        lf.write(&labels_own).map_err(lift)?;
         let dxf = gpu_b.field::<f32>(n * c).map_err(lift)?;
         let mut w = dsl::ce_bwd(&gpu_b).map_err(lift)?;
-        w.bind(0, &xf);
+        w.bind(0, xi.field());
         w.bind(1, &sf);
         w.bind(2, &lf);
         w.bind(3, &dxf);
@@ -282,7 +274,7 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
         w.set_value(5, c as u32);
         w.set_value(6, scale);
         gpu_b.dispatch(&w, (n * c) as u32).map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, c])?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, c])?;
         Ok(vec![dx])
     };
 

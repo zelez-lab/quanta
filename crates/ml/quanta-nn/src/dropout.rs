@@ -26,7 +26,7 @@ use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use crate::layer::{Key, Layer};
 
 #[allow(unused_imports)]
@@ -178,28 +178,21 @@ pub fn dropout_var<T: DiffScalar + ToF64>(
     }
 
     let (thresh, inv_keep) = threshold_and_scale(rate);
-    let x_f32 = to_f32_host(&x.value())?;
 
-    let out_f32 = {
-        let xf = gpu.field::<f32>(n).map_err(lift)?;
-        let of = gpu.field::<f32>(n).map_err(lift)?;
-        xf.write(&x_f32).map_err(lift)?;
-        dropout_mask_scale(&gpu, n as u32, thresh, inv_keep, key, &xf, &of).map_err(lift)?;
-        of.read().map_err(lift)?
-    };
-    let out_t: Vec<T> = out_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &shape).map_err(AutogradError::from)?;
+    let xi = f32_input(&gpu, &x.value())?;
+    let of = gpu.field::<f32>(n).map_err(lift)?;
+    dropout_mask_scale(&gpu, n as u32, thresh, inv_keep, key, xi.field(), &of).map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &shape)?;
 
     let gpu_b = gpu.clone();
     let shape_b = shape.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let gf = gpu_b.field::<f32>(n).map_err(lift)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let df = gpu_b.field::<f32>(n).map_err(lift)?;
-        gf.write(&g_f32).map_err(lift)?;
         // T9232: the VJP IS the forward map — same kernel, same key.
-        dropout_mask_scale(&gpu_b, n as u32, thresh, inv_keep, key, &gf, &df).map_err(lift)?;
-        Ok(vec![f32_field_to_array::<T>(&gpu_b, &df, &shape_b)?])
+        dropout_mask_scale(&gpu_b, n as u32, thresh, inv_keep, key, ginp.field(), &df)
+            .map_err(lift)?;
+        Ok(vec![adopt_f32_field::<T>(&gpu_b, df, &shape_b)?])
     };
 
     Ok(tape.custom_vjp(&[x], out_arr, backward))

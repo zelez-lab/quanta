@@ -81,6 +81,40 @@ impl<T: GpuType> Array<T> {
         &self.field
     }
 
+    /// Wrap an existing device buffer as a dense row-major array —
+    /// zero-copy adoption of a `Field` a kernel wrote (the inverse of
+    /// [`Array::backing_field`]). The field's element count must cover
+    /// `shape` exactly. The field must live on `gpu`'s device;
+    /// binding/dispatch errors surface loudly if it does not.
+    pub fn from_field(gpu: &Gpu, field: Field<T>, shape: &[usize]) -> Result<Self, ArrayError> {
+        let layout = Layout::row_major(shape)?;
+        if layout.linear_size() != field.len() {
+            return Err(ArrayError::LengthMismatch {
+                expected: layout.linear_size(),
+                got: field.len(),
+            });
+        }
+        Ok(Array::from_parts(gpu.clone(), field, layout))
+    }
+
+    /// The raw backing buffer, for binding into a caller-managed
+    /// dispatch (a fused kernel taking this array as input). `Some`
+    /// only when the buffer IS the logical content, exactly: the
+    /// array is contiguous AND the field's element count equals the
+    /// array's. A strided / offset / broadcast view, or a dense
+    /// prefix view over a larger buffer (`narrow` of a bigger table),
+    /// returns `None` rather than hand out a buffer the caller would
+    /// mis-size. Ordering with pending producers of this buffer is
+    /// the deferred lane's job; completion still follows the
+    /// pulse-wait contract.
+    pub fn backing_field(&self) -> Option<&Field<T>> {
+        if self.is_contiguous() && self.field.len() == self.len() {
+            Some(&self.field)
+        } else {
+            None
+        }
+    }
+
     /// A new `Array` view sharing the same backing field + layout (cheap
     /// `Arc` share — no device copy). `Array` deliberately isn't `Clone`
     /// (cloning GPU data should be explicit), but a zero-copy alias is safe

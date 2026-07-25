@@ -114,10 +114,14 @@ pub fn scaled_dot_product_attention(
     let scale = opts.resolve_scale(d);
     let kv_len = opts.resolve_kv_len(seq_k);
 
-    // Host-bridge: materialise inputs, upload to fresh fields, dispatch, read
-    // back. quanta-array keeps the Array→Field binding `pub(crate)`, so the ml
-    // tier round-trips through host — matching how quanta-array itself
-    // orchestrates its batched-gemm host loop. Batch/head fusion lives here.
+    // Host-bridge KEPT ON PURPOSE (measured 2026-07): a zero-copy
+    // variant (f32_input + adopted outputs) made the attention suites
+    // ~5x SLOWER — these reads pace the deferred lane, keeping batches
+    // small and the host/GPU pipeline overlapped, where the fully
+    // deferred form piles independent per-head/per-case work into one
+    // serialized batch (Metal's serial encoder barriers every
+    // dispatch). Revisit only WITH dependency-aware batch encoding;
+    // see roadmap/_design/deferred_dispatch.md (follow-ups).
     let q_host = q.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
     let k_host = k.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
     let v_host = v.contiguous().map_err(map_err)?.to_vec().map_err(map_err)?;
@@ -294,6 +298,59 @@ pub(crate) fn f32_field_to_array<T: DiffScalar>(
     let host = f.read().map_err(lift)?;
     let t_host: Vec<T> = host.iter().map(|&x| T::from_f64(x as f64)).collect();
     Array::from_slice(gpu, &t_host, shape).map_err(AutogradError::from)
+}
+
+/// An f32 binding for a fused-kernel input: the array's own backing
+/// buffer when `T` IS f32 and the value is contiguous (zero-copy —
+/// no staging field, no host round trip), a staged converted field
+/// otherwise. Owns whatever storage the binding needs; keep it alive
+/// until the dispatch call returns (from encode onward the deferred
+/// lane keeps the buffer alive and ordered).
+pub(crate) enum F32Input {
+    Zero(Array<f32>),
+    Staged(quanta_core::Field<f32>),
+}
+
+impl F32Input {
+    pub(crate) fn field(&self) -> &quanta_core::Field<f32> {
+        match self {
+            F32Input::Zero(a) => a
+                .backing_field()
+                .expect("F32Input::Zero holds a contiguous array"),
+            F32Input::Staged(f) => f,
+        }
+    }
+}
+
+/// Bind `a` as an f32 kernel input (see [`F32Input`]).
+pub(crate) fn f32_input<T: DiffScalar + ToF64>(
+    gpu: &Gpu,
+    a: &Array<T>,
+) -> Result<F32Input, AutogradError> {
+    let contig = a.contiguous().map_err(AutogradError::from)?;
+    if let Some(f32a) = T::as_f32_array(&contig) {
+        // Zero-copy only when the buffer is exactly the logical
+        // content — a dense prefix view (narrow of a bigger table)
+        // stages instead (see `Array::backing_field`).
+        if f32a.backing_field().is_some() {
+            return Ok(F32Input::Zero(f32a.shallow_clone()));
+        }
+    }
+    let host = to_f32_host(&contig)?;
+    let f = gpu.field::<f32>(host.len()).map_err(lift)?;
+    f.write(&host).map_err(lift)?;
+    Ok(F32Input::Staged(f))
+}
+
+/// Adopt an f32 field a fused kernel wrote as the op's `Array<T>`
+/// value — zero-copy for f32 (no read-back, no completion point; the
+/// lane orders later consumers), element-converted otherwise.
+pub(crate) fn adopt_f32_field<T: DiffScalar>(
+    gpu: &Gpu,
+    f: quanta_core::Field<f32>,
+    shape: &[usize],
+) -> Result<Array<T>, AutogradError> {
+    T::array_from_f32_field(gpu, f, shape).map_err(AutogradError::from)
 }
 
 /// The **composed-VJP** scaled dot-product attention — the reference oracle the

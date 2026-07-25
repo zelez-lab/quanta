@@ -14,7 +14,7 @@
 //! tuple stack, contribute no leaves to the parameter tree, and consume no
 //! keys.
 
-use crate::functional::{f32_field_to_array, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use crate::layer::{Key, Layer};
 use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
@@ -277,12 +277,6 @@ pub fn softmax_backward(
 
 // ── Tape-differentiable wrappers ─────────────────────────────────────────
 
-fn upload(gpu: &Gpu, host: &[f32]) -> Result<Field<f32>, AutogradError> {
-    let f = gpu.field::<f32>(host.len()).map_err(lift)?;
-    f.write(host).map_err(lift)?;
-    Ok(f)
-}
-
 fn softmax_var_impl<T: DiffScalar + ToF64>(
     tape: &Tape<T>,
     x: &Var<T>,
@@ -294,28 +288,33 @@ fn softmax_var_impl<T: DiffScalar + ToF64>(
     }
     let (n, c) = (xs[0], xs[1]);
     let gpu = x.value().gpu().clone();
-    let x_f32 = to_f32_host(&x.value())?;
 
-    let y_f32 = {
-        let xf = upload(&gpu, &x_f32)?;
-        let of = gpu.field::<f32>(n * c).map_err(lift)?;
-        let sf = gpu.field::<f32>(n.max(1) * 2).map_err(lift)?;
-        softmax_forward(&gpu, n as u32, c as u32, logf, &xf, &of, &sf).map_err(lift)?;
-        of.read().map_err(lift)?
-    };
-
-    let out_t: Vec<T> = y_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[n, c]).map_err(AutogradError::from)?;
+    let xi = f32_input(&gpu, &x.value())?;
+    let of = gpu.field::<f32>(n * c).map_err(lift)?;
+    let sf = gpu.field::<f32>(n.max(1) * 2).map_err(lift)?;
+    softmax_forward(&gpu, n as u32, c as u32, logf, xi.field(), &of, &sf).map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[n, c])?;
+    // The backward runs off the forward OUTPUT `y` — alias the adopted
+    // array (zero-copy for f32) before the tape takes ownership.
+    let yi = f32_input(&gpu, &out_arr)?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let yf = upload(&gpu_b, &y_f32)?;
-        let gf = upload(&gpu_b, &g_f32)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let rf = gpu_b.field::<f32>(n.max(1)).map_err(lift)?;
         let dxf = gpu_b.field::<f32>(n * c).map_err(lift)?;
-        softmax_backward(&gpu_b, n as u32, c as u32, logf, &yf, &gf, &rf, &dxf).map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, c])?;
+        softmax_backward(
+            &gpu_b,
+            n as u32,
+            c as u32,
+            logf,
+            yi.field(),
+            ginp.field(),
+            &rf,
+            &dxf,
+        )
+        .map_err(lift)?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, c])?;
         Ok(vec![dx])
     };
 
@@ -349,43 +348,35 @@ pub fn gelu_var<T: DiffScalar + ToF64>(
 ) -> Result<Var<T>, AutogradError> {
     let shape = x.value().shape().to_vec();
     let gpu = x.value().gpu().clone();
-    let x_f32 = to_f32_host(&x.value())?;
-    let n = x_f32.len();
+    let n: usize = shape.iter().product();
     if n == 0 {
         return Err(bad("gelu_var: empty input"));
     }
 
-    let (y_f32, t_f32) = {
-        let xf = upload(&gpu, &x_f32)?;
-        let of = gpu.field::<f32>(n).map_err(lift)?;
-        let tf = gpu.field::<f32>(n).map_err(lift)?;
-        let mut w = dsl::gelu_fwd(&gpu).map_err(lift)?;
-        w.bind(0, &xf);
-        w.bind(1, &of);
-        w.bind(2, &tf);
-        w.set_value(3, n as u32);
-        gpu.dispatch(&w, n as u32).map_err(lift)?;
-        (of.read().map_err(lift)?, tf.read().map_err(lift)?)
-    };
-
-    let out_t: Vec<T> = y_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &shape).map_err(AutogradError::from)?;
+    let xi = f32_input(&gpu, &x.value())?;
+    let of = gpu.field::<f32>(n).map_err(lift)?;
+    // The saved tanh stays a device field, captured by the backward.
+    let tf = gpu.field::<f32>(n).map_err(lift)?;
+    let mut w = dsl::gelu_fwd(&gpu).map_err(lift)?;
+    w.bind(0, xi.field());
+    w.bind(1, &of);
+    w.bind(2, &tf);
+    w.set_value(3, n as u32);
+    gpu.dispatch(&w, n as u32).map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &shape)?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let xf = upload(&gpu_b, &x_f32)?;
-        let tf = upload(&gpu_b, &t_f32)?;
-        let gf = upload(&gpu_b, &g_f32)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let dxf = gpu_b.field::<f32>(n).map_err(lift)?;
         let mut w = dsl::gelu_bwd(&gpu_b).map_err(lift)?;
-        w.bind(0, &xf);
+        w.bind(0, xi.field());
         w.bind(1, &tf);
-        w.bind(2, &gf);
+        w.bind(2, ginp.field());
         w.bind(3, &dxf);
         w.set_value(4, n as u32);
         gpu_b.dispatch(&w, n as u32).map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, g.shape())?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, g.shape())?;
         Ok(vec![dx])
     };
 
@@ -405,37 +396,29 @@ pub fn swiglu_var<T: DiffScalar + ToF64>(
     }
     let (n, h) = (xs[0], xs[1] / 2);
     let gpu = x.value().gpu().clone();
-    let x_f32 = to_f32_host(&x.value())?;
 
-    let y_f32 = {
-        let xf = upload(&gpu, &x_f32)?;
-        let of = gpu.field::<f32>((n * h).max(1)).map_err(lift)?;
-        let mut w = dsl::swiglu_fwd(&gpu).map_err(lift)?;
-        w.bind(0, &xf);
-        w.bind(1, &of);
-        w.set_value(2, n as u32);
-        w.set_value(3, h as u32);
-        gpu.dispatch(&w, (n * h) as u32).map_err(lift)?;
-        of.read().map_err(lift)?
-    };
-
-    let out_t: Vec<T> = y_f32.iter().map(|&v| T::from_f64(v as f64)).collect();
-    let out_arr = Array::from_slice(&gpu, &out_t, &[n, h]).map_err(AutogradError::from)?;
+    let xi = f32_input(&gpu, &x.value())?;
+    let of = gpu.field::<f32>((n * h).max(1)).map_err(lift)?;
+    let mut w = dsl::swiglu_fwd(&gpu).map_err(lift)?;
+    w.bind(0, xi.field());
+    w.bind(1, &of);
+    w.set_value(2, n as u32);
+    w.set_value(3, h as u32);
+    gpu.dispatch(&w, (n * h) as u32).map_err(lift)?;
+    let out_arr = adopt_f32_field::<T>(&gpu, of, &[n, h])?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g_f32 = to_f32_host(g)?;
-        let xf = upload(&gpu_b, &x_f32)?;
-        let gf = upload(&gpu_b, &g_f32)?;
+        let ginp = f32_input(&gpu_b, g)?;
         let dxf = gpu_b.field::<f32>((n * 2 * h).max(1)).map_err(lift)?;
         let mut w = dsl::swiglu_bwd(&gpu_b).map_err(lift)?;
-        w.bind(0, &xf);
-        w.bind(1, &gf);
+        w.bind(0, xi.field());
+        w.bind(1, ginp.field());
         w.bind(2, &dxf);
         w.set_value(3, n as u32);
         w.set_value(4, h as u32);
         gpu_b.dispatch(&w, (n * h) as u32).map_err(lift)?;
-        let dx = f32_field_to_array::<T>(&gpu_b, &dxf, &[n, 2 * h])?;
+        let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, 2 * h])?;
         Ok(vec![dx])
     };
 
