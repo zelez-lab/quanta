@@ -230,3 +230,7 @@ proptest = "1"
 [[example]]
 name = "cookbook_transformer"
 required-features = ["nn"]
+
+[[example]]
+name = "bench_op_overhead"
+required-features = ["sci"]

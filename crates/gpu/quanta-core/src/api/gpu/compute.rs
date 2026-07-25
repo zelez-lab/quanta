@@ -26,13 +26,50 @@ impl Gpu {
     }
 
     pub fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
+        // A submission that bypasses the deferred lane: commit the
+        // pending batch first so queue order stays program order (the
+        // driver's hazard tracking orders the actual accesses).
+        #[cfg(feature = "std")]
+        self.pending.submit_pending()?;
         self.inner.wave_dispatch(wave, groups)
     }
 
     /// Dispatch a 1D wave over exactly `quarks` threads.
     /// Metal uses dispatchThreads (clips to exact count).
     /// Vulkan uses dispatchGroups with ceil(quarks/workgroup_size[0]).
+    ///
+    /// On a [deferred](Gpu::deferred) handle the dispatch is encoded
+    /// into the shared per-device batch and the returned pulse's
+    /// `wait` flushes the lane; on backends without batch support the
+    /// deferred handle dispatches and waits inline (completed pulse).
+    /// Only this 1-D entry point defers — `wave_dispatch` (explicit
+    /// groups), `dispatch_indirect`, and `async_compute_dispatch`
+    /// always commit eagerly.
     pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
+        #[cfg(feature = "std")]
+        {
+            if self.deferred {
+                if self.pending.encode(self.device_handle(), wave, quarks)? {
+                    return Ok(crate::api::deferred::lazy_pulse(
+                        self.pending.clone(),
+                        self.device_handle().clone(),
+                    ));
+                }
+                // Not encodable (batch-less backend, or a
+                // texture-binding wave the lane declines): commit any
+                // pending work first for ordering, then dispatch
+                // eagerly and wait — a dropped pulse leaks nothing and
+                // reads stay correct without a flush point.
+                self.pending.submit_pending()?;
+                let mut pulse = self.inner.wave_dispatch_threads(wave, quarks)?;
+                pulse.wait()?;
+                return Ok(pulse);
+            }
+            // Eager handle on a device with deferred work pending:
+            // commit the pending batch first so this dispatch cannot
+            // overtake encoded producers of its inputs.
+            self.pending.submit_pending()?;
+        }
         self.inner.wave_dispatch_threads(wave, quarks)
     }
 
@@ -43,6 +80,11 @@ impl Gpu {
         buffer: &Field<T>,
         offset: u64,
     ) -> Result<Pulse, QuantaError> {
+        // Bypasses the lane — commit pending work first (see
+        // `wave_dispatch`); the args buffer itself may also be a
+        // deferred product.
+        #[cfg(feature = "std")]
+        self.pending.submit_pending()?;
         self.inner
             .wave_dispatch_indirect(wave, buffer.handle(), offset)
     }
@@ -53,6 +95,10 @@ impl Gpu {
     /// command buffer. Call `pulse()` on the batch to commit all at once.
     /// One commit + one fence instead of N — eliminates per-dispatch overhead.
     pub fn batch(&self) -> Result<Batch, QuantaError> {
+        // A user batch is its own submission — commit pending deferred
+        // work first so the two cannot interleave out of program order.
+        #[cfg(feature = "std")]
+        self.pending.submit_pending()?;
         self.inner.batch_begin()
     }
 
@@ -69,6 +115,11 @@ impl Gpu {
         wave: &Wave,
         groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
+        // Cross-queue: a submit alone gives no ordering against the
+        // async queue, so complete pending lane work outright before
+        // handing anything to it.
+        #[cfg(feature = "std")]
+        self.pending.flush_and_wait()?;
         self.inner.async_compute_dispatch(wave, groups)
     }
 

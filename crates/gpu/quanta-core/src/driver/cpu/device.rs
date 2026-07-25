@@ -968,6 +968,16 @@ impl GpuDevice for CpuDevice {
         ))
     }
 
+    // === Batch ===
+
+    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+        Ok(crate::Batch {
+            inner: Box::new(CpuBatch {
+                device: self as *const CpuDevice,
+            }),
+        })
+    }
+
     // === Render (stubs) === (render-gated, step 085)
 
     #[cfg(feature = "render")]
@@ -1748,6 +1758,41 @@ impl GpuDevice for CpuDevice {
     fn vrs_destroy(&self, handle: u64) -> Result<(), QuantaError> {
         self.vrs_states.lock().unwrap().remove(&handle);
         Ok(())
+    }
+}
+
+// ── Batched dispatch ────────────────────────────────────────────────────────
+
+/// The CPU "batch": a synchronous backend has no commit overhead to
+/// amortize, so encode = execute (each dispatch runs inline, preserving
+/// encode order exactly) and submit yields an already-completed pulse.
+/// Exists so `Gpu::deferred` consumers run one code path on every
+/// batch-capable backend — including the CPU CI lanes.
+struct CpuBatch {
+    device: *const CpuDevice,
+}
+
+// Safety: see `MetalBatch` — batches move between threads behind the
+// deferred lane's `Mutex`; access is exclusive (`&mut`/by-value) and
+// the device (whose methods are internally locked) is kept alive by
+// the callers that reach the pointer.
+unsafe impl Send for CpuBatch {}
+
+impl crate::batch::BatchInner for CpuBatch {
+    fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
+        let device = unsafe { &*self.device };
+        // Synchronous execution returns a completed pulse; nothing to hold.
+        let _ = GpuDevice::wave_dispatch_threads(device, wave, quarks)?;
+        Ok(())
+    }
+
+    fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {
+        Ok(Pulse {
+            handle: 0,
+            completed: true,
+            wait_fn: None,
+            keep_alive: None,
+        })
     }
 }
 

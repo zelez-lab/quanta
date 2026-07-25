@@ -26,7 +26,7 @@ impl MetalDevice {
     /// R32Float read_write only needs Tier 1, which every device this path
     /// runs on has.
     #[cfg(feature = "compute")]
-    fn validate_compute_texture_formats(&self, wave: &Wave) -> Result<(), QuantaError> {
+    pub(super) fn validate_compute_texture_formats(&self, wave: &Wave) -> Result<(), QuantaError> {
         use crate::api::types::Format;
         if wave.storage_texture_kinds.iter().all(|&k| k == 0) {
             return Ok(());
@@ -452,10 +452,27 @@ impl MetalDevice {
     ) -> Result<Pulse, QuantaError> {
         // Validate before creating the encoder (see wave_dispatch_impl).
         self.validate_compute_texture_formats(wave)?;
-        // Reuse the same binding/setup as wave_dispatch_impl, but use dispatchThreads
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
+        self.encode_wave_dispatch_threads(encoder, wave, quarks)?;
+        unsafe {
+            ffi::msg_void(encoder, b"endEncoding\0");
+        }
+        Ok(make_async_pulse(self, cmd))
+    }
 
+    /// Encode one exact-count dispatch (pipeline, buffers, push
+    /// constants, textures, sampler, `dispatchThreads`) onto an open
+    /// compute encoder. Shared by the one-shot path above and the
+    /// batch path, so a batched dispatch binds and clips exactly like
+    /// a lone `Gpu::dispatch`. Does NOT end the encoding — the caller
+    /// owns the encoder's lifetime.
+    pub(super) fn encode_wave_dispatch_threads(
+        &self,
+        encoder: ffi::Id,
+        wave: &Wave,
+        quarks: u32,
+    ) -> Result<(), QuantaError> {
         let pipelines = self
             .compute_pipelines
             .read()
@@ -466,6 +483,7 @@ impl MetalDevice {
         unsafe {
             ffi::msg_void_id(encoder, b"setComputePipelineState:\0", *pipeline);
         }
+        drop(pipelines);
 
         let buffers = self
             .buffers
@@ -537,9 +555,8 @@ impl MetalDevice {
         );
         unsafe {
             ffi::msg_dispatch_threads(encoder, grid, group_size);
-            ffi::msg_void(encoder, b"endEncoding\0");
         }
-        Ok(make_async_pulse(self, cmd))
+        Ok(())
     }
 
     pub(crate) fn wave_dispatch_indirect_impl(

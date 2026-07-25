@@ -32,6 +32,16 @@ pub struct Gpu {
     /// [`crate::msaa_pool`] for the keying/lifetime story.
     #[cfg(all(feature = "render", feature = "std"))]
     msaa_pool: Arc<crate::MsaaPool>,
+    /// The deferred-dispatch pending lane — one per device, shared by
+    /// every clone whether deferred or not (a single lane = a single
+    /// submission order; see [`crate::api::deferred`]).
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub(crate) pending: Arc<crate::api::deferred::PendingLane>,
+    /// Per-CLONE flag: whether [`Gpu::dispatch`] on this handle
+    /// encodes into the pending lane instead of committing. Set by
+    /// [`Gpu::deferred`]; clones inherit it.
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub(crate) deferred: bool,
 }
 
 impl Gpu {
@@ -41,6 +51,10 @@ impl Gpu {
             inner,
             #[cfg(all(feature = "render", feature = "std"))]
             msaa_pool: Arc::new(crate::MsaaPool::default()),
+            #[cfg(all(feature = "compute", feature = "std"))]
+            pending: Arc::new(crate::api::deferred::PendingLane::default()),
+            #[cfg(all(feature = "compute", feature = "std"))]
+            deferred: false,
         }
     }
 
@@ -254,6 +268,8 @@ impl Gpu {
             handle,
             count,
             device: self.inner.clone(),
+            #[cfg(all(feature = "compute", feature = "std"))]
+            lane: Arc::clone(&self.pending),
             _marker: PhantomData,
         })
     }
@@ -469,7 +485,50 @@ impl Gpu {
     /// no implicit sync. Presenting an acquired surface frame needs no
     /// wait: same-queue ordering covers it.
     pub fn wait_idle(&self) -> Result<(), QuantaError> {
+        // Deferred work that was never submitted is invisible to the
+        // driver's drain — flush the pending lane first so "everything
+        // submitted so far" includes everything *dispatched* so far.
+        #[cfg(all(feature = "compute", feature = "std"))]
+        self.pending.flush_and_wait()?;
         self.inner.wait_idle()
+    }
+
+    /// A deferred handle over the same device: [`Gpu::dispatch`]
+    /// through it encodes into a shared per-device batch instead of
+    /// committing, and the batch is submitted when something needs the
+    /// results — a [`Pulse::wait`](crate::Pulse::wait) on any pulse a
+    /// deferred dispatch returned, [`Gpu::flush`], or
+    /// [`Gpu::wait_idle`]. The documented sync contract is unchanged:
+    /// reads require a wait, and a wait completes everything the read
+    /// needs. On backends without batch support the handle behaves
+    /// eagerly (dispatch + wait inline) — semantics identical, only
+    /// the batching win absent.
+    ///
+    /// Clones of a deferred handle stay deferred; the original handle
+    /// is untouched. All handles over one device share ONE lane, so
+    /// program order is submission order regardless of which handles
+    /// dispatched.
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub fn deferred(&self) -> Gpu {
+        let mut gpu = self.clone();
+        gpu.deferred = true;
+        gpu
+    }
+
+    /// Whether this handle defers its dispatches (see [`Gpu::deferred`]).
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub fn is_deferred(&self) -> bool {
+        self.deferred
+    }
+
+    /// Submit all deferred dispatches and block until they complete.
+    /// The explicit sync point for consumers that bypass [`Pulse`]s —
+    /// e.g. an external reader of a
+    /// [`Field::native_handle`](crate::Field::native_handle) export.
+    /// A no-op when nothing is pending.
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub fn flush(&self) -> Result<(), QuantaError> {
+        self.pending.flush_and_wait()
     }
 
     // === Timestamps ===

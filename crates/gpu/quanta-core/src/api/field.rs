@@ -16,6 +16,13 @@ pub struct Field<T: Copy> {
     pub(crate) handle: u64,
     pub(crate) count: usize,
     pub(crate) device: Arc<dyn GpuDevice>,
+    /// The device's deferred-dispatch lane (see [`crate::api::deferred`]).
+    /// Byte-touching ops (`read`, `write`, `copy_from`,
+    /// `native_handle`) complete any encoded-but-unflushed work that
+    /// references this buffer before acting, so a deferred producer
+    /// can never be observed half-done through its consumers.
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub(crate) lane: Arc<crate::api::deferred::PendingLane>,
     pub(crate) _marker: PhantomData<T>,
 }
 
@@ -223,6 +230,18 @@ pub enum NativeBufferHandle {
 }
 
 impl<T: Copy> Field<T> {
+    /// Complete any deferred-lane work that references this buffer.
+    /// No-op (one lock + set probe) when the lane owes it nothing —
+    /// in particular for freshly allocated fields, so mid-graph
+    /// uploads never break an open batch.
+    fn complete_deferred(&self) -> Result<(), QuantaError> {
+        #[cfg(all(feature = "compute", feature = "std"))]
+        if self.lane.references(self.handle) {
+            self.lane.flush_and_wait()?;
+        }
+        Ok(())
+    }
+
     /// Number of elements.
     pub fn len(&self) -> usize {
         self.count
@@ -244,6 +263,7 @@ impl<T: Copy> Field<T> {
 
     /// Write data from CPU to this GPU field.
     pub fn write(&self, data: &[T]) -> Result<(), QuantaError> {
+        self.complete_deferred()?;
         let bytes = unsafe {
             core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
         };
@@ -254,6 +274,7 @@ impl<T: Copy> Field<T> {
     /// rest of the buffer untouched. Used for partial updates (e.g. filling a
     /// padding tail) without re-uploading the whole buffer.
     pub fn write_at(&self, offset: usize, data: &[T]) -> Result<(), QuantaError> {
+        self.complete_deferred()?;
         let byte_offset = offset * core::mem::size_of::<T>();
         let bytes = unsafe {
             core::slice::from_raw_parts(data.as_ptr() as *const u8, core::mem::size_of_val(data))
@@ -268,6 +289,7 @@ impl<T: Copy> Field<T> {
     /// in flight, wait on its [`Pulse`](crate::Pulse) (or call
     /// `Gpu::wait_idle`) first — otherwise the read races the GPU.
     pub fn read(&self) -> Result<Vec<T>, QuantaError> {
+        self.complete_deferred()?;
         let bytes = self
             .device
             .field_read_bytes(self.handle, self.byte_size())?;
@@ -285,6 +307,8 @@ impl<T: Copy> Field<T> {
     /// Copy data from another field into this one.
     /// Copies min(self.byte_size(), src.byte_size()) bytes.
     pub fn copy_from(&self, src: &Field<T>) -> Result<(), QuantaError> {
+        src.complete_deferred()?;
+        self.complete_deferred()?;
         let size = self.byte_size().min(src.byte_size());
         self.device.field_copy_bytes(self.handle, src.handle, size)
     }
@@ -308,6 +332,7 @@ impl<T: Copy> Field<T> {
     /// driver, WebGPU) return `NotSupported`; query
     /// `Gpu::supports_native_handle_export` to branch ahead of time.
     pub fn native_handle(&self) -> Result<NativeBufferHandle, QuantaError> {
+        self.complete_deferred()?;
         self.device.field_native_handle(self.handle)
     }
 }

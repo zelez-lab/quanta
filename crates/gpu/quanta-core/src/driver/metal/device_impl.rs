@@ -2,6 +2,7 @@
 
 #[cfg(feature = "compute")]
 use alloc::boxed::Box;
+#[cfg(feature = "render")]
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -219,6 +220,7 @@ impl GpuDevice for MetalDevice {
                 device: self as *const MetalDevice,
                 cmd,
                 encoder,
+                ended: false,
             }),
         })
     }
@@ -1732,82 +1734,58 @@ struct MetalBatch {
     device: *const MetalDevice,
     cmd: ffi::Id,
     encoder: ffi::Id,
+    /// Set by `submit` so `Drop` doesn't end the encoding twice. A
+    /// batch dropped WITHOUT submit is abandoned: its encoder is ended
+    /// (Metal asserts on releasing an open encoder) and the command
+    /// buffer released un-committed — discarding work nothing ever
+    /// waited on, which nothing can observe.
+    ended: bool,
 }
+
+// Safety: a `Batch` may be created on one thread and encoded/submitted
+// on another (the deferred-dispatch lane keeps one inside a shared
+// `Mutex`). Metal command buffers and encoders require *external
+// synchronization*, not thread affinity — and every access here is
+// exclusive: `&mut self` on encode, by-value on submit, and the lane's
+// lock around both. The raw device pointer is dereferenced only from
+// those calls, whose callers hold the device `Arc` (the `Gpu` handle
+// or a pulse's keep-alive).
+#[cfg(feature = "compute")]
+unsafe impl Send for MetalBatch {}
 
 #[cfg(feature = "compute")]
 impl crate::batch::BatchInner for MetalBatch {
     fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
         let device = unsafe { &*self.device };
-        let pipelines = device
-            .compute_pipelines
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        let pipeline = pipelines
-            .get(&wave.handle)
-            .ok_or_else(|| QuantaError::invalid_param("bad wave handle"))?;
-
-        unsafe {
-            ffi::msg_void_id(self.encoder, b"setComputePipelineState:\0", *pipeline);
-        }
-
-        let buffers = device
-            .buffers
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        for slot in 0..wave.binding_count as usize {
-            let handle = wave.bindings[slot];
-            if handle != 0
-                && let Some(buf) = buffers.get(&handle)
-            {
-                unsafe {
-                    ffi::msg_set_buffer(
-                        self.encoder,
-                        b"setBuffer:offset:atIndex:\0",
-                        *buf,
-                        0,
-                        slot as u64,
-                    );
-                }
-            }
-        }
-
-        // Push constants
-        let mut mask = wave.push_mask;
-        while mask != 0 {
-            let slot = mask.trailing_zeros() as usize;
-            let offset = slot * 16;
-            let remaining = wave.push_len as usize - offset;
-            let len = remaining.min(16);
-            unsafe {
-                ffi::msg_set_bytes(
-                    self.encoder,
-                    b"setBytes:length:atIndex:\0",
-                    wave.push_data[offset..].as_ptr() as *const _,
-                    len as u64,
-                    slot as u64,
-                );
-            }
-            mask &= mask - 1;
-        }
-
-        let groups_x = quarks.div_ceil(wave.workgroup_size[0]);
-        let grid = ffi::MTLSize::new(groups_x as u64, 1, 1);
-        let group_size = ffi::MTLSize::new(
-            wave.workgroup_size[0] as u64,
-            wave.workgroup_size[1] as u64,
-            wave.workgroup_size[2] as u64,
-        );
-        unsafe {
-            ffi::msg_dispatch_threadgroups(self.encoder, grid, group_size);
-        }
-        Ok(())
+        // Same validation + binding + exact-count `dispatchThreads` as
+        // a lone `Gpu::dispatch` — a batched dispatch must not
+        // over-dispatch kernels written for an exact quark count, and
+        // texture-binding kernels must batch like buffer kernels. The
+        // encoder is serial (Metal's default dispatch type), so
+        // dependent dispatches in one batch see each other's writes in
+        // encode order.
+        device.validate_compute_texture_formats(wave)?;
+        device.encode_wave_dispatch_threads(self.encoder, wave, quarks)
     }
 
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {
+        let mut this = self;
         unsafe {
-            ffi::msg_void(self.encoder, b"endEncoding\0");
+            ffi::msg_void(this.encoder, b"endEncoding\0");
         }
-        let device = unsafe { &*self.device };
-        Ok(super::device::make_async_pulse(device, self.cmd))
+        this.ended = true;
+        let device = unsafe { &*this.device };
+        Ok(super::device::make_async_pulse(device, this.cmd))
+    }
+}
+
+#[cfg(feature = "compute")]
+impl Drop for MetalBatch {
+    fn drop(&mut self) {
+        if !self.ended {
+            unsafe {
+                ffi::msg_void(self.encoder, b"endEncoding\0");
+            }
+        }
     }
 }

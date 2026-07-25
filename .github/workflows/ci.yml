@@ -143,6 +143,13 @@ jobs:
       - name: Lowering loop-shape tests (software lane)
         run: cargo test --test lowering_loops --features software --no-default-features
 
+      # The deferred-dispatch lane semantics on the CPU batch shim —
+      # chain ordering, flush points, threshold crossing (see
+      # tests/gpu_deferred.rs; the Metal lanes run the same file
+      # against the real batched encoder).
+      - name: Deferred-dispatch tests (software lane)
+        run: cargo test --test gpu_deferred --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
@@ -185,7 +192,7 @@ jobs:
         run: cargo test --test gpu_barriers --test gpu_mapped --test gpu_timestamps -- --test-threads=1
 
       - name: GPU lifecycle tests
-        run: cargo test --test gpu_caps --test gpu_field_lifecycle --test gpu_pulse --test gpu_sampler --test gpu_format_caps -- --test-threads=1
+        run: cargo test --test gpu_caps --test gpu_field_lifecycle --test gpu_pulse --test gpu_deferred --test gpu_sampler --test gpu_format_caps -- --test-threads=1
 
       - name: GPU advanced tests
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
@@ -305,7 +312,7 @@ jobs:
         env:
           MTL_DEBUG_LAYER: "1"
           MTL_SHADER_VALIDATION: "1"
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_texture --test gpu_render -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_texture --test gpu_render --test gpu_deferred -- --test-threads=1
 
   # ─── LLVM compiler + SPIR-V validation ───────────────────────────────
   compiler-validation:
@@ -617,6 +624,7 @@ jobs:
           cargo test --test vulkan_failed_pipeline --no-default-features --features vulkan,render
           cargo test --test vulkan_msaa_resolve_sample --no-default-features --features vulkan,render
           cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
+          cargo test --test gpu_deferred --no-default-features --features vulkan,jit,compute
 
       # Memory surface on a real Vulkan implementation: topology
       # (lavapipe = CPU type → Unified), zero-copy host import (native

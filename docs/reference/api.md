@@ -129,6 +129,9 @@ trait below.
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch |
 | `reload_wave(wave, kernel)` | `Result<()>` | Hot-reload kernel binary |
 | `batch()` | `Result<Batch>` | Begin multi-dispatch batch |
+| `deferred()` | `Gpu` | Handle whose `dispatch` encodes into a shared per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-dispatch)) |
+| `is_deferred()` | `bool` | Whether this handle defers its dispatches |
+| `flush()` | `Result<()>` | Submit all deferred dispatches and block until they complete |
 | `indirect_command_buffer(cap)` | `Result<IndirectCommandBuffer>` | Pre-record `cap` dispatch / draw commands then `execute(n)` |
 | `async_copy_queue()` | `Result<AsyncCopyQueue>` | Transfer queue concurrent with compute / graphics |
 | `printf_buffer(cap)` | `Result<PrintfBuffer>` | Capacity-bounded shader printf ring |

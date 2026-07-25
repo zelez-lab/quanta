@@ -16,6 +16,11 @@ pub mod types;
 // explicit queue handles.
 #[cfg(feature = "compute")]
 pub mod batch;
+// The deferred-dispatch pending lane (`Gpu::deferred`) needs `std` for
+// its lock; every backend feature implies `std`, so the gate only
+// prunes the pure type-check no_std configuration (same as msaa_pool).
+#[cfg(all(feature = "compute", feature = "std"))]
+pub mod deferred;
 #[cfg(feature = "compute")]
 pub mod multi_queue;
 #[cfg(feature = "compute")]

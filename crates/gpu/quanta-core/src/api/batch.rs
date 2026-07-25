@@ -31,7 +31,13 @@ impl Batch {
     }
 }
 
-pub(crate) trait BatchInner {
+/// `Send` so a `Batch` can live in the shared deferred-dispatch lane
+/// (`Mutex`-guarded, one per device). Implementations over raw native
+/// objects (command buffers, encoders) assert `Send` themselves: the
+/// native APIs demand *external synchronization*, not thread affinity,
+/// and both the lane's `Mutex` and `&mut self` on `Batch::dispatch`
+/// guarantee exclusive access.
+pub(crate) trait BatchInner: Send {
     fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError>;
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError>;
 }
