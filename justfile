@@ -180,6 +180,13 @@ clippy:
 clippy-vulkan:
     cargo clippy --features vulkan -- -D warnings
     cargo check -p quanta --target x86_64-unknown-linux-gnu --features vulkan
+    # The vulkan feature QUADRANTS, cross-target: CI builds
+    # vulkan,render WITHOUT compute (the surface lane) and
+    # vulkan,jit,compute WITHOUT render — a driver item gated on the
+    # wrong feature compiles fine under the full set above and still
+    # goes CI-red. Mirror both prunings here.
+    cargo check -p quanta --target x86_64-unknown-linux-gnu --no-default-features --features "vulkan render"
+    cargo check -p quanta --target x86_64-unknown-linux-gnu --no-default-features --features "vulkan jit compute"
 
 quality: fmt clippy test-conformance
 
