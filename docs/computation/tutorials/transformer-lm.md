@@ -154,6 +154,20 @@ missing, extra, or wrong-shape leaf fails loudly, naming its path.
 Optimizer states are trees of the same shape, so checkpointing training
 is the same two calls again.
 
+The same traversal speaks **safetensors** — the HF weight format — so
+checkpoints cross between stacks without Python:
+
+```rust
+use quanta::nn::safetensors;
+
+let bytes = safetensors::save(&params)?;          // spec-exact, no deps
+let restored: LmParams<f32> = safetensors::load(&gpu, &params, &bytes)?;
+```
+
+Same name-keyed contract, same loud errors. Files written elsewhere
+load too: `F32` exactly, `F16`/`BF16` upconverted — the dtypes real
+checkpoints ship.
+
 ## Generate
 
 Inference uses `apply` — the eval forward. Inverted dropout means there

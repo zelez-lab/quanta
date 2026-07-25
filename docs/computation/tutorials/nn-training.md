@@ -74,6 +74,23 @@ Two things happened in that one line:
   borrow checker owns that discipline (decision 2). There is no global RNG
   to seed and no ordering hazard between layers.
 
+The defaults (Kaiming-uniform weights, zero biases) come from the
+**named init family**, and a custom scheme is applied where a
+functional stack wants it — by building the params yourself:
+
+```rust,ignore
+use quanta::nn::init::Init;
+
+let w = Init::XavierNormal.sample::<f32>(&gpu, kw, &[in_dim, out_dim])?;
+let params = LinearParams { w, b: None };
+```
+
+`Init` covers `Zeros`/`Ones`/`Uniform`/`Normal` and the four scaled
+schemes (Xavier/Glorot and Kaiming/He, uniform and normal); fans
+derive from the shape (`[in, out]` directly; `[Cout, Cin, k…]` folds
+the receptive field), with an explicit-fan escape for exotic layouts.
+Same key, same tensor — on every backend.
+
 `params` is a tuple mirroring the model: `(LinearParams, NormParams, (),
 LinearParams)`. Zero-parameter layers like `Gelu` contribute the unit type —
 they occupy a stack slot but add no tensors, consume no keys.
@@ -144,6 +161,32 @@ Walk the loop once slowly:
 - **Clipping is a tree op.** `clip_grad_norm` computes the global L2 norm
   over *all* leaves (the torch semantic) and rescales the whole tree if it
   exceeds the threshold, returning the pre-clip norm for logging.
+
+## Mixed precision: dynamic loss scaling
+
+When gradients flow through reduced precision, small values vanish.
+The AMP recipe is three lines in the loop, with the scaler's state
+passing explicitly like the optimizer's:
+
+```rust,ignore
+use quanta::nn::optim::LossScale;
+
+let scaler = LossScale::default();          // 2^16, grow/backoff config
+let mut sstate = scaler.init();
+
+// in the step:
+let scaled = scaler.scale(&tape, &loss, &sstate)?;   // loss × S, on the tape
+let raw = params.grads_from(&vars, &scaled)?;
+let (grads, next) = scaler.unscale(raw, sstate)?;    // grads ÷ S, or None
+sstate = next;
+let Some(grads) = grads else { continue };           // overflow: skip the step
+```
+
+`unscale` probes every leaf for `±Inf`/`NaN`; on overflow it returns
+`None` with the scale backed off, and after a streak of clean steps it
+grows the scale again. Scales are powers of two, so scaling is *exact*:
+while nothing overflows, a scaled run reproduces an unscaled run bit
+for bit.
 
 ## The loss menu
 
