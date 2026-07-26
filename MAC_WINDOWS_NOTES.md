@@ -8,8 +8,9 @@ coordination channel between the two checkouts:
 
 It records **what each machine did, what's on the table, and what to delegate to
 whom**. No fixes land here — code fixes live on Windows' own fix branches. This
-branch is never merged into `main`, so when the work it tracks has landed it can
-be deleted with no trace.
+branch is never merged into `main`. It is kept for the whole duration of the
+Mac↔Windows collaboration — through the remaining roadmap steps — and deleted
+only at the very end, leaving no trace.
 
 ## Roles
 
