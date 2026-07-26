@@ -41,7 +41,16 @@ impl SpvEmitter {
             MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
             MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
         };
-        let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
+        // A storage-class semantics bit (WorkgroupMemory) is legal only
+        // alongside a non-relaxed memory order —
+        // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore emits
+        // None (0) rather than promoting the order, which keeps the relaxed
+        // semantics the IR asked for.
+        let semantics = self.emit_constant_u32(if order_bits == 0 {
+            0
+        } else {
+            order_bits | MEMORY_SEMANTICS_WORKGROUP
+        });
 
         let is_signed = matches!(
             ty,
@@ -119,7 +128,16 @@ impl SpvEmitter {
             MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
             MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
         };
-        let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
+        // A storage-class semantics bit (WorkgroupMemory) is legal only
+        // alongside a non-relaxed memory order —
+        // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore emits
+        // None (0) rather than promoting the order, which keeps the relaxed
+        // semantics the IR asked for.
+        let semantics = self.emit_constant_u32(if order_bits == 0 {
+            0
+        } else {
+            order_bits | MEMORY_SEMANTICS_WORKGROUP
+        });
 
         let is_signed = matches!(
             ty,
@@ -195,7 +213,16 @@ impl SpvEmitter {
             MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
             MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
         };
-        let semantics = self.emit_constant_u32(order_bits | MEMORY_SEMANTICS_WORKGROUP);
+        // A storage-class semantics bit (WorkgroupMemory) is legal only
+        // alongside a non-relaxed memory order —
+        // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore emits
+        // None (0) rather than promoting the order, which keeps the relaxed
+        // semantics the IR asked for.
+        let semantics = self.emit_constant_u32(if order_bits == 0 {
+            0
+        } else {
+            order_bits | MEMORY_SEMANTICS_WORKGROUP
+        });
 
         // OpAtomicCompareExchange: result_type result pointer scope
         //   equal_sem unequal_sem value comparator
