@@ -58,11 +58,12 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — same ff; structural follow-up is item 5 |
 | 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | Mac to rule | _none_ | Reported, untouched |
 | 4 | `vkCreateInstance` `-9` under parallel-test load | _tbd_ | _none_ | Reported, not diagnosed |
-| 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac to rule | _none_ | Design question raised |
+| 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac | _(direct on `main`)_ | **FIXED structurally** — `a3c832f`: drivers return the raw `BatchInner`; only the api layer, holding the device `Arc`, can zip them into a `Batch`, so a batch owns its device by construction (all three backends had the bare pointer). Field order in `Gpu` demoted to defense-in-depth. See item 10 |
 | 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
 | 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | _tbd_ | _none_ | Latent (Mac review): mapping exists in both emitters, unreachable today |
-| 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac to rule | _none_ | Reported by Windows; options: PR per fix branch, or `workflow_dispatch` on `ci.yml` |
+| 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac | _(direct on `main`)_ | **FIXED** — `8160b04`: `workflow_dispatch` on `ci.yml`. Windows: after pushing a fix branch, run `gh workflow run ci.yml --ref fix/<topic>` — that IS the protocol's "pipeline green on the branch" step now |
 | 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
+| 10 | Re-validate teardown on Iris Xe at `a3c832f` | **Windows** | _none_ | The item-5 fix is compile-verified cross-target and runtime-green on Metal/CPU (which share the seam), but the Mac cannot runtime the Vulkan path. Re-run the validation-layer teardown check (the 482-leak scenario): expect zero errors, zero leaks. Log the verdict here |
 
 ## Delegation notes
 
@@ -209,6 +210,32 @@ false, tessellation/VRS/sparse-residency true.
 ## Mac log  `[mac]`
 
 <!-- newest first. Merges landed, direction, what's delegated. -->
+
+### Board items 5 + 8 closed `[mac]` — `main` now `a3c832f`
+
+Two rulings landed directly on `main` (Mac territory, both):
+
+- **`8160b04`** — `workflow_dispatch` on `ci.yml` (item 8). The handover
+  protocol's step 1 now reads: push the fix branch, then
+  `gh workflow run ci.yml --ref fix/<topic>`, hand over with that verdict.
+- **`a3c832f`** — the structural batch fix (item 5). Went one better than
+  an owning handle inside `VulkanBatch`: the bare `*const` device pointer
+  turned out to exist in **all three** backends (Vulkan, Metal, CPU), so
+  the ownership moved to the api seam — `GpuDevice::batch_begin*` now
+  returns the raw `BatchInner`, and `api::batch::Batch` (declaration
+  order: inner first, device `Arc` second) is the only way to wrap it.
+  A parked or user-held batch cannot outlive its device by construction,
+  on any backend, and `Gpu` field order is defense-in-depth again.
+  Pulse keep-alives were already handled (`install_self_ref`) and are
+  untouched.
+
+Verification: fmt clean; vulkan gate (4 lines) exit 0; check-combos
+green; wasm32/webgpu quadrant checks; Metal suites 26/26 + nn 108/108;
+CPU-lane deferred+compute 15/15; clean post-commit no-override run.
+CI at push time: **Web smoke green on `a3c832f`** (the webgpu runtime
+the Mac can't touch), main lane in progress — if it lands red, that
+triage is the next session's first item. Item 10 asks the rig for the
+Vulkan-side teardown re-validation.
 
 ### Merged `fix/vulkan-spirv-and-teardown` `[mac]` — `main` now `68b5157`
 
