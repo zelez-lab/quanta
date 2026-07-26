@@ -551,11 +551,13 @@ impl SpvEmitter {
                 KernelOp::SharedDecl { id, ty, count } => {
                     let elem_ty = self.scalar_type_id(*ty);
                     let count_const = self.emit_constant_u32(*count);
+                    // NO ArrayStride here: Workgroup storage must not carry an
+                    // explicit layout (VUID-StandaloneSpirv-None-10684) unless
+                    // workgroupMemoryExplicitLayout is enabled, which we never
+                    // request. Shared memory is laid out by the driver. Storage
+                    // buffers keep their stride — they go through
+                    // ensure_type_runtime_array, a different type id.
                     let arr_ty = self.ensure_type_array(elem_ty, count_const);
-                    let stride = Self::scalar_byte_size(*ty);
-                    if self.decorated_stride.insert(arr_ty) {
-                        self.decorate(arr_ty, DECORATION_ARRAY_STRIDE, &[stride]);
-                    }
                     let ptr_arr = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, arr_ty);
                     let var_id = self.alloc_id();
                     Self::emit_op(
@@ -569,11 +571,8 @@ impl SpvEmitter {
                 KernelOp::SharedDeclDyn { id, ty } => {
                     let elem_ty = self.scalar_type_id(*ty);
                     let default_count = self.emit_constant_u32(256);
+                    // NO ArrayStride — see the SharedDecl arm above.
                     let arr_ty = self.ensure_type_array(elem_ty, default_count);
-                    let stride = Self::scalar_byte_size(*ty);
-                    if self.decorated_stride.insert(arr_ty) {
-                        self.decorate(arr_ty, DECORATION_ARRAY_STRIDE, &[stride]);
-                    }
                     let ptr_arr = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, arr_ty);
                     let var_id = self.alloc_id();
                     Self::emit_op(
