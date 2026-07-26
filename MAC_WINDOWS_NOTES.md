@@ -54,7 +54,11 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 
 | # | Item | Owner | Fix branch | Status |
 |---|------|-------|-----------|--------|
-| 1 | Invalid SPIR-V under Vulkan on Windows | Windows | _tbd_ | Investigating |
+| 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **Fixed — awaiting Mac merge** |
+| 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **Fixed — awaiting Mac merge** |
+| 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | Mac to rule | _none_ | Reported, untouched |
+| 4 | `vkCreateInstance` `-9` under parallel-test load | _tbd_ | _none_ | Reported, not diagnosed |
+| 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac to rule | _none_ | Design question raised |
 
 ## Delegation notes
 
@@ -70,7 +74,133 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 ### fix/spirv-signedness  [win] <sha>  — pipeline: green
 what it fixes, file:line, anything the Mac needs before merging. -->
 
-_(nothing yet — Windows adds here)_
+### `fix/vulkan-spirv-and-teardown` `[win]` `eb753ce` — pipeline: **NOT RUN** (see "Why no CI" below)
+
+Three commits on top of `b2ef2e8`, one per defect, so each reviews on its own.
+All three were found by running the Vulkan lane on this rig's Intel Iris Xe.
+**None of them reproduce on Metal or lavapipe** — that is why they survived to
+alpha.6 with CI green.
+
+| commit | what |
+|--------|------|
+| `b9cd250` | `spirv:` workgroup arrays carry no explicit layout |
+| `95e432b` | `spirv:` relaxed atomics name no storage class |
+| `eb753ce` | `vulkan:` the lane lets go before the device does |
+
+**1. `ArrayStride` on Workgroup storage** — `VUID-StandaloneSpirv-None-10684`.
+`emit_shared_decls` decorated the shared array type with `ArrayStride` and then
+bound it to a Workgroup pointer. Explicit layout is illegal on that storage
+class without `workgroupMemoryExplicitLayout`, which we never request. Present
+in **both** emitters, four sites total: `quanta-compiler/src/emit_spirv/
+kernel.rs:277,295` and `quanta-ir/src/emit_spirv/kernel.rs:556,574` — the same
+both-copies pattern as every prior emitter defect. Hit every `block_reduce_*` /
+`block_scan_*` module. Storage buffers were never at risk: they go through
+`ensure_type_runtime_array`, a different type id that still needs its stride.
+
+**2. Relaxed atomics** — `VUID-StandaloneSpirv-MemorySemantics-10871`. Every
+atomic OR'd `MEMORY_SEMANTICS_WORKGROUP` into the mask regardless of order, so
+`MemoryOrder::Relaxed` produced relaxed-order + storage-class-bit, which the
+spec forbids. Relaxed now emits `None`. **Deliberately did not promote the order
+to AcqRel** — that would silently strengthen semantics the IR never asked for,
+and our atomics model is relaxed (cf. the Metal relaxed-only note).
+
+**3. Teardown use-after-free** — the serious one. `Gpu` declared `inner`
+(the device) **first**, and Rust drops fields in declaration order, so
+`vkDestroyDevice` ran while the deferred lane still held a parked batch.
+`VulkanBatch` keeps a bare `*const VulkanDevice` and its `Drop` hands the
+command buffer, descriptor pools and pins back through it — into freed memory.
+Symptoms, in order: 482 leaked objects at `vkDestroyDevice`
+(`VUID-vkDestroyDevice-device-05137`: ~104 `VkDeviceMemory` + ~104 `VkBuffer` +
+~69 each of `VkPipeline`/`VkPipelineLayout`/`VkDescriptorSet`/
+`VkDescriptorPool`), then `vkResetCommandBuffer: Invalid commandBuffer`, then a
+crash whose **exception code differed between runs** (`0xc0000409`
+STATUS_STACK_BUFFER_OVERRUN, then `0xc0000005` STATUS_ACCESS_VIOLATION) — the
+fingerprint of corruption, not a logic error. Fix declares the lane and the MSAA
+pool ahead of the device, with a comment saying the order is load-bearing.
+
+#### Verification (all on Iris Xe, real hardware)
+
+- **quanta-nn suite: 108 passed / 0 failed**, 18 test files, exit 0.
+- **Core regression: 26 passed / 0 failed** — `gpu_deferred` 9, `gpu_compute` 6,
+  `gpu_atomics` 4, `gpu_barriers` 4, `gpu_shared` 3. `gpu_shared` and
+  `gpu_atomics` are exactly the paths commits 1 and 2 touch.
+- **Emitter fixes proven, not assumed**: a full clean rebuild (1921 files, all
+  kernel crates recompiled) under `QUANTA_SPIRV_VAL_STRICT=1`, which hard-fails
+  on any invalid module, finished green. The first attempt at this was
+  *cache-masked* — `quanta-prims` has no `build.rs`, so touching build scripts
+  did not rebuild it and the gate never saw the kernels. Had to
+  `cargo clean -p` the kernel crates to make the check real.
+- **Validation layers**: before → `VUID-10684` at every `vkCreateShaderModule`,
+  482 leaked objects, crash. After → **zero validation errors, zero leaks,
+  exit 0**.
+- `cargo fmt --check` clean.
+
+#### Why no CI
+
+**No workflow triggers on a `fix/*` push.** `ci.yml` and `web-smoke.yml` are
+`push: [main]` + `pull_request: [main]`; `compiler-dev.yml` is
+`workflow_dispatch` only; `release-compiler.yml` is `v*` tags. So the branch
+push ran nothing, and the only way to get a pipeline verdict on a fix branch is
+a PR into `main`. Owner chose to hand over on local green rather than open one,
+since the Mac is the integrator. **The Mac gets the first CI verdict on merge.**
+Worth deciding: either fix branches get a PR, or `ci.yml` gains
+`workflow_dispatch`, otherwise this protocol has no pipeline step.
+
+#### Three things to know before merging
+
+- **`just clippy-vulkan` already fails on `main`** — not caused by this branch,
+  which touches nothing under `driver/vulkan` (`git diff b2ef2e8 HEAD --
+  crates/gpu/quanta-core/src/driver/vulkan/` is empty). Two lints:
+  `driver/vulkan/compute.rs:320` (very complex type) and
+  `driver/vulkan/device.rs:606` (collapsible if). **Left untouched on purpose**
+  — unrelated to these fixes, and yours to rule on. Note *why* it was never
+  seen: the gate was sharpened to a cross-target `cargo check`, and `check`
+  does not run clippy lints, while the Mac's own `cargo clippy --features
+  vulkan` compiles nothing under `driver/vulkan`. So clippy lints in that
+  directory have never been enforced anywhere. Windows compiles it natively and
+  sees them.
+- **`vkCreateInstance` returned `-9` (`VK_ERROR_INCOMPATIBLE_DRIVER`) once**
+  under sustained parallel-test load, failing one `norms.rs` test. It did not
+  recur; that file passes 4/4 in isolation both parallel and single-threaded,
+  and the full suite re-run was clean. Root cause not chased. Note that
+  `quanta::init()` builds a **fresh `VkInstance` + `VkDevice` per call**, and nn
+  tests call it per test on parallel threads. Expect this to make a real-hardware
+  Vulkan lane intermittently red; lavapipe likely hides it.
+- **Commit 3 is the honest minimum, not the ideal fix.** Making field order
+  load-bearing works and is documented, but the real fragility is that
+  `VulkanBatch` holds a bare `*const VulkanDevice` with no ownership guarantee —
+  any future reordering silently reintroduces the UAF. The structural fix is an
+  owning handle so the invariant cannot be broken by field order. Bigger change,
+  and a design call — flagged rather than taken.
+
+#### Rig capability gained
+
+This rig can now **build `quanta-compiler` locally** — required for any AOT
+emitter work, since the downloaded binary is prebuilt and cannot carry emitter
+changes. Followed `release-compiler.yml`'s Windows recipe: MSYS2 **UCRT64** with
+`llvm` (22.1.8) + `polly` + `clang` + `lld` + `gcc`, `LLVM_SYS_221_PREFIX` at the
+**versioned** msys2 path (not the `current` junction), Rust GNU triple:
+
+```
+cargo build -p quanta-compiler --release --target x86_64-pc-windows-gnu
+```
+
+The official LLVM Windows installer and Chocolatey do **not** work — they ship
+clang/lld but not the static libs + headers `llvm-sys` needs, exactly as the
+workflow comment says. Also re-learned the documented stamp trap the hard way:
+committing changes the tree rev, so the compiler must be rebuilt after
+committing or the handshake fatals (`b2ef2e8-dirty` vs `eb753ce`).
+
+#### Bonus — the Iris subgroups question dija asked twice
+
+**Answered: yes.** `supports_subgroups()` → `true` on Intel Iris Xe.
+`vulkaninfo` agrees: `subgroupSize` 32 (min 8 / max 32, `subgroupSizeControl`
+true), `subgroupSupportedOperations` includes `ARITHMETIC`,
+`subgroupSupportedStages` includes `COMPUTE` — both conditions quanta gates on.
+Full caps, first real integrated-GPU data point for the memory arc:
+`memory_topology` **Unified**, `supports_host_import` **true** (only ever
+confirmed on lavapipe before), `i64` true, **`f64` false**, coop-matrix/RT/mesh
+false, tessellation/VRS/sparse-residency true.
 
 ## Mac log  `[mac]`
 
