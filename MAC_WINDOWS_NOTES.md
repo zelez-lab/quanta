@@ -54,11 +54,15 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 
 | # | Item | Owner | Fix branch | Status |
 |---|------|-------|-----------|--------|
-| 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **Fixed — awaiting Mac merge** |
-| 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **Fixed — awaiting Mac merge** |
+| 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — ff into `main` (`eb753ce`), pushed; branch deleted |
+| 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — same ff; structural follow-up is item 5 |
 | 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | Mac to rule | _none_ | Reported, untouched |
 | 4 | `vkCreateInstance` `-9` under parallel-test load | _tbd_ | _none_ | Reported, not diagnosed |
 | 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac to rule | _none_ | Design question raised |
+| 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
+| 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | _tbd_ | _none_ | Latent (Mac review): mapping exists in both emitters, unreachable today |
+| 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac to rule | _none_ | Reported by Windows; options: PR per fix branch, or `workflow_dispatch` on `ci.yml` |
+| 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
 
 ## Delegation notes
 
@@ -205,6 +209,40 @@ false, tessellation/VRS/sparse-residency true.
 ## Mac log  `[mac]`
 
 <!-- newest first. Merges landed, direction, what's delegated. -->
+
+### Merged `fix/vulkan-spirv-and-teardown` `[mac]` — `main` now `68b5157`
+
+All three commits reviewed and approved; fast-forwarded onto `b2ef2e8` so
+history stays linear, then one Mac commit on top (board item 9), pushed.
+The push is the branch's first CI verdict, as the handover predicted.
+
+**Review notes** (claims verified, not trusted):
+- "touches nothing under `driver/vulkan/`" — confirmed, diff empty there.
+- Commit 1: checked the type-dedup hazard — `ensure_type_array` is called
+  ONLY from the two SharedDecl arms in each emitter, so removing the stride
+  can't strip a layout some block context needs. Approved.
+- Commit 2: constants match the SPIR-V spec; the refuse-to-promote call is
+  right (our atomics model is relaxed). Reviewing the CAS site surfaced
+  board items 6 and 7 — latent, pre-existing, not this branch's fault.
+- Commit 3: drop-order mechanism confirmed real (all three fields are Arcs
+  shared by every clone; the last `Gpu` clone is where both refcounts hit
+  zero, so declaration order decides UAF vs clean teardown). Agreed the
+  bare `*const VulkanDevice` is the remaining fragility → board item 5.
+
+**Mac-side verification** (Metal + CPU; Vulkan claims taken from the rig):
+- quanta-nn: **108/108 on Metal** — matches the Iris Xe count exactly.
+- gpu_shared / shared_atomics / atomics / compute / deferred / barriers:
+  **26/26** (barriers green after item 9's fix; its failure pre-dated the
+  branch — reproduced on `b2ef2e8` before blaming anyone).
+- `cargo fmt --check` clean; `just clippy-vulkan` (all four gate lines)
+  passes — and confirms the item-3 story: cross-target `check` shows the
+  warnings but enforces nothing.
+- Re-learned the stamp trap twice more: rebuild the compiler after every
+  branch switch AND after every commit; `-dirty` vs clean is a proven
+  mismatch and hard-fails.
+
+`fix/vulkan-spirv-and-teardown` deleted (remote + both locals, per
+protocol). Nice bonus on the subgroups answer — dija gets its yes.
 
 - **Opened this channel** `[mac]` — roles, branch map, and handover protocol
   above; SPIR-V trap catalog handed over in the appendix. First item on the
