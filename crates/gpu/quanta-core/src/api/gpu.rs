@@ -23,15 +23,15 @@ mod compute;
 /// share it (no second device, no re-init). Lets consumers (e.g.
 /// `quanta-array`) store a `Gpu` alongside their data.
 #[derive(Clone)]
+// FIELD ORDER IS LOAD-BEARING. Rust drops struct fields in declaration
+// order, so everything that holds device-owned Vulkan objects must be
+// declared BEFORE `inner` (the device itself). A batch parked in
+// `pending` keeps a raw `*const VulkanDevice` and, on drop, hands its
+// command buffer, descriptor pools, and pins back to that device — so
+// if `inner` went first, the device would already be destroyed: its
+// children leak at `vkDestroyDevice` and the batch then dereferences
+// freed memory. Do not reorder these fields.
 pub struct Gpu {
-    inner: Arc<dyn GpuDevice>,
-    /// Pool of builder-managed MSAA intermediates (`RenderBuilder::
-    /// msaa`), living beside the device like the driver registries do:
-    /// one pool per device, shared by every `Gpu` clone, dropped —
-    /// destroying every pooled texture — with the last clone. See
-    /// [`crate::msaa_pool`] for the keying/lifetime story.
-    #[cfg(all(feature = "render", feature = "std"))]
-    msaa_pool: Arc<crate::MsaaPool>,
     /// The deferred-dispatch pending lane — one per device, shared by
     /// every clone (a single lane = a single submission order; see
     /// [`crate::api::deferred`]). Deferral is THE dispatch model, not
@@ -39,6 +39,14 @@ pub struct Gpu {
     /// the sync points.
     #[cfg(all(feature = "compute", feature = "std"))]
     pub(crate) pending: Arc<crate::api::deferred::PendingLane>,
+    /// Pool of builder-managed MSAA intermediates (`RenderBuilder::
+    /// msaa`), living beside the device like the driver registries do:
+    /// one pool per device, shared by every `Gpu` clone, dropped —
+    /// destroying every pooled texture — with the last clone. See
+    /// [`crate::msaa_pool`] for the keying/lifetime story.
+    #[cfg(all(feature = "render", feature = "std"))]
+    msaa_pool: Arc<crate::MsaaPool>,
+    inner: Arc<dyn GpuDevice>,
 }
 
 impl Gpu {
