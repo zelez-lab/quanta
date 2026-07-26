@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Fix branches don't trigger on push; this lets any branch request a
+  # verdict by hand (Actions UI or `gh workflow run ci.yml --ref <branch>`)
+  # without paying for CI on every WIP push.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
