@@ -315,8 +315,15 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     // === Batch ===
 
+    /// Returns the raw driver batch, NOT `crate::Batch`: only the api
+    /// layer — which holds the device `Arc` — may build the public
+    /// wrapper, so every `Batch` owns a keep-alive on its device and
+    /// its Drop (which hands command buffers and pools back through a
+    /// raw device pointer on every backend) can never outlive it.
     #[cfg(feature = "compute")]
-    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+    fn batch_begin(
+        &self,
+    ) -> Result<alloc::boxed::Box<dyn crate::api::batch::BatchInner>, QuantaError> {
         Err(QuantaError::not_supported("batch dispatch not supported"))
     }
 
@@ -325,7 +332,9 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// uses this with hazard-run analysis. Default falls back to the
     /// serial batch — always correct, merely maximally ordered.
     #[cfg(feature = "compute")]
-    fn batch_begin_concurrent(&self) -> Result<crate::Batch, QuantaError> {
+    fn batch_begin_concurrent(
+        &self,
+    ) -> Result<alloc::boxed::Box<dyn crate::api::batch::BatchInner>, QuantaError> {
         self.batch_begin()
     }
 

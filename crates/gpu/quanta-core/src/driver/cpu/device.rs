@@ -972,12 +972,10 @@ impl GpuDevice for CpuDevice {
 
     // === Batch ===
 
-    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
-        Ok(crate::Batch {
-            inner: Box::new(CpuBatch {
-                device: self as *const CpuDevice,
-            }),
-        })
+    fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
+        Ok(Box::new(CpuBatch {
+            device: self as *const CpuDevice,
+        }))
     }
 
     // === Render (stubs) === (render-gated, step 085)
@@ -1777,8 +1775,8 @@ struct CpuBatch {
 
 // Safety: see `MetalBatch` — batches move between threads behind the
 // deferred lane's `Mutex`; access is exclusive (`&mut`/by-value) and
-// the device (whose methods are internally locked) is kept alive by
-// the callers that reach the pointer.
+// the device (whose methods are internally locked) is kept alive for
+// the batch's whole life by the api `Batch` wrapper's device `Arc`.
 unsafe impl Send for CpuBatch {}
 
 impl crate::batch::BatchInner for CpuBatch {

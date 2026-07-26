@@ -158,9 +158,8 @@ fn barrier_texture_transition() {
             // No RENDER_TARGET: this test CPU-seeds the texture and never
             // renders into it, and render targets are private storage on
             // Metal — `write` refuses them (see driver/metal/texture.rs).
-            &quanta::TextureDesc::new(16, 16, quanta::Format::RGBA8).with_usage(
-                quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE),
-            ),
+            &quanta::TextureDesc::new(16, 16, quanta::Format::RGBA8)
+                .with_usage(quanta::TextureUsage::SHADER_READ.union(quanta::TextureUsage::STORAGE)),
         )
         .unwrap();
 

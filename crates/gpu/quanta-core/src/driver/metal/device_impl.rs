@@ -212,25 +212,25 @@ impl GpuDevice for MetalDevice {
     // === Batch ===
 
     #[cfg(feature = "compute")]
-    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
+    fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
         // The default compute encoder is SERIAL dispatch type: every
         // dispatch implicitly orders against the previous one — the
         // ordering the public Batch documents.
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
-        Ok(crate::Batch {
-            inner: Box::new(MetalBatch {
-                device: self as *const MetalDevice,
-                cmd,
-                encoder,
-                concurrent: false,
-                ended: false,
-            }),
-        })
+        Ok(Box::new(MetalBatch {
+            device: self as *const MetalDevice,
+            cmd,
+            encoder,
+            concurrent: false,
+            ended: false,
+        }))
     }
 
     #[cfg(feature = "compute")]
-    fn batch_begin_concurrent(&self) -> Result<crate::Batch, QuantaError> {
+    fn batch_begin_concurrent(
+        &self,
+    ) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
         // CONCURRENT dispatch type: dispatches may overlap; ordering
         // exists only at explicit `memoryBarrierWithScope:` points —
         // which `encode_barrier` emits at the lane's hazard-run
@@ -243,15 +243,13 @@ impl GpuDevice for MetalDevice {
                 ffi::MTL_DISPATCH_TYPE_CONCURRENT,
             )
         };
-        Ok(crate::Batch {
-            inner: Box::new(MetalBatch {
-                device: self as *const MetalDevice,
-                cmd,
-                encoder,
-                concurrent: true,
-                ended: false,
-            }),
-        })
+        Ok(Box::new(MetalBatch {
+            device: self as *const MetalDevice,
+            cmd,
+            encoder,
+            concurrent: true,
+            ended: false,
+        }))
     }
 
     // === Render === (render-gated, step 085)
@@ -1780,9 +1778,10 @@ struct MetalBatch {
 // `Mutex`). Metal command buffers and encoders require *external
 // synchronization*, not thread affinity — and every access here is
 // exclusive: `&mut self` on encode, by-value on submit, and the lane's
-// lock around both. The raw device pointer is dereferenced only from
-// those calls, whose callers hold the device `Arc` (the `Gpu` handle
-// or a pulse's keep-alive).
+// lock around both. The raw device pointer is valid for the batch's
+// whole life, Drop included: the api `Batch` wrapper — the only way
+// this type leaves the driver — owns a device `Arc` declared to drop
+// AFTER the inner batch (see `api::batch::Batch`).
 #[cfg(feature = "compute")]
 unsafe impl Send for MetalBatch {}
 

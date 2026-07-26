@@ -188,17 +188,15 @@ impl GpuDevice for VulkanDevice {
     // === Batch ===
 
     #[cfg(feature = "compute")]
-    fn batch_begin(&self) -> Result<crate::Batch, QuantaError> {
-        Ok(crate::Batch {
-            inner: Box::new(super::compute::VulkanBatch::begin(self, true)?),
-        })
+    fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
+        Ok(Box::new(super::compute::VulkanBatch::begin(self, true)?))
     }
 
     #[cfg(feature = "compute")]
-    fn batch_begin_concurrent(&self) -> Result<crate::Batch, QuantaError> {
-        Ok(crate::Batch {
-            inner: Box::new(super::compute::VulkanBatch::begin(self, false)?),
-        })
+    fn batch_begin_concurrent(
+        &self,
+    ) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
+        Ok(Box::new(super::compute::VulkanBatch::begin(self, false)?))
     }
 
     // === Render === (render-gated, step 085)

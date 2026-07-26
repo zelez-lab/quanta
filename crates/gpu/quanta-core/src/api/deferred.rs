@@ -125,7 +125,11 @@ impl PendingLane {
             match device.batch_begin_concurrent() {
                 Ok(b) => {
                     state.batch_capable = Some(true);
-                    state.batch = Some(b);
+                    // The wrapper takes the device Arc: a parked batch
+                    // OWNS its device, so lane teardown can never hand
+                    // resources back to a destroyed device — whatever
+                    // order `Gpu`'s fields drop in.
+                    state.batch = Some(Batch::new(b, device.clone()));
                 }
                 Err(QuantaError {
                     kind: QuantaErrorKind::NotSupported(_),

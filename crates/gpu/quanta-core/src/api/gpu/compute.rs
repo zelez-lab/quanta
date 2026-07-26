@@ -96,7 +96,7 @@ impl Gpu {
         // work first so the two cannot interleave out of program order.
         #[cfg(feature = "std")]
         self.pending.submit_pending()?;
-        self.inner.batch_begin()
+        Ok(Batch::new(self.inner.batch_begin()?, self.inner.clone()))
     }
 
     // === Async compute ===

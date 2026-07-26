@@ -1007,9 +1007,10 @@ pub(super) struct VulkanBatch {
 // on another (the deferred lane keeps one behind a `Mutex`). Vulkan
 // command buffers require external synchronization, not thread
 // affinity, and every access is exclusive (`&mut self` / by-value under
-// that lock). The raw device pointer is dereferenced only from calls
-// whose callers hold the device `Arc` (the `Gpu` handle or a pulse's
-// keep-alive).
+// that lock). The raw device pointer is valid for this batch's whole
+// life, Drop included: the api `Batch` wrapper — the only way this type
+// leaves the driver — owns a device `Arc` declared to drop AFTER the
+// inner batch (see `api::batch::Batch`).
 unsafe impl Send for VulkanBatch {}
 
 impl VulkanBatch {
