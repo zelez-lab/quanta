@@ -217,7 +217,8 @@ impl VulkanDevice {
                     p_next: core::ptr::null(),
                     flags: 0,
                 };
-                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                let r =
+                    unsafe { create(self.instance.raw, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateHeadlessSurfaceEXT failed"));
                 }
@@ -240,7 +241,8 @@ impl VulkanDevice {
                     dpy: *display,
                     window: *window,
                 };
-                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                let r =
+                    unsafe { create(self.instance.raw, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateXlibSurfaceKHR failed"));
                 }
@@ -262,7 +264,8 @@ impl VulkanDevice {
                     flags: 0,
                     window: *a_native_window,
                 };
-                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                let r =
+                    unsafe { create(self.instance.raw, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateAndroidSurfaceKHR failed"));
                 }
@@ -290,7 +293,8 @@ impl VulkanDevice {
                     hinstance: *hinstance,
                     hwnd: *hwnd,
                 };
-                let r = unsafe { create(self.instance, &info, core::ptr::null(), &mut surface) };
+                let r =
+                    unsafe { create(self.instance.raw, &info, core::ptr::null(), &mut surface) };
                 if r != ffi::VK_SUCCESS {
                     return Err(QuantaError::internal("vkCreateWin32SurfaceKHR failed"));
                 }
@@ -313,7 +317,7 @@ impl VulkanDevice {
             )
         };
         if r != ffi::VK_SUCCESS || supported == 0 {
-            unsafe { (procs.destroy_surface)(self.instance, surface, core::ptr::null()) };
+            unsafe { (procs.destroy_surface)(self.instance.raw, surface, core::ptr::null()) };
             return Err(QuantaError::not_supported(
                 "the device queue cannot present to this surface",
             ));
@@ -1157,7 +1161,7 @@ impl VulkanDevice {
                 ffi::vkDestroyImageView(self.device, view, core::ptr::null());
             }
             (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null());
-            (procs.destroy_surface)(self.instance, entry.surface, core::ptr::null());
+            (procs.destroy_surface)(self.instance.raw, entry.surface, core::ptr::null());
             ffi::vkDestroyFence(self.device, entry.acquire_fence, core::ptr::null());
             ffi::vkDestroyFence(self.device, entry.present_fence, core::ptr::null());
             for &sem in &entry.present_sems {

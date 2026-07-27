@@ -40,9 +40,38 @@ pub(super) fn layout_signature(kinds: &[crate::driver::spirv_meta::DescriptorKin
     sig | ((kinds.len() as u64) << 40)
 }
 
+/// The process's `VkInstance`, refcounted. Every `VulkanDevice`
+/// enumerated from it holds an `Arc`; the instance dies exactly once —
+/// here, after the last device — never in `VulkanDevice::drop`. (The
+/// old shape had each device destroy the shared raw handle: correct
+/// with one GPU, a double-destroy with two.) `discover` keeps a
+/// process-wide `Weak` so repeated discovery reuses a live instance
+/// instead of minting another.
+pub(super) struct InstanceHandle {
+    pub(super) raw: ffi::VkInstance,
+}
+
+impl Drop for InstanceHandle {
+    fn drop(&mut self) {
+        unsafe { ffi::vkDestroyInstance(self.raw, core::ptr::null()) };
+    }
+}
+
+// Safety: VkInstance requires external synchronization only for
+// create/destroy (create happens under SHARED_INSTANCE's lock, destroy
+// behind the last Arc); queries through it are thread-safe per spec.
+unsafe impl Send for InstanceHandle {}
+unsafe impl Sync for InstanceHandle {}
+
+/// Live-instance cache for `discover`: upgrade-or-create under the
+/// lock. `Weak`, so an idle process (all devices dropped) releases the
+/// instance rather than pinning the loader forever.
+static SHARED_INSTANCE: Mutex<alloc::sync::Weak<InstanceHandle>> =
+    Mutex::new(alloc::sync::Weak::new());
+
 /// Vulkan-backed GPU device.
 pub struct VulkanDevice {
-    pub(super) instance: ffi::VkInstance,
+    pub(super) instance: alloc::sync::Arc<InstanceHandle>,
     pub(super) physical_device: ffi::VkPhysicalDevice,
     pub(super) device: ffi::VkDevice,
     pub(super) queue: ffi::VkQueue,
@@ -1038,18 +1067,38 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         pp_enabled_extension_names: instance_ext_ptr,
     };
 
-    let mut instance = ffi::null_handle();
-    let result = unsafe { ffi::vkCreateInstance(&create_info, core::ptr::null(), &mut instance) };
-    if result != ffi::VK_SUCCESS {
-        // A loader with no usable ICD lands here (headless box, no
-        // vendor driver — VK_ERROR_INCOMPATIBLE_DRIVER, -9). Same
-        // loudness contract as the missing-loader gate above.
-        eprintln!(
-            "quanta vulkan: vkCreateInstance failed ({result}) — no usable \
-             Vulkan ICD; Vulkan backend unavailable"
-        );
-        return Vec::new();
-    }
+    // One instance per process while anything holds it: upgrade the
+    // shared Weak, or create-and-store under the same lock (so two
+    // racing discoveries can't both create). The extension set probed
+    // above is loader-level and deterministic in-process, so a reused
+    // instance was created with the same extensions this call would
+    // have asked for.
+    let instance_handle: alloc::sync::Arc<InstanceHandle> = {
+        let mut shared = SHARED_INSTANCE.lock().expect("instance cache poisoned");
+        match shared.upgrade() {
+            Some(live) => live,
+            None => {
+                let mut raw = ffi::null_handle();
+                let result =
+                    unsafe { ffi::vkCreateInstance(&create_info, core::ptr::null(), &mut raw) };
+                if result != ffi::VK_SUCCESS {
+                    // A loader with no usable ICD lands here (headless
+                    // box, no vendor driver — VK_ERROR_INCOMPATIBLE_
+                    // DRIVER, -9). Same loudness contract as the
+                    // missing-loader gate above.
+                    eprintln!(
+                        "quanta vulkan: vkCreateInstance failed ({result}) — no usable \
+                         Vulkan ICD; Vulkan backend unavailable"
+                    );
+                    return Vec::new();
+                }
+                let fresh = alloc::sync::Arc::new(InstanceHandle { raw });
+                *shared = alloc::sync::Arc::downgrade(&fresh);
+                fresh
+            }
+        }
+    };
+    let instance = instance_handle.raw;
 
     // Step 063 slice 14 — resolve the instance-level proc once.
     // `None` is fine on builds without the VRS extension; the
@@ -1710,7 +1759,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         };
 
         devices.push(Box::new(VulkanDevice {
-            instance,
+            instance: instance_handle.clone(),
             physical_device: pd,
             device,
             queue,
@@ -1883,7 +1932,7 @@ impl Drop for VulkanDevice {
                         ffi::vkDestroyImageView(self.device, view, core::ptr::null());
                     }
                     (procs.destroy_swapchain)(self.device, entry.swapchain, core::ptr::null());
-                    (procs.destroy_surface)(self.instance, entry.surface, core::ptr::null());
+                    (procs.destroy_surface)(self.instance.raw, entry.surface, core::ptr::null());
                     ffi::vkDestroyFence(self.device, entry.acquire_fence, core::ptr::null());
                     ffi::vkDestroyFence(self.device, entry.present_fence, core::ptr::null());
                     for &sem in &entry.present_sems {
@@ -2030,7 +2079,10 @@ impl Drop for VulkanDevice {
 
             ffi::vkDestroyCommandPool(self.device, self.command_pool, core::ptr::null());
             ffi::vkDestroyDevice(self.device, core::ptr::null());
-            ffi::vkDestroyInstance(self.instance, core::ptr::null());
+            // No vkDestroyInstance here: the instance is shared by
+            // every device enumerated from it and dies with the last
+            // `Arc<InstanceHandle>` — which this drop releases when the
+            // struct's fields drop, after this body.
         }
     }
 }
