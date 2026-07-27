@@ -10,8 +10,8 @@ impl Gpu {
     // === Compute ===
 
     pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
-        let mut wave = self.inner.wave(kernel)?;
-        wave.device = Some(self.inner.clone());
+        let mut wave = self.ctx.device.wave(kernel)?;
+        wave.device = Some(self.ctx.device.clone());
         Ok(wave)
     }
 
@@ -20,8 +20,8 @@ impl Gpu {
     /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the
     /// binary and compiled to the appropriate GPU shader format at first use.
     pub fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
-        let mut wave = self.inner.wave_jit(kernel_def_bytes)?;
-        wave.device = Some(self.inner.clone());
+        let mut wave = self.ctx.device.wave_jit(kernel_def_bytes)?;
+        wave.device = Some(self.ctx.device.clone());
         Ok(wave)
     }
 
@@ -30,8 +30,8 @@ impl Gpu {
         // pending batch first so queue order stays program order (the
         // driver's hazard tracking orders the actual accesses).
         #[cfg(feature = "std")]
-        self.pending.submit_pending()?;
-        self.inner.wave_dispatch(wave, groups)
+        self.ctx.pending.submit_pending()?;
+        self.ctx.device.wave_dispatch(wave, groups)
     }
 
     /// Dispatch a 1D wave over exactly `quarks` threads.
@@ -50,9 +50,13 @@ impl Gpu {
     pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         #[cfg(feature = "std")]
         {
-            if self.pending.encode(self.device_handle(), wave, quarks)? {
+            if self
+                .ctx
+                .pending
+                .encode(self.device_handle(), wave, quarks)?
+            {
                 return Ok(crate::api::deferred::lazy_pulse(
-                    self.pending.clone(),
+                    self.ctx.pending.clone(),
                     self.device_handle().clone(),
                 ));
             }
@@ -61,13 +65,13 @@ impl Gpu {
             // for ordering, then dispatch eagerly and wait — a dropped
             // pulse leaks nothing and reads stay correct without a
             // flush point.
-            self.pending.submit_pending()?;
-            let mut pulse = self.inner.wave_dispatch_threads(wave, quarks)?;
+            self.ctx.pending.submit_pending()?;
+            let mut pulse = self.ctx.device.wave_dispatch_threads(wave, quarks)?;
             pulse.wait()?;
             Ok(pulse)
         }
         #[cfg(not(feature = "std"))]
-        self.inner.wave_dispatch_threads(wave, quarks)
+        self.ctx.device.wave_dispatch_threads(wave, quarks)
     }
 
     /// Dispatch with group counts from a GPU buffer (GPU-driven).
@@ -81,8 +85,9 @@ impl Gpu {
         // `wave_dispatch`); the args buffer itself may also be a
         // deferred product.
         #[cfg(feature = "std")]
-        self.pending.submit_pending()?;
-        self.inner
+        self.ctx.pending.submit_pending()?;
+        self.ctx
+            .device
             .wave_dispatch_indirect(wave, buffer.handle(), offset)
     }
 
@@ -95,15 +100,18 @@ impl Gpu {
         // A user batch is its own submission — commit pending deferred
         // work first so the two cannot interleave out of program order.
         #[cfg(feature = "std")]
-        self.pending.submit_pending()?;
-        Ok(Batch::new(self.inner.batch_begin()?, self.inner.clone()))
+        self.ctx.pending.submit_pending()?;
+        Ok(Batch::new(
+            self.ctx.device.batch_begin()?,
+            self.ctx.device.clone(),
+        ))
     }
 
     // === Async compute ===
 
     /// Whether this device supports a dedicated async compute queue.
     pub fn supports_async_compute(&self) -> bool {
-        self.inner.supports_async_compute()
+        self.ctx.device.supports_async_compute()
     }
 
     /// Dispatch a compute wave on the async compute queue.
@@ -116,15 +124,15 @@ impl Gpu {
         // async queue, so complete pending lane work outright before
         // handing anything to it.
         #[cfg(feature = "std")]
-        self.pending.flush_and_wait()?;
-        self.inner.async_compute_dispatch(wave, groups)
+        self.ctx.pending.flush_and_wait()?;
+        self.ctx.device.async_compute_dispatch(wave, groups)
     }
 
     // === M3.1: Multi-queue ===
 
     /// List available queue families on this device.
     pub fn queue_families(&self) -> Vec<QueueFamily> {
-        self.inner.queue_families()
+        self.ctx.device.queue_families()
     }
 
     /// Allocate a typed [`PrintfBuffer`](crate::PrintfBuffer)
@@ -138,11 +146,11 @@ impl Gpu {
                 "printf buffer capacity must be >= 1",
             ));
         }
-        let handle = self.inner.printf_create(cap)?;
+        let handle = self.ctx.device.printf_create(cap)?;
         Ok(crate::PrintfBuffer {
             handle,
             cap,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             live: true,
         })
     }
@@ -155,7 +163,7 @@ impl Gpu {
     /// `NotSupported` here so user code can fall back to the main
     /// queue.
     pub fn async_copy_queue(&self) -> Result<crate::AsyncCopyQueue, QuantaError> {
-        let handle = self.inner.async_copy_create()?;
+        let handle = self.ctx.device.async_copy_create()?;
         Ok(crate::AsyncCopyQueue {
             handle,
             gpu: self.clone(),
@@ -170,7 +178,7 @@ impl Gpu {
     /// software fallbacks, WebGPU global queue) return
     /// `NotSupported` here so user code can branch.
     pub fn queue(&self, queue_type: QueueType) -> Result<crate::Queue, QuantaError> {
-        let handle = self.inner.create_queue(queue_type)?;
+        let handle = self.ctx.device.create_queue(queue_type)?;
         Ok(crate::Queue {
             handle,
             kind: queue_type,
@@ -186,8 +194,8 @@ impl Gpu {
     /// Compiles `kernel` into a new wave, transfers all bindings and push constants
     /// from `wave` to the new wave, then replaces `wave`'s handle.
     pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
-        let mut new_wave = self.inner.wave(kernel)?;
-        new_wave.device = Some(self.inner.clone());
+        let mut new_wave = self.ctx.device.wave(kernel)?;
+        new_wave.device = Some(self.ctx.device.clone());
         new_wave.bindings = wave.bindings;
         new_wave.binding_count = wave.binding_count;
         new_wave.write_mask = wave.write_mask;
@@ -218,7 +226,7 @@ impl Gpu {
         &self,
         max_commands: u32,
     ) -> Result<crate::IndirectCommandBuffer, QuantaError> {
-        let handle = self.inner.indirect_buffer_create(max_commands)?;
+        let handle = self.ctx.device.indirect_buffer_create(max_commands)?;
         Ok(crate::IndirectCommandBuffer {
             handle,
             cap: max_commands,
@@ -234,11 +242,11 @@ impl Gpu {
     /// [`BindlessTextureArray`](crate::BindlessTextureArray) with
     /// the given capacity. Steps 034 + 035.
     pub fn bindless_textures(&self, cap: u32) -> Result<crate::BindlessTextureArray, QuantaError> {
-        let handle = self.inner.bindless_texture_create(cap)?;
+        let handle = self.ctx.device.bindless_texture_create(cap)?;
         Ok(crate::BindlessTextureArray {
             handle,
             cap,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             live: true,
         })
     }
@@ -247,11 +255,11 @@ impl Gpu {
     /// [`BindlessBufferArray`](crate::BindlessBufferArray) with the
     /// given capacity. Steps 034 + 035.
     pub fn bindless_buffers(&self, cap: u32) -> Result<crate::BindlessBufferArray, QuantaError> {
-        let handle = self.inner.bindless_buffer_create(cap)?;
+        let handle = self.ctx.device.bindless_buffer_create(cap)?;
         Ok(crate::BindlessBufferArray {
             handle,
             cap,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             live: true,
         })
     }

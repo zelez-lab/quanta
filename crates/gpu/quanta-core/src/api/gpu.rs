@@ -23,40 +23,53 @@ mod compute;
 /// share it (no second device, no re-init). Lets consumers (e.g.
 /// `quanta-array`) store a `Gpu` alongside their data.
 #[derive(Clone)]
-// Field order kept conservative on purpose: children before `inner`
-// (the device), since Rust drops fields in declaration order. The
-// batch UAF this once guarded against is now closed structurally — a
-// parked `Batch` owns its device Arc (`api::batch::Batch`), so it can
-// no longer outlive the device whatever this order says. The order
-// stays as defense-in-depth for any future field that holds
-// device-owned objects without its own keep-alive.
 pub struct Gpu {
-    /// The deferred-dispatch pending lane — one per device, shared by
-    /// every clone (a single lane = a single submission order; see
-    /// [`crate::api::deferred`]). Deferral is THE dispatch model, not
-    /// a mode: every `dispatch` encodes here and the lane submits at
-    /// the sync points.
+    pub(crate) ctx: Arc<DeviceContext>,
+}
+
+/// Everything that exists exactly once per live device — the anchor
+/// the per-device singletons were always documented against ("one
+/// lane per device", "one pool per device, living beside the device
+/// like the driver registries do"). `Gpu` is a thin cloneable handle
+/// to this; the device registry hands out `Weak`s of it, so any two
+/// `Gpu`s over the same physical device share one context and the
+/// singleton contracts hold across independent `init()` calls.
+///
+/// The lane and pool keep their own `Arc`s because two seams extend
+/// their lifetimes independently of the context: every lazy pulse
+/// clones the lane, and `RenderBuilder` clones the pool.
+///
+/// Field order: children before `device`, as defense-in-depth (the
+/// batch UAF is closed structurally — a parked `Batch` owns its
+/// device Arc — but future fields holding device children without
+/// their own keep-alive get the safe order for free).
+pub(crate) struct DeviceContext {
+    /// The deferred-dispatch pending lane — one per device (a single
+    /// lane = a single submission order; see [`crate::api::deferred`]).
+    /// Deferral is THE dispatch model, not a mode: every `dispatch`
+    /// encodes here and the lane submits at the sync points.
     #[cfg(all(feature = "compute", feature = "std"))]
     pub(crate) pending: Arc<crate::api::deferred::PendingLane>,
     /// Pool of builder-managed MSAA intermediates (`RenderBuilder::
-    /// msaa`), living beside the device like the driver registries do:
-    /// one pool per device, shared by every `Gpu` clone, dropped —
-    /// destroying every pooled texture — with the last clone. See
-    /// [`crate::msaa_pool`] for the keying/lifetime story.
+    /// msaa`) — one per device, dropped (destroying every pooled
+    /// texture) with the last `Gpu` clone. See [`crate::msaa_pool`]
+    /// for the keying/lifetime story.
     #[cfg(all(feature = "render", feature = "std"))]
-    msaa_pool: Arc<crate::MsaaPool>,
-    inner: Arc<dyn GpuDevice>,
+    pub(crate) msaa_pool: Arc<crate::MsaaPool>,
+    pub(crate) device: Arc<dyn GpuDevice>,
 }
 
 impl Gpu {
     #[allow(dead_code)]
     pub(crate) fn new(inner: Arc<dyn GpuDevice>) -> Self {
         Self {
-            inner,
-            #[cfg(all(feature = "render", feature = "std"))]
-            msaa_pool: Arc::new(crate::MsaaPool::default()),
-            #[cfg(all(feature = "compute", feature = "std"))]
-            pending: Arc::new(crate::api::deferred::PendingLane::default()),
+            ctx: Arc::new(DeviceContext {
+                #[cfg(all(feature = "compute", feature = "std"))]
+                pending: Arc::new(crate::api::deferred::PendingLane::default()),
+                #[cfg(all(feature = "render", feature = "std"))]
+                msaa_pool: Arc::new(crate::MsaaPool::default()),
+                device: inner,
+            }),
         }
     }
 
@@ -67,7 +80,7 @@ impl Gpu {
     /// compute crate's documented surface stays render-free.
     #[doc(hidden)]
     pub fn device_handle(&self) -> &Arc<dyn GpuDevice> {
-        &self.inner
+        &self.ctx.device
     }
 
     /// Internal accessor for the builder-managed MSAA intermediate
@@ -76,7 +89,7 @@ impl Gpu {
     #[cfg(all(feature = "render", feature = "std"))]
     #[doc(hidden)]
     pub fn __msaa_pool(&self) -> &Arc<crate::MsaaPool> {
-        &self.msaa_pool
+        &self.ctx.msaa_pool
     }
 
     /// Test-support: snapshot of the driver's resource-registry sizes.
@@ -84,13 +97,13 @@ impl Gpu {
     /// prove destroy paths free their registry entries.
     #[doc(hidden)]
     pub fn debug_registry_counts(&self) -> crate::RegistryCounts {
-        self.inner.debug_registry_counts()
+        self.ctx.device.debug_registry_counts()
     }
 
     // === Device info ===
 
     pub fn caps(&self) -> &Caps {
-        self.inner.caps()
+        self.ctx.device.caps()
     }
 
     pub fn nuclei(&self) -> u32 {
@@ -133,31 +146,31 @@ impl Gpu {
     /// API still accepts VRS state, but the render encoder will
     /// surface NotSupported at submit time.
     pub fn supports_vrs(&self) -> bool {
-        self.inner.supports_variable_rate_shading()
+        self.ctx.device.supports_variable_rate_shading()
     }
 
     /// Whether the active backend can build acceleration structures
     /// and dispatch ray tracing.
     pub fn supports_ray_tracing(&self) -> bool {
-        self.inner.supports_ray_tracing()
+        self.ctx.device.supports_ray_tracing()
     }
 
     /// Whether the active backend can create mesh-shader pipelines.
     pub fn supports_mesh_shaders(&self) -> bool {
-        self.inner.supports_mesh_shaders()
+        self.ctx.device.supports_mesh_shaders()
     }
 
     /// Whether the active backend can create tessellation pipelines
     /// (Vulkan tessellationShader feature / Metal Apple GPU
     /// family 4+).
     pub fn supports_tessellation(&self) -> bool {
-        self.inner.supports_tessellation()
+        self.ctx.device.supports_tessellation()
     }
 
     /// Whether the active backend can create sparse textures with
     /// residency control.
     pub fn supports_sparse_residency(&self) -> bool {
-        self.inner.supports_sparse_residency()
+        self.ctx.device.supports_sparse_residency()
     }
 
     /// Whether the active backend can lower the cooperative-matrix ops to
@@ -165,21 +178,21 @@ impl Gpu {
     /// family 7+; Vulkan `VK_KHR_cooperative_matrix`, not yet wired). The
     /// software lane reports `false`.
     pub fn supports_cooperative_matrix(&self) -> bool {
-        self.inner.supports_cooperative_matrix()
+        self.ctx.device.supports_cooperative_matrix()
     }
 
     /// Whether the active backend can run kernels that use 64-bit
     /// floats. The software lane and llvmpipe support f64; Metal and
     /// the Broadcom V3D GPU do not.
     pub fn supports_f64(&self) -> bool {
-        self.inner.supports_f64()
+        self.ctx.device.supports_f64()
     }
 
     /// Whether the active backend can run kernels that use 64-bit
     /// integers. The software lane and llvmpipe support i64/u64; the
     /// Broadcom V3D GPU does not.
     pub fn supports_i64(&self) -> bool {
-        self.inner.supports_i64()
+        self.ctx.device.supports_i64()
     }
 
     /// Whether the active backend can run kernels that use subgroup
@@ -190,7 +203,7 @@ impl Gpu {
     /// creation). Kernels with a subgroup-free fallback should select
     /// on this before building the wave.
     pub fn supports_subgroups(&self) -> bool {
-        self.inner.supports_subgroups()
+        self.ctx.device.supports_subgroups()
     }
 
     /// Whether narrow-float buffers (bf16 / fp8) on the active backend
@@ -201,13 +214,13 @@ impl Gpu {
     /// Vulkan and the CPU consume directly) must expand it
     /// one-element-per-word before binding on such a backend.
     pub fn narrow_storage_u32_slot(&self) -> bool {
-        self.inner.narrow_storage_u32_slot()
+        self.ctx.device.narrow_storage_u32_slot()
     }
 
     /// Hardware-supported VRS shading rates as `(width, height)`
     /// pairs. Empty when VRS isn't supported.
     pub fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
-        self.inner.supported_shading_rates()
+        self.ctx.device.supported_shading_rates()
     }
 
     /// Whether [`Texture::native_handle`](crate::Texture::native_handle)
@@ -217,7 +230,7 @@ impl Gpu {
     /// backends whose export path isn't wired yet; those return
     /// `NotSupported` from `native_handle`.
     pub fn supports_native_handle_export(&self) -> bool {
-        self.inner.supports_native_handle_export()
+        self.ctx.device.supports_native_handle_export()
     }
 
     /// Whether the active backend can create presentation surfaces
@@ -225,7 +238,7 @@ impl Gpu {
     /// without a present path return `NotSupported` at
     /// `create_surface` time.
     pub fn supports_surface_present(&self) -> bool {
-        self.inner.supports_surface_present()
+        self.ctx.device.supports_surface_present()
     }
 
     /// Whether the active backend implements sub-region texture uploads
@@ -233,7 +246,7 @@ impl Gpu {
     /// `NotSupported` from `write_region`; callers can fall back to a
     /// whole-texture `Texture::write`.
     pub fn supports_texture_write_region(&self) -> bool {
-        self.inner.supports_texture_write_region()
+        self.ctx.device.supports_texture_write_region()
     }
 
     /// Whether compute kernels can bind textures on the active backend
@@ -241,7 +254,7 @@ impl Gpu {
     /// True on Metal, CPU, and native Vulkan; false on WebGPU. Tests skip the
     /// live-dispatch path when this is false.
     pub fn supports_compute_textures(&self) -> bool {
-        self.inner.supports_compute_textures()
+        self.ctx.device.supports_compute_textures()
     }
 
     pub fn name(&self) -> &str {
@@ -265,13 +278,13 @@ impl Gpu {
         usage: FieldUsage,
     ) -> Result<Field<T>, QuantaError> {
         let size = count * size_of::<T>();
-        let handle = self.inner.field_alloc(size, usage)?;
+        let handle = self.ctx.device.field_alloc(size, usage)?;
         Ok(Field {
             handle,
             count,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             #[cfg(all(feature = "compute", feature = "std"))]
-            lane: Arc::clone(&self.pending),
+            lane: Arc::clone(&self.ctx.pending),
             _marker: PhantomData,
         })
     }
@@ -284,12 +297,12 @@ impl Gpu {
     pub fn field_mapped<T: Copy>(&self, count: usize) -> Result<MappedField<T>, QuantaError> {
         let size = count * size_of::<T>();
         let usage = FieldUsage::default_compute();
-        let (handle, ptr) = self.inner.field_create_mapped(size, usage)?;
+        let (handle, ptr) = self.ctx.device.field_create_mapped(size, usage)?;
         Ok(MappedField {
             handle,
             ptr,
             count,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             _marker: PhantomData,
         })
     }
@@ -349,24 +362,24 @@ impl Gpu {
         }
         let bytes_ptr = ptr as *const u8;
         let len = count * size_of::<T>();
-        let (handle, imported) = if self.inner.supports_host_import() {
-            (self.inner.field_import_host(bytes_ptr, len)?, true)
+        let (handle, imported) = if self.ctx.device.supports_host_import() {
+            (self.ctx.device.field_import_host(bytes_ptr, len)?, true)
         } else {
             // Staged-copy fallback: same API, exactly one copy, and
             // the difference stays queryable via `is_imported`.
             let usage = FieldUsage::READ
                 .union(FieldUsage::COMPUTE)
                 .union(FieldUsage::TRANSFER);
-            let handle = self.inner.field_alloc(len, usage)?;
+            let handle = self.ctx.device.field_alloc(len, usage)?;
             let bytes = unsafe { core::slice::from_raw_parts(bytes_ptr, len) };
-            self.inner.field_write_bytes(handle, bytes)?;
+            self.ctx.device.field_write_bytes(handle, bytes)?;
             (handle, false)
         };
         Ok(HostField {
             handle,
             count,
             imported,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             _borrow: PhantomData,
         })
     }
@@ -375,7 +388,7 @@ impl Gpu {
     /// native zero-copy path on the active backend. `false` means the
     /// call still succeeds but stages one copy.
     pub fn supports_host_import(&self) -> bool {
-        self.inner.supports_host_import()
+        self.ctx.device.supports_host_import()
     }
 
     /// The granularity the host-import contract checks pointers and
@@ -383,15 +396,15 @@ impl Gpu {
     /// `minImportedHostPointerAlignment`). `None` when the backend
     /// has no import path.
     pub fn host_import_alignment(&self) -> Option<usize> {
-        self.inner.host_import_alignment()
+        self.ctx.device.host_import_alignment()
     }
 
     // === Textures ===
 
     /// Create a texture from a descriptor (full control).
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
-        let mut tex = self.inner.texture_create(desc)?;
-        tex.device = Some(self.inner.clone());
+        let mut tex = self.ctx.device.texture_create(desc)?;
+        tex.device = Some(self.ctx.device.clone());
         Ok(tex)
     }
 
@@ -410,8 +423,8 @@ impl Gpu {
         &self,
         desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError> {
-        let mut sampler = self.inner.sampler_create(desc)?;
-        sampler.device = Some(self.inner.clone());
+        let mut sampler = self.ctx.device.sampler_create(desc)?;
+        sampler.device = Some(self.ctx.device.clone());
         Ok(sampler)
     }
 
@@ -421,7 +434,7 @@ impl Gpu {
 
     /// Create a timeline semaphore for multi-frame synchronization.
     pub fn timeline_create(&self) -> Result<crate::Timeline, QuantaError> {
-        self.inner.timeline_create()
+        self.ctx.device.timeline_create()
     }
 
     /// Signal a timeline to the given value.
@@ -430,12 +443,12 @@ impl Gpu {
         timeline: &crate::Timeline,
         value: u64,
     ) -> Result<(), QuantaError> {
-        self.inner.timeline_signal(timeline, value)
+        self.ctx.device.timeline_signal(timeline, value)
     }
 
     /// Block until a timeline reaches at least the given value.
     pub fn timeline_wait(&self, timeline: &crate::Timeline, value: u64) -> Result<(), QuantaError> {
-        self.inner.timeline_wait(timeline, value)
+        self.ctx.device.timeline_wait(timeline, value)
     }
 
     // === Barriers ===
@@ -445,7 +458,7 @@ impl Gpu {
     /// This is a heavyweight synchronization point. Prefer `barrier_field`
     /// or `barrier_texture` for fine-grained resource transitions.
     pub fn barrier(&self) -> Result<(), QuantaError> {
-        self.inner.barrier()
+        self.ctx.device.barrier()
     }
 
     /// Transition a field between resource states.
@@ -458,7 +471,7 @@ impl Gpu {
         from: ResourceState,
         to: ResourceState,
     ) -> Result<(), QuantaError> {
-        self.inner.barrier_buffer(field.handle(), from, to)
+        self.ctx.device.barrier_buffer(field.handle(), from, to)
     }
 
     /// Transition a texture between resource states.
@@ -471,7 +484,7 @@ impl Gpu {
         from: ResourceState,
         to: ResourceState,
     ) -> Result<(), QuantaError> {
-        self.inner.barrier_texture(texture, from, to)
+        self.ctx.device.barrier_texture(texture, from, to)
     }
 
     // === Host synchronization ===
@@ -491,8 +504,8 @@ impl Gpu {
         // driver's drain — flush the pending lane first so "everything
         // submitted so far" includes everything *dispatched* so far.
         #[cfg(all(feature = "compute", feature = "std"))]
-        self.pending.flush_and_wait()?;
-        self.inner.wait_idle()
+        self.ctx.pending.flush_and_wait()?;
+        self.ctx.device.wait_idle()
     }
 
     /// Submit all deferred dispatches and block until they complete.
@@ -502,7 +515,7 @@ impl Gpu {
     /// A no-op when nothing is pending.
     #[cfg(all(feature = "compute", feature = "std"))]
     pub fn flush(&self) -> Result<(), QuantaError> {
-        self.pending.flush_and_wait()
+        self.ctx.pending.flush_and_wait()
     }
 
     /// Complete all deferred compute work, for the sibling extension
@@ -514,7 +527,7 @@ impl Gpu {
     #[doc(hidden)]
     pub fn __flush_pending(&self) -> Result<(), QuantaError> {
         #[cfg(all(feature = "compute", feature = "std"))]
-        self.pending.flush_and_wait()?;
+        self.ctx.pending.flush_and_wait()?;
         Ok(())
     }
 
@@ -522,23 +535,23 @@ impl Gpu {
 
     /// Create a `TimestampQuery` object wrapping a query set handle.
     pub fn timestamp_query(&self, count: u32) -> Result<TimestampQuery, QuantaError> {
-        let handle = self.inner.timestamp_query_create(count)?;
+        let handle = self.ctx.device.timestamp_query_create(count)?;
         Ok(TimestampQuery { handle, count })
     }
 
     /// Write a timestamp at the given index in the query set.
     pub fn write_timestamp(&self, query: &TimestampQuery, index: u32) -> Result<(), QuantaError> {
-        self.inner.timestamp_write(query.handle, index)
+        self.ctx.device.timestamp_write(query.handle, index)
     }
 
     /// Read all timestamps from a query set.
     pub fn read_timestamps(&self, query: &TimestampQuery) -> Result<Vec<u64>, QuantaError> {
-        self.inner.timestamp_query_read(query.handle)
+        self.ctx.device.timestamp_query_read(query.handle)
     }
 
     /// Convert raw timestamp ticks to nanoseconds using the device frequency.
     pub fn timestamp_to_ns(&self, ticks: u64) -> u64 {
-        let freq = self.inner.timestamp_frequency();
+        let freq = self.ctx.device.timestamp_frequency();
         if freq == 0 || freq == 1_000_000_000 {
             ticks
         } else {
@@ -551,7 +564,7 @@ impl Gpu {
 
     /// Query what a given format can do on this device.
     pub fn format_caps(&self, format: Format) -> FormatCaps {
-        self.inner.format_caps(format)
+        self.ctx.device.format_caps(format)
     }
 
     // === M2.3: Texture views ===
@@ -562,10 +575,13 @@ impl Gpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, QuantaError> {
-        let handle = self.inner.texture_view_create(texture.handle(), desc)?;
+        let handle = self
+            .ctx
+            .device
+            .texture_view_create(texture.handle(), desc)?;
         Ok(TextureView {
             handle,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             live: true,
         })
     }
@@ -577,7 +593,7 @@ impl Gpu {
     /// destroyed exactly once.
     pub fn texture_view_destroy(&self, mut view: TextureView) -> Result<(), QuantaError> {
         view.live = false;
-        self.inner.texture_view_destroy(view.handle())
+        self.ctx.device.texture_view_destroy(view.handle())
     }
 
     // === M5.1: Sparse textures ===
@@ -592,12 +608,12 @@ impl Gpu {
     /// Backends without sparse-binding support (`VK_EXT_sparse_binding`,
     /// Apple Silicon) return `NotSupported` here so user code can branch.
     pub fn sparse_texture(&self, desc: &TextureDesc) -> Result<crate::SparseTexture, QuantaError> {
-        let handle = self.inner.sparse_texture_create(desc)?;
+        let handle = self.ctx.device.sparse_texture_create(desc)?;
         Ok(crate::SparseTexture {
             handle,
             width: desc.width,
             height: desc.height,
-            device: self.inner.clone(),
+            device: self.ctx.device.clone(),
             live: true,
         })
     }
@@ -606,11 +622,11 @@ impl Gpu {
 
     /// Push a debug group label (visible in GPU profilers like Xcode GPU Capture).
     pub fn debug_push(&self, label: &str) {
-        self.inner.debug_push(label);
+        self.ctx.device.debug_push(label);
     }
 
     /// Pop a debug group label.
     pub fn debug_pop(&self) {
-        self.inner.debug_pop();
+        self.ctx.device.debug_pop();
     }
 }
