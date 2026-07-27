@@ -163,6 +163,14 @@ jobs:
       (github.event_name == 'pull_request' &&
        contains(github.event.pull_request.labels.*.name, 'run-metal'))
     runs-on: macos-14
+    # Every test-binary build below runs the kernel macros, and the
+    # macros shell out to whatever compiler they can find — without
+    # this, that is the DOWNLOADED release binary, whose stamp can
+    # never match a work-in-progress rev, so the handshake hard-fails
+    # the very first test step. Build the matching compiler FIRST and
+    # pin every step to it.
+    env:
+      QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
     steps:
       - uses: actions/checkout@v7
 
@@ -179,6 +187,14 @@ jobs:
             ~/.cargo/git
             target
           key: macos-14-cargo-gpu-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install LLVM 22 (for quanta-compiler)
+        run: brew install llvm@22
+
+      - name: Build quanta-compiler
+        env:
+          LLVM_SYS_221_PREFIX: /opt/homebrew/opt/llvm@22
+        run: cargo build -p quanta-compiler
 
       - name: Build
         run: cargo build
@@ -204,21 +220,10 @@ jobs:
       - name: GPU indirect-command-buffer tests (render bundle)
         run: cargo test --test icb_render_metal -- --test-threads=1
 
-      # DSL draw tests need the compiler on PATH: the shader macros shell out
-      # to it to embed the metallib, so without it every DSL draw ships
-      # binary-less and self-skips. Build it here (same llvm@22 the
-      # compiler-validation lane uses) and point QUANTA_COMPILER at it.
-      - name: Install LLVM 22 (for quanta-compiler)
-        run: brew install llvm@22
-
-      - name: Build quanta-compiler
-        env:
-          LLVM_SYS_221_PREFIX: /opt/homebrew/opt/llvm@22
-        run: cargo build -p quanta-compiler
-
+      # DSL draw tests use the same compiler the job built up front —
+      # the shader macros shell out to it to embed the metallib, so
+      # without it every DSL draw ships binary-less and self-skips.
       - name: DSL draw tests (metal)
-        env:
-          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
         run: |
           cargo test --test render_triangle_test --features metal,render -- --test-threads=1
           cargo test --test texture_write_region --features metal,render -- --test-threads=1
@@ -292,6 +297,10 @@ jobs:
        contains(github.event.pull_request.labels.*.name, 'run-metal'))
     runs-on: macos-14
     needs: gpu-tests-metal
+    # Same handshake story as gpu-tests-metal: the test builds run the
+    # kernel macros, which must find a compiler stamped at THIS rev.
+    env:
+      QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
     steps:
       - uses: actions/checkout@v7
 
@@ -308,6 +317,14 @@ jobs:
             ~/.cargo/git
             target
           key: macos-14-cargo-gpu-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install LLVM 22 (for quanta-compiler)
+        run: brew install llvm@22
+
+      - name: Build quanta-compiler
+        env:
+          LLVM_SYS_221_PREFIX: /opt/homebrew/opt/llvm@22
+        run: cargo build -p quanta-compiler
 
       - name: Build
         run: cargo build --tests
