@@ -758,11 +758,28 @@ impl VulkanDevice {
                 "descriptor set layout creation failed",
             ));
         }
-        self.layout_cache
+        // The lock was released across vkCreateDescriptorSetLayout, so a
+        // racing thread may have inserted this signature already. A blind
+        // insert would overwrite — and silently leak — its handle; keep
+        // the incumbent and destroy ours instead.
+        let mut cache = self
+            .layout_cache
             .lock()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(signature, layout);
-        Ok(layout)
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        match cache.entry(signature) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let winner = *entry.get();
+                drop(cache);
+                unsafe {
+                    ffi::vkDestroyDescriptorSetLayout(self.device, layout, core::ptr::null());
+                }
+                Ok(winner)
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(layout);
+                Ok(layout)
+            }
+        }
     }
 
     /// Return a descriptor pool to the cache for reuse.
