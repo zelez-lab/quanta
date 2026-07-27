@@ -1126,12 +1126,22 @@ impl VulkanDevice {
         // so the NEXT acquire rebuilds and every image returns — the
         // recycling contract holds at the cost of one rebuild per
         // skipped frame.
-        if let Some(frame_entry) = self
+        //
+        // Bind the removed entry in its OWN statement so the frames
+        // write guard drops here — an `if let` on the locked remove
+        // would hold it across the `vk_surfaces` write below, which is
+        // the reverse of acquire's order (surfaces read held while
+        // registering the frame). With one shared device per process,
+        // a discard racing an acquire on another thread deadlocked
+        // exactly there (caught on lavapipe: gpu_surface parallel
+        // wedged, single-threaded green). Lock order is surfaces →
+        // frames everywhere; never hold frames while taking surfaces.
+        let frame_entry = self
             .vk_surface_frames
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .remove(&frame)
-        {
+            .remove(&frame);
+        if let Some(frame_entry) = frame_entry {
             self.textures
                 .write()
                 .map_err(|_| QuantaError::internal("lock poisoned"))?
