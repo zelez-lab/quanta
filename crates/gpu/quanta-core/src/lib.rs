@@ -140,15 +140,21 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     #[allow(unused_variables)]
     let allows = |b: ForcedBackend| forced.is_none() || forced == Some(b);
 
-    // `mut` is conditional: only the metal/vulkan/software cfgs below mutate
-    // the vector, and feature combinations may disable all of them (e.g.
-    // wasm32 + webgpu).
+    // Every backend goes through the process-wide device registry
+    // (`api::registry`): repeated `devices()`/`init()` calls converge
+    // on the SAME live devices (Gpu clones of one shared context per
+    // physical device) instead of re-running discovery — see the
+    // registry module for the lifetime story. `mut` is conditional:
+    // only the metal/vulkan/software cfgs below mutate the vector, and
+    // feature combinations may disable all of them (e.g. wasm32 +
+    // webgpu).
+    use api::registry::{BackendKind, get_or_discover};
     #[allow(unused_mut)]
-    let mut devs: alloc::vec::Vec<alloc::boxed::Box<dyn GpuDevice>> = alloc::vec::Vec::new();
+    let mut devs: alloc::vec::Vec<Gpu> = alloc::vec::Vec::new();
 
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     if allows(ForcedBackend::Metal) {
-        devs.extend(driver::metal::discover());
+        devs.extend(get_or_discover(BackendKind::Metal, driver::metal::discover));
     }
 
     #[cfg(all(
@@ -161,7 +167,10 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
         )
     ))]
     if allows(ForcedBackend::Vulkan) {
-        devs.extend(driver::vulkan::discover());
+        devs.extend(get_or_discover(
+            BackendKind::Vulkan,
+            driver::vulkan::discover,
+        ));
     }
 
     // The CPU device joins normal discovery only under QUANTA_CPU=1, but
@@ -172,7 +181,7 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
             .map(|v| v == "1")
             .unwrap_or(false);
         if forced == Some(ForcedBackend::Cpu) || (forced.is_none() && cpu_opt_in) {
-            devs.extend(driver::cpu::discover());
+            devs.extend(get_or_discover(BackendKind::Cpu, driver::cpu::discover));
         }
     }
 
@@ -188,10 +197,10 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
             "quanta: no GPU backend available — falling back to SOFTWARE \
              rendering (CPU device)"
         );
-        devs.extend(driver::cpu::discover());
+        devs.extend(get_or_discover(BackendKind::Cpu, driver::cpu::discover));
     }
 
-    devs.into_iter().map(maybe_validate).map(Gpu::new).collect()
+    devs
 }
 
 /// Initialize the first available GPU device, following Quanta's fixed
@@ -320,9 +329,12 @@ fn forced_backend_name(backend: ForcedBackend) -> &'static str {
 /// (SPIR-V, metallib) are not supported.
 #[cfg(feature = "software")]
 pub fn init_cpu() -> Gpu {
-    let dev: alloc::boxed::Box<dyn GpuDevice> =
-        alloc::boxed::Box::new(driver::cpu::CpuDevice::new());
-    Gpu::new(maybe_validate(dev))
+    // Same registry as `devices()`' CPU entries, so `init_cpu()` and a
+    // `QUANTA_BACKEND=cpu` init in one process share one device.
+    api::registry::get_or_discover(api::registry::BackendKind::Cpu, driver::cpu::discover)
+        .into_iter()
+        .next()
+        .expect("cpu discover always yields one device")
 }
 
 /// Initialize a WebGPU device. Browser-only. Async because the WebGPU

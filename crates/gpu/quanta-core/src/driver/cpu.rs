@@ -12,4 +12,4 @@ mod eval;
 mod exec;
 mod value;
 
-pub use device::{CpuDevice, discover};
+pub use device::discover;

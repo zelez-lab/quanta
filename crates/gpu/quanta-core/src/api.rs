@@ -23,6 +23,11 @@ pub mod batch;
 pub mod deferred;
 #[cfg(feature = "compute")]
 pub mod multi_queue;
+// The process-wide device registry (`init`/`devices` reuse). Needs
+// `std` for its static lock, like the lane; not compute-gated — the
+// render-only build initializes devices too.
+#[cfg(feature = "std")]
+pub(crate) mod registry;
 #[cfg(feature = "compute")]
 pub mod wave;
 
