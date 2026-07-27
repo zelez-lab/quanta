@@ -13,6 +13,11 @@ use std::process::Stdio;
 use super::ffi;
 use super::{VkComputePipeline, VulkanDevice};
 
+/// One folded dispatch record: `(base_workgroup, group_count)` — the
+/// two triplets `vkCmdDispatchBase` takes (a plain record has base
+/// zero and goes through `vkCmdDispatch`).
+pub(crate) type DispatchRecord = ([u32; 3], [u32; 3]);
+
 /// Try to optimize SPIR-V binary via spirv-opt if available.
 /// Falls back to the original input on any failure (missing binary, crash, etc.).
 fn try_optimize_spirv(spirv: &[u8]) -> Vec<u8> {
@@ -317,7 +322,7 @@ impl VulkanDevice {
         &self,
         wave: &Wave,
         quarks: u32,
-    ) -> Result<Vec<([u32; 3], [u32; 3])>, QuantaError> {
+    ) -> Result<Vec<DispatchRecord>, QuantaError> {
         let wg_x = wave.workgroup_size[0].max(1);
         let groups = quarks.div_ceil(wg_x);
         let limit_x = self.caps.max_groups[0].max(1);
@@ -349,7 +354,7 @@ impl VulkanDevice {
             ));
         }
 
-        let mut records: Vec<([u32; 3], [u32; 3])> = Vec::with_capacity(2);
+        let mut records: Vec<DispatchRecord> = Vec::with_capacity(2);
         if full_rows > 0 {
             records.push(([0, 0, 0], [row, full_rows, 1]));
         }
@@ -598,7 +603,7 @@ impl VulkanDevice {
     fn wave_dispatch_records_impl(
         &self,
         wave: &Wave,
-        records: &[([u32; 3], [u32; 3])],
+        records: &[DispatchRecord],
     ) -> Result<Pulse, QuantaError> {
         let prep = self.prepare_wave_dispatch(wave)?;
         let finish = |e: QuantaError| {
@@ -781,7 +786,7 @@ impl VulkanDevice {
         cmd: ffi::VkCommandBuffer,
         prep: &PreparedDispatch,
         wave: &Wave,
-        records: &[([u32; 3], [u32; 3])],
+        records: &[DispatchRecord],
     ) -> Result<(), QuantaError> {
         unsafe {
             ffi::vkCmdBindPipeline(cmd, ffi::VK_PIPELINE_BIND_POINT_COMPUTE, prep.pipeline);
@@ -1242,7 +1247,7 @@ unsafe fn self_record(
     cmd: ffi::VkCommandBuffer,
     prep: &PreparedDispatch,
     wave: &Wave,
-    records: &[([u32; 3], [u32; 3])],
+    records: &[DispatchRecord],
 ) -> Result<(), QuantaError> {
     unsafe { device.record_wave_commands(cmd, prep, wave, records) }
 }

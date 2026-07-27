@@ -632,15 +632,13 @@ impl VulkanDevice {
             .lock()
             .map(|p| p.contains_key(&handle))
             .unwrap_or(false);
-        if pinned {
-            if let Ok(mut parked) = self.batch_parked.lock() {
-                parked.push((handle, entry));
-                return;
-            }
-            // Poisoned park lock: fall through to the serial gate —
-            // over-eager destruction is the lesser evil only when the
-            // queue is provably idle, which retire() checks.
+        if pinned && let Ok(mut parked) = self.batch_parked.lock() {
+            parked.push((handle, entry));
+            return;
         }
+        // Pinned but the park lock is poisoned: fall through to the
+        // serial gate — over-eager destruction is the lesser evil only
+        // when the queue is provably idle, which retire() checks.
         self.retire_bin.retire(self.device, entry);
     }
 
