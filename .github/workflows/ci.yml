@@ -613,9 +613,12 @@ jobs:
       # VkSurfaceKHR + VkSwapchainKHR without a window system, so the
       # whole acquire→render→present suite (incl. the demand-driven
       # pacing contract) runs here. Skips gracefully if the loader
-      # lacks the WSI extensions.
+      # lacks the WSI extensions. Single-threaded like the metal lane:
+      # the suite's leak checks assert absolute debug_registry_counts,
+      # and with one shared device per process a neighbor test's live
+      # textures land in the count.
       - name: Surface tests (vulkan lane via lavapipe headless swapchain)
-        run: cargo test --test gpu_surface --no-default-features --features vulkan,render
+        run: cargo test --test gpu_surface --no-default-features --features vulkan,render -- --test-threads=1
 
       # DSL draw tests on a real Vulkan device: build quanta-compiler so
       # the shader macros embed SPIR-V, then run the render suites on
