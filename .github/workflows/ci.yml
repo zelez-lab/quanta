@@ -661,4 +661,7 @@ jobs:
         run: |
           cargo test --test memory_topology --no-default-features --features vulkan,jit,compute
           cargo test --test host_field_import --no-default-features --features vulkan,jit,compute
-          cargo test --test shared_field --no-default-features --features vulkan,jit,compute
+          # Single-threaded: shared_freed_exactly_once asserts absolute
+          # debug_registry_counts, cross-test noise on the shared device
+          # (same story as the surface suite above).
+          cargo test --test shared_field --no-default-features --features vulkan,jit,compute -- --test-threads=1
