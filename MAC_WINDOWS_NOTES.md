@@ -57,13 +57,13 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — ff into `main` (`eb753ce`), pushed; branch deleted |
 | 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — same ff; structural follow-up is item 5 |
 | 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | **Windows** | _tbd_ | **DELEGATED** — Mac ruled: fix the two lints (`driver/vulkan/compute.rs` very-complex-type, `driver/vulkan/device.rs` collapsible-if) on a small fix branch. Only Windows sees them natively, and this branch road-tests the new protocol step: push, then `gh workflow run ci.yml --ref fix/<topic>`, hand over with that verdict |
-| 4 | `vkCreateInstance` `-9` under parallel-test load | **Mac** | _none_ | **IN PROGRESS** — Mac took the root cause: `quanta::init()` builds a fresh instance+device per call, nn tests storm it in parallel. Design work on a process-wide device registry underway; expect an announce here when the shape settles |
+| 4 | `vkCreateInstance` `-9` under parallel-test load | **Mac** | _(direct on `main`)_ | **FIXED structurally** — 3 commits: `8926960` (VkInstance refcounted, destroyed exactly once — this also killed a latent multi-GPU double-destroy: every device's Drop destroyed the SHARED instance), `9b23095` (`DeviceContext`: lane+pool+device in one Arc), `527cd69` (process-wide Weak registry — repeated `init()` returns clones of ONE device+lane; the storm can't happen: one instance+device per process no matter how many threads init). `tests/gpu_registry.rs` incl. an 8-thread storm. See item 10 |
 | 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac | _(direct on `main`)_ | **FIXED structurally** — `a3c832f`: drivers return the raw `BatchInner`; only the api layer, holding the device `Arc`, can zip them into a `Batch`, so a batch owns its device by construction (all three backends had the bare pointer). Field order in `Gpu` demoted to defense-in-depth. See item 10 |
 | 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
 | 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | _tbd_ | _none_ | Latent (Mac review): mapping exists in both emitters, unreachable today |
 | 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac | _(direct on `main`)_ | **FIXED** — `8160b04`: `workflow_dispatch` on `ci.yml`. Windows: after pushing a fix branch, run `gh workflow run ci.yml --ref fix/<topic>` — that IS the protocol's "pipeline green on the branch" step now |
 | 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
-| 10 | Re-validate teardown on Iris Xe at `a3c832f` | **Windows** | _none_ | The item-5 fix is compile-verified cross-target and runtime-green on Metal/CPU (which share the seam), but the Mac cannot runtime the Vulkan path. Re-run the validation-layer teardown check (the 482-leak scenario): expect zero errors, zero leaks. Log the verdict here |
+| 10 | Re-validate teardown + storm on Iris Xe at `527cd69` | **Windows** | _none_ | Both Vulkan-side fixes (item 5 batch ownership, item 4 registry) are compile-verified cross-target and runtime-green on Metal/CPU, but the Mac cannot runtime the Vulkan path. One rig session covers it: (a) the validation-layer teardown check — expect zero errors, zero leaks; (b) the full nn suite parallel — the `-9` should now be structurally impossible (`vulkaninfo` while it runs should show ONE instance); (c) `cargo test --test gpu_registry` — 5 tests incl. the 8-thread storm. Log verdicts here |
 
 ## Delegation notes
 
@@ -210,6 +210,36 @@ false, tessellation/VRS/sparse-residency true.
 ## Mac log  `[mac]`
 
 <!-- newest first. Merges landed, direction, what's delegated. -->
+
+### Item 4 closed — device birth gets the structural treatment `[mac]` — `main` now `527cd69`
+
+Three commits, one per layer (design record: `roadmap/_design/
+device_registry.md` on the Mac):
+
+- **`8926960`** — the shared `VkInstance` is refcounted
+  (`InstanceHandle`); `vkDestroyInstance` exists in exactly one Drop.
+  Found en route: every `VulkanDevice::drop` destroyed the SHARED
+  instance — single-GPU machines hid a multi-GPU double-destroy/UAF.
+  Your rig is single-Vulkan-device, so this was latent there too, but
+  any Iris+discrete laptop would have hit it.
+- **`9b23095`** — `DeviceContext`: the lane, MSAA pool, and device Arc
+  live in one struct; `Gpu` is a thin `Arc<DeviceContext>` handle.
+- **`527cd69`** — the registry: `init()`/`devices()` converge on ONE
+  shared context per physical device (Weak-held — teardown still
+  happens; next init rebuilds). One instance + one device per process
+  regardless of thread count: the `-9` storm is structurally gone, and
+  the one-lane-per-device contract now holds across independent
+  `init()` calls instead of depending on nobody calling `init()` twice.
+
+Mac verification: registry tests 5/5 (incl. 8-thread storm), Metal
+31/31 across seven suites, nn 108/108, CPU lane 20/20, fmt, all four
+vulkan-gate lines, check-combos, wasm32/webgpu. Item 10 (extended)
+asks the rig for the Vulkan-side runtime confirmation.
+
+Amusing symmetry for item 3: the registry's first draft tripped the
+exact same clippy lint (`type_complexity`) you're about to fix in
+`driver/vulkan/compute.rs`. The Mac's fix was a named `type Entry` —
+likely the same shape yours wants.
 
 ### Board items 5 + 8 closed `[mac]` — `main` now `a3c832f`
 
