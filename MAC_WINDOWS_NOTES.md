@@ -56,14 +56,19 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 |---|------|-------|-----------|--------|
 | 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — ff into `main` (`eb753ce`), pushed; branch deleted |
 | 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — same ff; structural follow-up is item 5 |
-| 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | **Windows** | _tbd_ | **DELEGATED** — Mac ruled: fix the two lints (`driver/vulkan/compute.rs` very-complex-type, `driver/vulkan/device.rs` collapsible-if) on a small fix branch. Only Windows sees them natively, and this branch road-tests the new protocol step: push, then `gh workflow run ci.yml --ref fix/<topic>`, hand over with that verdict |
+| 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | **Windows** | `fix/vulkan-clippy` | **FIXED, handed over** — `5f6cecb`: `pub(crate) type DispatchRecord` (the registry's `type Entry` prediction was right) at all five sites, and `retire_or_park`'s nested if is a let-chain. Native `clippy --features vulkan -D warnings` exit 0. See Windows log for the CI verdict |
 | 4 | `vkCreateInstance` `-9` under parallel-test load | **Mac** | _(direct on `main`)_ | **FIXED structurally** — 3 commits: `8926960` (VkInstance refcounted, destroyed exactly once — this also killed a latent multi-GPU double-destroy: every device's Drop destroyed the SHARED instance), `9b23095` (`DeviceContext`: lane+pool+device in one Arc), `527cd69` (process-wide Weak registry — repeated `init()` returns clones of ONE device+lane; the storm can't happen: one instance+device per process no matter how many threads init). `tests/gpu_registry.rs` incl. an 8-thread storm. See item 10 |
 | 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac | _(direct on `main`)_ | **FIXED structurally** — `a3c832f`: drivers return the raw `BatchInner`; only the api layer, holding the device `Arc`, can zip them into a `Batch`, so a batch owns its device by construction (all three backends had the bare pointer). Field order in `Gpu` demoted to defense-in-depth. See item 10 |
 | 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
 | 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | _tbd_ | _none_ | Latent (Mac review): mapping exists in both emitters, unreachable today |
 | 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac | _(direct on `main`)_ | **FIXED** — `8160b04`: `workflow_dispatch` on `ci.yml`. Windows: after pushing a fix branch, run `gh workflow run ci.yml --ref fix/<topic>` — that IS the protocol's "pipeline green on the branch" step now |
 | 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
-| 10 | Re-validate teardown + storm on Iris Xe at `527cd69` | **Windows** | _none_ | Both Vulkan-side fixes (item 5 batch ownership, item 4 registry) are compile-verified cross-target and runtime-green on Metal/CPU, but the Mac cannot runtime the Vulkan path. One rig session covers it: (a) the validation-layer teardown check — expect zero errors, zero leaks; (b) the full nn suite parallel — the `-9` should now be structurally impossible (`vulkaninfo` while it runs should show ONE instance); (c) `cargo test --test gpu_registry` — 5 tests incl. the 8-thread storm. Log verdicts here |
+| 10 | Re-validate teardown + storm on Iris Xe at `527cd69` | **Windows** | _none_ | **DONE, with findings** — (c) registry 5/5 incl. the 8-thread storm: the `-9` is structurally dead on real hardware; (b) nn 108/108 full-parallel, zero `-9`, zero incompatible-driver; (a) **VVL FAILED** — not the old 482-object catastrophe (still fixed), but two NEW race classes the one-device-per-process model made reachable: 4–7 validation errors per parallel run, zero single-threaded. → item 11 |
+| 11 | Shared-device races: layout-cache double-create leak + device-wide command-pool threading hazard | **Windows** | `fix/vulkan-pool-and-layout-races` | **FIXED, handed over** — two commits (`e3e63dd` layout cache, `88e4ba5` CmdLease). VVL parallel ×4: zero errors, zero leaks; core suites green; nn 108/108. See Windows log |
+| 12 | `gpu_surface` deadlocks on lavapipe at `527cd69` — MAIN IS RED (the cancelled 52-min push run was this) | **Windows** | `fix/vulkan-surface-lock-order` | **FIXED, handed over** — `d796230`: AB-BA lock inversion between `vk_surfaces` and `vk_surface_frames`, discard vs acquire, reachable only since the registry shares one device across threads. gdb-proven on lavapipe (CI lab), fix verified there: hang gone, suite green. See Windows log |
+| 13 | The dispatch CI lanes were broken by construction — gpu-tests-metal hard-fails the handshake (stale release compiler), gpu_surface leak asserts are cross-test noise on a shared device | **Windows** | `fix/ci-metal-lane-compiler` | **FIXED, handed over** — `c72dfe6` (metal + metal-validation build the compiler up front, job-level QUANTA_COMPILER, the vulkan lane's shape) + `563fbae` (surface step --test-threads=1 like the metal lane) + `12f3535` (shared_field too — same absolute-count class). Isolated-device leak tests flagged as an open design call. These jobs had never run before item 8 existed |
+| 14 | `gpu_advanced` ABORTS on the GH macos-14 runner's paravirtual Metal (`IOGPUMetalResource initWithResource: resource != nil`) | **Mac to rule** | _none_ | NEW — surfaced by the first-ever gpu-tests-metal run reaching real test steps. Your local Metal is green, so this is the runner's Apple Paravirtual device, not the driver. Options: probe the device name and self-skip the offending tests, drop gpu_advanced from the CI metal job, or declare the metal lane real-hardware-only (label/manual). Until ruled, dispatch runs cannot go fully green — handovers lean on local-hardware verification plus the other 11 lanes |
+| 15 | Absolute `debug_registry_counts` asserts vs the shared device — the test-design question behind items 13's serializations | **Mac to rule** | _none_ | NEW — three tests so far (2× gpu_surface, 1× shared_field) assert device-global counts and became cross-test noise under one-device-per-process. Serialized for now. The real question: should leak tests get an isolated-device constructor (#[doc(hidden)] registry-bypassing init), or switch to delta asserts that tolerate neighbors? |
 
 ## Delegation notes
 
@@ -78,6 +83,160 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 <!-- newest first. Handover entries + findings. e.g.
 ### fix/spirv-signedness  [win] <sha>  — pipeline: green
 what it fixes, file:line, anything the Mac needs before merging. -->
+
+### The dispatch story — read this before the per-branch entries `[win]`
+
+The protocol's new pipeline step got its first two real runs and they
+FAILED — for reasons that were all main's, none the branches':
+
+- **`gpu-tests-metal` had never executed** (its `if:` gates on dispatch or
+  a `run-metal` PR label; pushes skip it). It builds the compiler only for
+  its last step, so every earlier test build's kernel macros grabbed the
+  DOWNLOADED alpha.6 release compiler (stamped `787cfde`) — proven
+  handshake mismatch, hard fail on the first test step. → item 13.
+- **`gpu-tests-vulkan` hung to its 25-min timeout in `gpu_surface`** — a
+  REAL `527cd69` regression, and almost certainly what main's own
+  cancelled 52-min push run was sitting in. Windows built a scratch lab
+  (`debug/surface-hang`, a diagnosis job dispatched on the branch's own
+  ci.yml): single-threaded 17/17 in 2 s, parallel wedges every time, and
+  a gdb all-threads dump names the cycle — `surface_discard_impl` holds
+  the `vk_surface_frames` write guard (if-let temporary) while taking
+  `vk_surfaces` write, while `surface_acquire_impl` holds `vk_surfaces`
+  read across its `vk_surface_frames` write. AB-BA; Rust's
+  writer-preferring RwLock then parks every later reader. Unreachable
+  pre-registry (private device per test). → item 12. Metal was never
+  affected: its `take_frame` helper had the safe shape.
+- After the item-12 fix the parallel suite still failed 2 tests on
+  ABSOLUTE `debug_registry_counts` asserts — cross-test noise on a shared
+  device, not a leak. The vulkan surface step now runs `--test-threads=1`
+  exactly like every metal-lane step always has; whether leak tests
+  should get an isolated-device constructor instead is YOURS to rule
+  (flagged in item 13's second commit).
+
+**Integration proof**: `debug/integration-proof` = `527cd69` + all four
+fix branches merged, full ci.yml dispatched. Proof v1 confirmed both
+original defects dead (the metal lane got past the handshake into real
+test steps for the first time ever; the vulkan lane got past the
+surface hang into the memory-surface steps) and surfaced two more
+never-run findings behind them: `shared_field`'s absolute count assert
+(same class, serialized — item 13 third commit) and the paravirtual
+Metal abort in `gpu_advanced` (item 14, yours). **Proof v2 verdict
+(run 30309860913): 11/13 lanes GREEN — including `gpu-tests-vulkan`,
+fully green under dispatch for the first time ever. The only red is
+`gpu-tests-metal`, failing solely on item 14's paravirtual abort
+(same `IOGPUMetalResource` signature, same step; `metal-validation`
+skipped behind it).** Once item 14 is ruled, dispatch runs can go
+fully green. The scratch branches (`debug/surface-hang`,
+`debug/integration-proof`) die after review.
+
+### `fix/vulkan-pool-and-layout-races` `[win]` `88e4ba5` — pipeline: see "The dispatch story" (branch-alone run red on main-inherited lanes; integration proof is the meaningful verdict)
+
+Item 10's verdict first, then the fixes it demanded. At `527cd69` on Iris Xe:
+
+- **(c) registry 5/5** incl. the 8-thread storm — the `-9` is structurally
+  gone, now confirmed on the hardware that produced it.
+- **(b) nn 108/108**, 18 files, fully parallel, zero `-9`.
+- **(a) VVL FAILED** — two NEW defect classes, both reachable only because
+  the registry makes every thread share ONE device. Race-dependent and
+  reproducible: parallel runs 4–7 VVL errors every time, single-threaded
+  zero, every time.
+
+Two commits on top of `527cd69`, one per defect:
+
+| commit | what |
+|--------|------|
+| `e3e63dd` | `vulkan:` the layout cache admits one layout per signature |
+| `88e4ba5` | `vulkan:` every command buffer carries its own pool |
+
+**1. Leaked `VkDescriptorSetLayout`s** (`VUID-vkDestroyDevice-device-05137`:
+3 leaked in gpu_atomics, 1 in gpu_shared). `acquire_descriptor_set_layout`
+releases its mutex across `vkCreateDescriptorSetLayout`; racing threads all
+miss, all create, and later inserts silently orphan earlier handles. The
+counts are the smoking gun: 4 tests racing one signature → exactly 3
+orphans. Fix: entry-API re-check under the lock — occupied means another
+thread won; keep the incumbent, destroy ours.
+
+**2. Command-pool threading hazard**
+(`UNASSIGNED-Threading-MultipleThreads-Write`: `vkResetCommandBuffer` on a
+`VkCommandPool` used simultaneously from two threads, gpu_barriers). EVERY
+host access to a command buffer — allocate, reset, record, free — counts as
+a use of ITS pool, which the spec requires externally synchronized. One
+device per `init()` kept the device-wide pool accidentally private; one
+device per PROCESS put it under every thread at once. VVL flagged the
+reset, but one-shot recording on user threads (barriers, transfers,
+queries) racing the lane thread is the same class with quieter symptoms.
+A lock is the wrong shape — a user-held open batch would pin it across
+arbitrary user code. The structural fix: the cache stores `(pool, buffer)`
+pairs; `CmdLease` owns a pair exclusively — **holding the lease IS the
+external synchronization**. Leases auto-return on drop (every early-error
+path reclaims for free; several used to leak the CB), ride the fence
+waiter through `submit_and_wait` so a submitted buffer re-enters the cache
+only after the GPU is done, and the pool resets at REACQUISITION via
+`vkResetCommandPool`. A failed fence wait `mem::forget`s the lease on
+purpose — the old leak-on-device-loss stance survives (a possibly-PENDING
+CB must never be recycled). The present path keeps its lease inside the
+surface entry (per-frame re-begin is why lease pools carry the per-buffer
+RESET bit). ICB and render-bundle secondaries move to per-object pools
+destroyed with their object, and device teardown now sweeps live
+ICBs/bundles — their descriptor pools used to slip through teardown
+entirely. The device-wide `command_pool` field is GONE.
+
+#### Verification (Iris Xe, real hardware)
+
+- **VVL parallel ×4: zero validation errors, zero leaks** (from 4–7 errors
+  per run at `527cd69`). One more clean-handshake VVL run post-commit at
+  `88e4ba5` (compiler re-stamped, no ACCEPT_STALE): zero again.
+- Core suites (atomics/barriers/compute/deferred/registry/shared) green
+  under VVL throughout; **nn 108/108** on the branch.
+- `cargo fmt` clean; native `cargo clippy --features vulkan` clean except
+  the two item-3 lints (that branch's business, landed separately).
+- Cross-target gate lines not run here (no x86_64-linux rust target on
+  this rig) — the dispatched CI covers them; note the gate's purpose is
+  Mac blindness, and this rig compiles `driver/vulkan` natively.
+
+Merge-order note: independent of `fix/vulkan-clippy` — the two branches
+touch the same files but disjoint hunks; either order fast-forwards with a
+trivial merge.
+
+### `fix/vulkan-clippy` `[win]` `5f6cecb` — pipeline: lint job GREEN on the branch run; full verdict via the integration proof
+
+Item 3, as ruled — and the protocol road-test. `compute.rs`: the folded
+dispatch pair is now `pub(crate) type DispatchRecord = ([u32; 3], [u32; 3])`
+(the registry's `type Entry` prediction was exactly right), used at all five
+sites that pass records around, not just the flagged line. `device.rs`:
+`retire_or_park`'s nested if collapses to a let-chain; the
+poisoned-park-lock fallthrough keeps its comment and meaning. Native
+`cargo clippy --features vulkan -- -D warnings` exit 0, fmt clean.
+The branch's own dispatch run: lint + all host/compiler/companion lanes
+GREEN; only the two main-broken GPU lanes red (see the dispatch story) —
+which is itself the road-test's finding: the pipeline step works, and the
+first thing it did was catch main.
+Rig note: `gh` was not installed here until now (scoop package, freshly
+authenticated) — the first `gh workflow run` in the protocol's history
+happened on this branch.
+
+### `fix/vulkan-surface-lock-order` `[win]` `d796230` — pipeline: proven in the lavapipe lab; full verdict via the integration proof
+
+Item 12. One commit, ten lines: `surface_discard_impl` binds the removed
+frame entry in its own statement so the `vk_surface_frames` write guard
+drops before `vk_surfaces` is touched. Lock order is surfaces → frames
+everywhere now; a comment at the site records the rule and the deadlock.
+Verified in the lab (same lavapipe, same runner image as CI): before —
+parallel wedges every run; after — hang gone, single-threaded 17/17,
+parallel 15/17 with the two absolute-count asserts (item 13's territory,
+not a leak). This rig cannot run headless surfaces natively (no
+VK_EXT_headless_surface on Intel Windows or on mesa-dist-win lavapipe) —
+the lab branch was the only Windows-side way to touch this code at
+runtime, worth remembering for future surface work.
+
+### `fix/ci-metal-lane-compiler` `[win]` `563fbae` — pipeline: verdict via the integration proof
+
+Item 13, two commits: `c72dfe6` moves the metal lane's compiler build to
+the FRONT of the job and pins job-level `QUANTA_COMPILER` (and gives
+`metal-validation`, which had NO compiler step, the same treatment);
+`563fbae` serializes the vulkan surface step. ci.yml is historically your
+territory — both commits are small and opinion-bearing, review
+accordingly.
 
 ### `fix/vulkan-spirv-and-teardown` `[win]` `eb753ce` — pipeline: **NOT RUN** (see "Why no CI" below)
 
