@@ -75,9 +75,7 @@ pub struct VulkanDevice {
     pub(super) physical_device: ffi::VkPhysicalDevice,
     pub(super) device: ffi::VkDevice,
     pub(super) queue: ffi::VkQueue,
-    #[allow(dead_code)]
     pub(super) queue_family: u32,
-    pub(super) command_pool: ffi::VkCommandPool,
     pub(super) pipeline_cache: ffi::VkPipelineCache,
     pub(super) caps: Caps,
     /// Weak back-ref to this device's shared `Arc`; every minted
@@ -138,8 +136,18 @@ pub struct VulkanDevice {
     /// Arc so `submit_and_wait`'s Pulse closures can drain it after
     /// their fence wait.
     pub(super) retire_bin: std::sync::Arc<super::retire::RetireBin>,
-    /// Pool of reusable command buffers — Arc<Mutex> for sharing with Pulse closures.
-    pub(super) cmd_buffer_pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+    /// Cache of reusable (command pool, command buffer) pairs — Arc<Mutex>
+    /// for sharing with Pulse closures and `CmdLease` returns.
+    ///
+    /// One `VkCommandPool` per command buffer, never a device-wide pool:
+    /// every host access to a command buffer (allocate, reset, record,
+    /// free) counts as a use of ITS pool, which Vulkan requires the
+    /// caller to synchronize externally. The registry hands one shared
+    /// device to every thread in the process, so a device-wide pool
+    /// would need a lock held across whole recording spans — including
+    /// user-held open batches. Pairing the pool with the buffer makes
+    /// exclusive ownership of the lease the synchronization.
+    pub(super) cmd_buffer_pool: CmdCache,
     /// Cached single-sample intermediate for format-converting resolves
     /// (`resolve_texture` with `src.format != dst.format`): (vk_format,
     /// width, height, texture handle). The handle is an ordinary registry
@@ -367,10 +375,43 @@ pub(super) struct VulkanBindlessArray {
     pub(super) entries: Vec<u64>,
 }
 
+/// The reusable-command-buffer cache: (private pool, its one buffer)
+/// pairs. Plain tuples so teardown can drain and destroy without
+/// tripping `CmdLease`'s return-home Drop.
+pub(super) type CmdCache = std::sync::Arc<Mutex<Vec<(ffi::VkCommandPool, ffi::VkCommandBuffer)>>>;
+
+/// An exclusively owned command buffer plus the private `VkCommandPool`
+/// it was allocated from. Holding the lease IS the external
+/// synchronization Vulkan demands for every host access to the buffer
+/// (record, reset, free all count as uses of its pool). Dropping the
+/// lease returns the pair to the device's cache — error paths between
+/// allocation and submit reclaim automatically. `submit_and_wait`
+/// consumes the lease into its fence waiter, so a submitted buffer only
+/// re-enters the cache after the GPU is done with it. The pool is reset
+/// (releasing the buffer's recording) at REACQUISITION, not at return.
+pub(super) struct CmdLease {
+    pub(super) pool: ffi::VkCommandPool,
+    pub(super) cmd: ffi::VkCommandBuffer,
+    home: CmdCache,
+}
+
+impl Drop for CmdLease {
+    fn drop(&mut self) {
+        if let Ok(mut cache) = self.home.lock() {
+            cache.push((self.pool, self.cmd));
+        }
+        // Poisoned: leak the pair rather than risk a double-return —
+        // the same stance as `unpin_for_batch`.
+    }
+}
+
 /// State for one Vulkan render bundle.
 pub(super) struct VulkanRenderBundle {
     pub(super) cap: u32,
     pub(super) recorded: u32,
+    /// Private pool the secondaries are allocated from — per-bundle so
+    /// record/free never touch a pool another thread could be using.
+    pub(super) pool: ffi::VkCommandPool,
     pub(super) secondaries: Vec<ffi::VkCommandBuffer>,
 }
 
@@ -387,6 +428,9 @@ pub(super) struct VulkanRenderBundle {
 pub(super) struct VkIcb {
     pub(super) cap: u32,
     pub(super) commands: Vec<VkIcbCommand>,
+    /// Private pool the secondaries are allocated from — per-ICB so
+    /// record/free never touch a pool another thread could be using.
+    pub(super) pool: ffi::VkCommandPool,
     /// Pre-allocated secondary command buffers, one per slot.
     /// `secondaries[i]` is recorded by `icb_record_dispatch(handle, i, ...)`.
     pub(super) secondaries: Vec<ffi::VkCommandBuffer>,
@@ -545,34 +589,66 @@ impl VulkanDevice {
         })
     }
 
-    pub(super) fn alloc_command_buffer(&self) -> Result<ffi::VkCommandBuffer, QuantaError> {
-        // Try to reuse a previously returned command buffer from the pool.
-        if let Some(cmd) = self
+    pub(super) fn alloc_command_buffer(&self) -> Result<CmdLease, QuantaError> {
+        // Try to reuse a cached (pool, buffer) pair. Cached pairs come
+        // back dirty — a submitted buffer in the executable state, an
+        // abandoned batch still in the recording state — so reset the
+        // pool HERE, where this thread is the pair's only owner. (The
+        // cache only receives pairs whose GPU work has completed, so
+        // the buffer can never be pending.)
+        let cached = self
             .cmd_buffer_pool
             .lock()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .pop()
-        {
-            let result = unsafe { ffi::vkResetCommandBuffer(cmd, 0) };
+            .pop();
+        if let Some((pool, cmd)) = cached {
+            let result = unsafe { ffi::vkResetCommandPool(self.device, pool, 0) };
             if result != ffi::VK_SUCCESS {
+                // The pair is unusable — destroying the pool frees its
+                // buffer, so nothing dangles.
+                unsafe { ffi::vkDestroyCommandPool(self.device, pool, core::ptr::null()) };
                 return Err(QuantaError::submit_failed());
             }
-            return Ok(cmd);
+            return Ok(CmdLease {
+                pool,
+                cmd,
+                home: self.cmd_buffer_pool.clone(),
+            });
         }
-        // Pool empty -- allocate a fresh one.
+        // Cache empty — create a private pool with one primary buffer.
+        // RESET_COMMAND_BUFFER_BIT: the present path re-begins its
+        // long-held buffer each frame (an implicit per-buffer reset).
+        let pool_info = ffi::VkCommandPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            queue_family_index: self.queue_family,
+        };
+        let mut pool = ffi::null_handle();
+        let result = unsafe {
+            ffi::vkCreateCommandPool(self.device, &pool_info, core::ptr::null(), &mut pool)
+        };
+        if result != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
         let alloc_info = ffi::VkCommandBufferAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             p_next: core::ptr::null(),
-            command_pool: self.command_pool,
+            command_pool: pool,
             level: ffi::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             command_buffer_count: 1,
         };
         let mut cmd = ffi::null_handle();
         let result = unsafe { ffi::vkAllocateCommandBuffers(self.device, &alloc_info, &mut cmd) };
         if result != ffi::VK_SUCCESS {
+            unsafe { ffi::vkDestroyCommandPool(self.device, pool, core::ptr::null()) };
             return Err(QuantaError::submit_failed());
         }
-        Ok(cmd)
+        Ok(CmdLease {
+            pool,
+            cmd,
+            home: self.cmd_buffer_pool.clone(),
+        })
     }
 
     /// Pin `handle` for an open batch (see `batch_pins`). Call while
@@ -906,7 +982,7 @@ impl VulkanDevice {
     /// Submit a command buffer with a fence. Returns a Pulse that waits on the
     /// fence when wait() is called. The GPU executes asynchronously — the CPU
     /// can do other work before calling pulse.wait().
-    pub(super) fn submit_and_wait(&self, cmd: ffi::VkCommandBuffer) -> Result<Pulse, QuantaError> {
+    pub(super) fn submit_and_wait(&self, lease: CmdLease) -> Result<Pulse, QuantaError> {
         let fence_info = ffi::VkFenceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             p_next: core::ptr::null(),
@@ -916,6 +992,7 @@ impl VulkanDevice {
         unsafe {
             let r = ffi::vkCreateFence(self.device, &fence_info, core::ptr::null(), &mut fence);
             if r != ffi::VK_SUCCESS {
+                // Never submitted — dropping the lease reclaims the CB.
                 return Err(QuantaError::submit_failed());
             }
         }
@@ -927,32 +1004,28 @@ impl VulkanDevice {
             p_wait_semaphores: core::ptr::null(),
             p_wait_dst_stage_mask: core::ptr::null(),
             command_buffer_count: 1,
-            p_command_buffers: &cmd,
+            p_command_buffers: &lease.cmd,
             signal_semaphore_count: 0,
             p_signal_semaphores: core::ptr::null(),
         };
         let serial = match self.queue_submit_locked(&submit, fence) {
             Ok(serial) => serial,
             Err(e) => {
-                // Never submitted: the fence is unused and the recorded
-                // CB will reset cleanly — safe to reclaim both.
+                // Never submitted: the fence is unused and the lease
+                // drops back into the cache (pool-reset on reacquire).
                 unsafe { ffi::vkDestroyFence(self.device, fence, core::ptr::null()) };
-                if let Ok(mut p) = self.cmd_buffer_pool.lock() {
-                    p.push(cmd);
-                }
                 return Err(e);
             }
         };
 
         // vkWaitForFences/vkDestroyFence are legal from any thread (this
-        // pulse is the fence's sole owner), and the pooled command buffer
-        // is only touched under the pool mutex — safe to move the wait
-        // onto Pulse::on_complete's waiter thread.
+        // pulse is the fence's sole owner), and the leased command buffer
+        // is exclusively ours until its lease drops — safe to move the
+        // wait onto Pulse::on_complete's waiter thread.
         struct FenceWaiter {
             device: ffi::VkDevice,
             fence: ffi::VkFence,
-            cmd: ffi::VkCommandBuffer,
-            pool: std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+            lease: CmdLease,
             bin: std::sync::Arc<super::retire::RetireBin>,
             serial: u64,
         }
@@ -960,8 +1033,7 @@ impl VulkanDevice {
         type FenceParts = (
             ffi::VkDevice,
             ffi::VkFence,
-            ffi::VkCommandBuffer,
-            std::sync::Arc<Mutex<Vec<ffi::VkCommandBuffer>>>,
+            CmdLease,
             std::sync::Arc<super::retire::RetireBin>,
             u64,
         );
@@ -969,21 +1041,13 @@ impl VulkanDevice {
             // By-value method: the closure must capture the whole
             // (Send-asserted) struct, not its raw-pointer fields.
             fn take(self) -> FenceParts {
-                (
-                    self.device,
-                    self.fence,
-                    self.cmd,
-                    self.pool,
-                    self.bin,
-                    self.serial,
-                )
+                (self.device, self.fence, self.lease, self.bin, self.serial)
             }
         }
         let waiter = FenceWaiter {
             device: self.device,
             fence,
-            cmd,
-            pool: self.cmd_buffer_pool.clone(),
+            lease,
             bin: self.retire_bin.clone(),
             serial,
         };
@@ -994,20 +1058,20 @@ impl VulkanDevice {
             completed: false,
             keep_alive: self.self_ref.pulse_keep_alive(),
             wait_fn: Some(Box::new(move || unsafe {
-                let (device, fence, cmd, pool, bin, serial) = waiter.take();
+                let (device, fence, lease, bin, serial) = waiter.take();
                 let r = ffi::vkWaitForFences(device, 1, &fence, 1, u64::MAX);
                 if r == ffi::VK_SUCCESS {
                     ffi::vkDestroyFence(device, fence, core::ptr::null());
                     bin.complete(device, serial);
-                    if let Ok(mut p) = pool.lock() {
-                        p.push(cmd);
-                    }
+                    drop(lease); // work done — the pair goes home
+                } else {
+                    // A failed wait (device loss) intentionally leaks the
+                    // fence and CB: the CB may still be PENDING, and
+                    // resetting a pending CB is the 00045/00049/00071 VUID
+                    // trio that killed the Iris Xe. Nothing advances,
+                    // nothing is recycled, on a device that just died.
+                    core::mem::forget(lease);
                 }
-                // A failed wait (device loss) intentionally leaks the
-                // fence and CB: the CB may still be PENDING, and
-                // resetting a pending CB is the 00045/00049/00071 VUID
-                // trio that killed the Iris Xe. Nothing advances,
-                // nothing is recycled, on a device that just died.
             })),
         })
     }
@@ -1697,21 +1761,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             core::mem::transmute::<*const core::ffi::c_void, ffi::PfnVkCmdDispatchBase>(p)
         });
 
-        // Command pool
-        let pool_info = ffi::VkCommandPoolCreateInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            p_next: core::ptr::null(),
-            flags: ffi::VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            queue_family_index: qf_index as u32,
-        };
-        let mut command_pool = ffi::null_handle();
-        let result = unsafe {
-            ffi::vkCreateCommandPool(device, &pool_info, core::ptr::null(), &mut command_pool)
-        };
-        if result != ffi::VK_SUCCESS {
-            continue;
-        }
-
         // Create pipeline cache for faster pipeline creation
         let cache_info = ffi::VkPipelineCacheCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
@@ -1779,7 +1828,6 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             device,
             queue,
             queue_family: qf_index as u32,
-            command_pool,
             pipeline_cache,
             caps,
             self_ref: crate::driver::DeviceSelfRef::new(),
@@ -2077,22 +2125,37 @@ impl Drop for VulkanDevice {
                 ffi::vkDestroyPipelineCache(self.device, self.pipeline_cache, core::ptr::null());
             }
 
-            // Free pooled command buffers before destroying the pool.
+            // Drain the command-buffer cache: destroying each private
+            // pool frees its one buffer with it.
             let pooled: Vec<_> = self
                 .cmd_buffer_pool
                 .lock()
                 .map(|mut pool| pool.drain(..).collect())
                 .unwrap_or_default();
-            if !pooled.is_empty() {
-                ffi::vkFreeCommandBuffers(
-                    self.device,
-                    self.command_pool,
-                    pooled.len() as u32,
-                    pooled.as_ptr(),
-                );
+            for (pool, _cmd) in pooled {
+                ffi::vkDestroyCommandPool(self.device, pool, core::ptr::null());
             }
 
-            ffi::vkDestroyCommandPool(self.device, self.command_pool, core::ptr::null());
+            // Sweep live ICBs and render bundles: their secondaries die
+            // with their private pools. (Under the device-wide pool the
+            // secondaries were swept implicitly by its destroy; the ICB
+            // descriptor pools used to slip through here.)
+            if let Ok(mut icbs) = self.icbs.write() {
+                for (_, icb) in icbs.drain() {
+                    ffi::vkDestroyCommandPool(self.device, icb.pool, core::ptr::null());
+                    ffi::vkDestroyDescriptorPool(
+                        self.device,
+                        icb.descriptor_pool,
+                        core::ptr::null(),
+                    );
+                }
+            }
+            if let Ok(mut bundles) = self.render_bundles.write() {
+                for (_, bundle) in bundles.drain() {
+                    ffi::vkDestroyCommandPool(self.device, bundle.pool, core::ptr::null());
+                }
+            }
+
             ffi::vkDestroyDevice(self.device, core::ptr::null());
             // No vkDestroyInstance here: the instance is shared by
             // every device enumerated from it and dies with the last

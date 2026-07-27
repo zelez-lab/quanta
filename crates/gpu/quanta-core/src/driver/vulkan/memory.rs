@@ -544,7 +544,8 @@ impl VulkanDevice {
                 .with_context(&format!("field_copy_bytes: dst handle {dst}"))
         })?;
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -568,6 +569,6 @@ impl VulkanDevice {
             }
         }
         drop(buffers);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 }

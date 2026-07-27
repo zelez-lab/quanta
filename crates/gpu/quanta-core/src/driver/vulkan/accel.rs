@@ -347,7 +347,8 @@ impl VulkanDevice {
         build_info.scratch_data_device_address = scratch_addr;
 
         // Submit the build via a one-shot command buffer.
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -376,9 +377,7 @@ impl VulkanDevice {
         let _ = (build_fn, range_ptrs, build_info);
         unsafe {
             ffi::vkEndCommandBuffer(cmd);
-            if let Ok(mut p) = self.cmd_buffer_pool.lock() {
-                p.push(cmd);
-            }
+            drop(lease); // never submitted — back to the cache
             ffi::vkDestroyBuffer(self.device, scratch_buffer, core::ptr::null());
             ffi::vkFreeMemory(self.device, scratch_memory, core::ptr::null());
             if let Some(destroy) = self.accel_destroy_fn {

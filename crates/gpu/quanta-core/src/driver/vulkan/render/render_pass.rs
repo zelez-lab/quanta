@@ -796,7 +796,8 @@ impl VulkanDevice {
         };
 
         // Allocate command buffer and begin recording.
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -1187,7 +1188,7 @@ impl VulkanDevice {
         // rides. The CPU is free to encode the next frame while the
         // GPU executes this pass; the caller waits when it needs the
         // results.
-        let submit_pulse = match self.submit_and_wait(cmd) {
+        let submit_pulse = match self.submit_and_wait(lease) {
             Ok(p) => p,
             Err(e) => {
                 // The submission never reached the queue, so the GPU

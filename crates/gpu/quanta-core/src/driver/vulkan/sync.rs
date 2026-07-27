@@ -9,7 +9,8 @@ use super::ffi;
 
 impl VulkanDevice {
     pub(crate) fn barrier_impl(&self) -> Result<(), QuantaError> {
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -58,7 +59,7 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn barrier_buffer_impl(
@@ -75,7 +76,8 @@ impl VulkanDevice {
             .get(&handle)
             .ok_or_else(|| QuantaError::not_found("buffer not found"))?;
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -125,7 +127,7 @@ impl VulkanDevice {
             }
         }
         drop(buffers);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn barrier_texture_impl(
@@ -142,7 +144,8 @@ impl VulkanDevice {
             .get(&texture.handle())
             .ok_or_else(|| QuantaError::not_found("texture not found"))?;
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -210,7 +213,7 @@ impl VulkanDevice {
         tex.current_layout
             .store(new_layout, std::sync::atomic::Ordering::Relaxed);
         drop(textures);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     /// Transition a storage texture (by raw handle) into `VK_IMAGE_LAYOUT_GENERAL`
@@ -240,7 +243,8 @@ impl VulkanDevice {
             return Ok(());
         }
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -301,7 +305,7 @@ impl VulkanDevice {
                 );
             }
         }
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     /// Transition a sampled texture (by raw handle) into
@@ -335,7 +339,8 @@ impl VulkanDevice {
             return Ok(());
         }
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin_info = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -396,7 +401,7 @@ impl VulkanDevice {
                 );
             }
         }
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 }
 

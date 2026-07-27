@@ -168,8 +168,11 @@ pub(super) struct VkSurfaceEntry {
     pub present_sems: Vec<ffi::VkSemaphore>,
     /// One dedicated transition command buffer + fence, recycled with
     /// a bounded wait on the PREVIOUS frame's transition (depth-1
-    /// pipelining — present never CPU-waits the current frame).
-    pub present_cb: ffi::VkCommandBuffer,
+    /// pipelining — present never CPU-waits the current frame). Held
+    /// as a lease: the surface entry owns the buffer AND its private
+    /// pool, so per-frame re-begins touch no shared pool; dropping the
+    /// entry returns the pair to the device cache.
+    pub present_lease: super::device::CmdLease,
     pub present_fence: ffi::VkFence,
     /// Submission serial of the most recent present-transition submit.
     /// When the NEXT present's fence wait succeeds, this serial — and
@@ -361,7 +364,7 @@ impl VulkanDevice {
             }
         }
         let present_sems = self.create_present_sems(images.len())?;
-        let present_cb = self.alloc_command_buffer()?;
+        let present_lease = self.alloc_command_buffer()?;
 
         let handle = self.alloc_handle();
         self.vk_surfaces
@@ -383,7 +386,7 @@ impl VulkanDevice {
                     needs_rebuild: false,
                     acquire_fence,
                     present_sems,
-                    present_cb,
+                    present_lease,
                     present_fence,
                     present_serial: core::sync::atomic::AtomicU64::new(0),
                 },
@@ -1018,7 +1021,7 @@ impl VulkanDevice {
             p_inheritance_info: core::ptr::null(),
         };
         unsafe {
-            if ffi::vkBeginCommandBuffer(entry.present_cb, &begin) != ffi::VK_SUCCESS {
+            if ffi::vkBeginCommandBuffer(entry.present_lease.cmd, &begin) != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
             }
             let barrier = ffi::VkImageMemoryBarrier {
@@ -1040,7 +1043,7 @@ impl VulkanDevice {
                 },
             };
             ffi::vkCmdPipelineBarrier(
-                entry.present_cb,
+                entry.present_lease.cmd,
                 ffi::VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 ffi::VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                 0,
@@ -1051,7 +1054,7 @@ impl VulkanDevice {
                 1,
                 &barrier,
             );
-            if ffi::vkEndCommandBuffer(entry.present_cb) != ffi::VK_SUCCESS {
+            if ffi::vkEndCommandBuffer(entry.present_lease.cmd) != ffi::VK_SUCCESS {
                 return Err(QuantaError::submit_failed());
             }
             // The per-image semaphore: safe to re-signal, because this
@@ -1069,7 +1072,7 @@ impl VulkanDevice {
                 p_wait_semaphores: core::ptr::null(),
                 p_wait_dst_stage_mask: core::ptr::null(),
                 command_buffer_count: 1,
-                p_command_buffers: &entry.present_cb,
+                p_command_buffers: &entry.present_lease.cmd,
                 signal_semaphore_count: 1,
                 p_signal_semaphores: &present_sem,
             };
@@ -1178,9 +1181,7 @@ impl VulkanDevice {
                 ffi::vkDestroySemaphore(self.device, sem, core::ptr::null());
             }
         }
-        if let Ok(mut pool) = self.cmd_buffer_pool.lock() {
-            pool.push(entry.present_cb);
-        }
+        // `entry` drops here — its present lease returns to the cache.
         Ok(())
     }
 }

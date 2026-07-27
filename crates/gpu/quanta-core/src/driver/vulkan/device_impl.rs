@@ -1116,12 +1116,28 @@ impl GpuDevice for VulkanDevice {
     #[cfg(feature = "compute")]
     fn indirect_buffer_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
         // Native lowering: allocate `max_commands` secondary command
-        // buffers up front, plus a dedicated descriptor pool sized
-        // to hold one descriptor set per recorded command.
+        // buffers up front from a pool private to this ICB (external
+        // synchronization = whoever holds the ICB entry; re-record of
+        // a slot needs the per-buffer RESET bit), plus a dedicated
+        // descriptor pool sized to hold one descriptor set per
+        // recorded command.
+        let pool_info = ffi::VkCommandPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            queue_family_index: self.queue_family,
+        };
+        let mut cmd_pool = ffi::null_handle();
+        let r = unsafe {
+            ffi::vkCreateCommandPool(self.device, &pool_info, core::ptr::null(), &mut cmd_pool)
+        };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
         let alloc_info = ffi::VkCommandBufferAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             p_next: core::ptr::null(),
-            command_pool: self.command_pool,
+            command_pool: cmd_pool,
             level: ffi::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
             command_buffer_count: max_commands,
         };
@@ -1132,6 +1148,7 @@ impl GpuDevice for VulkanDevice {
                 ffi::vkAllocateCommandBuffers(self.device, &alloc_info, secondaries.as_mut_ptr())
             };
             if r != ffi::VK_SUCCESS {
+                unsafe { ffi::vkDestroyCommandPool(self.device, cmd_pool, core::ptr::null()) };
                 return Err(QuantaError::submit_failed());
             }
         }
@@ -1159,16 +1176,8 @@ impl GpuDevice for VulkanDevice {
             )
         };
         if r != ffi::VK_SUCCESS {
-            if max_commands > 0 {
-                unsafe {
-                    ffi::vkFreeCommandBuffers(
-                        self.device,
-                        self.command_pool,
-                        max_commands,
-                        secondaries.as_ptr(),
-                    );
-                }
-            }
+            // Destroying the private pool frees its secondaries with it.
+            unsafe { ffi::vkDestroyCommandPool(self.device, cmd_pool, core::ptr::null()) };
             return Err(QuantaError::submit_failed());
         }
 
@@ -1181,6 +1190,7 @@ impl GpuDevice for VulkanDevice {
                 super::device::VkIcb {
                     cap: max_commands,
                     commands: Vec::with_capacity(max_commands as usize),
+                    pool: cmd_pool,
                     secondaries,
                     descriptor_pool,
                 },
@@ -1419,7 +1429,8 @@ impl GpuDevice for VulkanDevice {
         if count == 0 {
             return Ok(());
         }
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -1437,7 +1448,7 @@ impl GpuDevice for VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
         }
-        self.submit_and_wait(cmd)?.wait()?;
+        self.submit_and_wait(lease)?.wait()?;
         Ok(())
     }
 
@@ -1453,10 +1464,26 @@ impl GpuDevice for VulkanDevice {
     // same pass is rejected (Vulkan subpass-contents rule).
 
     fn render_bundle_create(&self, max_commands: u32) -> Result<u64, QuantaError> {
+        // Secondaries come from a pool private to this bundle —
+        // external synchronization = whoever holds the bundle entry;
+        // re-record of a slot needs the per-buffer RESET bit.
+        let pool_info = ffi::VkCommandPoolCreateInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            queue_family_index: self.queue_family,
+        };
+        let mut cmd_pool = ffi::null_handle();
+        let r = unsafe {
+            ffi::vkCreateCommandPool(self.device, &pool_info, core::ptr::null(), &mut cmd_pool)
+        };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
         let alloc_info = ffi::VkCommandBufferAllocateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             p_next: core::ptr::null(),
-            command_pool: self.command_pool,
+            command_pool: cmd_pool,
             level: ffi::VK_COMMAND_BUFFER_LEVEL_SECONDARY,
             command_buffer_count: max_commands,
         };
@@ -1467,6 +1494,7 @@ impl GpuDevice for VulkanDevice {
                 ffi::vkAllocateCommandBuffers(self.device, &alloc_info, secondaries.as_mut_ptr())
             };
             if r != ffi::VK_SUCCESS {
+                unsafe { ffi::vkDestroyCommandPool(self.device, cmd_pool, core::ptr::null()) };
                 return Err(QuantaError::submit_failed());
             }
         }
@@ -1479,6 +1507,7 @@ impl GpuDevice for VulkanDevice {
                 super::device::VulkanRenderBundle {
                     cap: max_commands,
                     recorded: 0,
+                    pool: cmd_pool,
                     secondaries,
                 },
             );
@@ -1569,16 +1598,10 @@ impl GpuDevice for VulkanDevice {
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);
-        if let Some(bundle) = removed
-            && !bundle.secondaries.is_empty()
-        {
+        if let Some(bundle) = removed {
+            // The private pool frees its secondaries with it.
             unsafe {
-                ffi::vkFreeCommandBuffers(
-                    self.device,
-                    self.command_pool,
-                    bundle.secondaries.len() as u32,
-                    bundle.secondaries.as_ptr(),
-                );
+                ffi::vkDestroyCommandPool(self.device, bundle.pool, core::ptr::null());
             }
         }
         Ok(())
@@ -1593,14 +1616,8 @@ impl GpuDevice for VulkanDevice {
             .remove(&handle);
         if let Some(icb) = removed {
             unsafe {
-                if !icb.secondaries.is_empty() {
-                    ffi::vkFreeCommandBuffers(
-                        self.device,
-                        self.command_pool,
-                        icb.secondaries.len() as u32,
-                        icb.secondaries.as_ptr(),
-                    );
-                }
+                // The private pool frees its secondaries with it.
+                ffi::vkDestroyCommandPool(self.device, icb.pool, core::ptr::null());
                 ffi::vkDestroyDescriptorPool(self.device, icb.descriptor_pool, core::ptr::null());
             }
         }

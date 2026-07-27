@@ -610,7 +610,8 @@ impl VulkanDevice {
             self.return_descriptor_pool(prep.pool);
             e
         };
-        let cmd = self.alloc_command_buffer().map_err(finish)?;
+        let lease = self.alloc_command_buffer().map_err(finish)?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -629,7 +630,7 @@ impl VulkanDevice {
                 return Err(finish(QuantaError::submit_failed()));
             }
         }
-        self.submit_and_wait(cmd).map_err(finish)?.wait()?;
+        self.submit_and_wait(lease).map_err(finish)?.wait()?;
 
         // Return descriptor pool to cache for reuse
         self.return_descriptor_pool(prep.pool);
@@ -928,7 +929,8 @@ impl VulkanDevice {
                 .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
         })?;
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -960,7 +962,7 @@ impl VulkanDevice {
         drop(buffers_guard);
         drop(textures_guard);
         drop(compute_pipelines);
-        self.submit_and_wait(cmd)?.wait()?;
+        self.submit_and_wait(lease)?.wait()?;
 
         // Return descriptor pool to cache for reuse
         self.return_descriptor_pool(descriptor_pool);
@@ -995,6 +997,12 @@ impl VulkanDevice {
 ///   correct because nothing submitted references them.
 pub(super) struct VulkanBatch {
     device: *const VulkanDevice,
+    /// The exclusively owned command buffer — `None` once submitted
+    /// (`submit_and_wait` consumes the lease into its fence waiter).
+    /// An abandoned batch drops the lease back to the device's cache.
+    lease: Option<super::device::CmdLease>,
+    /// Copy of `lease.cmd` for the recording paths; dangling only
+    /// after submit, which consumes the batch.
     cmd: ffi::VkCommandBuffer,
     pools: Vec<ffi::VkDescriptorPool>,
     /// One entry per `pin_for_batch` call (duplicates meaningful:
@@ -1020,7 +1028,8 @@ unsafe impl Send for VulkanBatch {}
 
 impl VulkanBatch {
     pub(super) fn begin(device: &VulkanDevice, auto_barrier: bool) -> Result<Self, QuantaError> {
-        let cmd = device.alloc_command_buffer()?;
+        let lease = device.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -1029,9 +1038,7 @@ impl VulkanBatch {
         };
         let r = unsafe { ffi::vkBeginCommandBuffer(cmd, &begin) };
         if r != ffi::VK_SUCCESS {
-            if let Ok(mut pool) = device.cmd_buffer_pool.lock() {
-                pool.push(cmd);
-            }
+            // Dropping the lease returns the pair to the cache.
             return Err(QuantaError::submit_failed());
         }
         // Leading global barrier: Vulkan pipeline-barrier scopes cover
@@ -1044,6 +1051,7 @@ impl VulkanBatch {
         }
         Ok(VulkanBatch {
             device: device as *const VulkanDevice,
+            lease: Some(lease),
             cmd,
             pools: Vec::new(),
             pinned: Vec::new(),
@@ -1163,11 +1171,14 @@ impl crate::batch::BatchInner for VulkanBatch {
             // Drop reclaims the (still-owned) command buffer, pools, pins.
             return Err(QuantaError::submit_failed());
         }
-        let cmd = this.cmd;
-        // Consumed: on submit failure `submit_and_wait` reclaims it —
-        // Drop must not push it a second time.
-        this.cmd = ffi::null_handle();
-        let mut inner = device.submit_and_wait(cmd)?;
+        // Consumed: `submit_and_wait` owns the lease from here (its
+        // fence waiter returns it after the GPU is done; on submit
+        // failure it drops straight back to the cache) — Drop must not
+        // return it a second time, hence the take().
+        let Some(lease) = this.lease.take() else {
+            return Err(QuantaError::internal("batch submitted twice"));
+        };
+        let mut inner = device.submit_and_wait(lease)?;
 
         // The submission has its serial: unpin now — anything parked
         // for these handles retires behind the newest serial (ours).
@@ -1217,20 +1228,14 @@ impl crate::batch::BatchInner for VulkanBatch {
 impl Drop for VulkanBatch {
     fn drop(&mut self) {
         let device = unsafe { &*self.device };
-        // A submitted batch reaches here with cmd nulled and
+        // A submitted batch reaches here with the lease consumed and
         // pools/pins drained — every arm below no-ops. An ABANDONED
-        // batch was never submitted: its command buffer resets
-        // cleanly, its descriptor sets are unreferenced by the GPU,
-        // and its parked destroys retire behind the newest submitted
-        // serial (nothing submitted references them).
-        if !self.cmd.is_null() {
-            unsafe {
-                let _ = ffi::vkResetCommandBuffer(self.cmd, 0);
-            }
-            if let Ok(mut pool) = device.cmd_buffer_pool.lock() {
-                pool.push(self.cmd);
-            }
-        }
+        // batch was never submitted: dropping its lease returns the
+        // (still-recording) buffer to the cache, where reacquisition's
+        // pool reset clears it; its descriptor sets are unreferenced by
+        // the GPU, and its parked destroys retire behind the newest
+        // submitted serial (nothing submitted references them).
+        drop(self.lease.take());
         for pool in self.pools.drain(..) {
             device.return_descriptor_pool(pool);
         }

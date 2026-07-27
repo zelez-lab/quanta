@@ -87,6 +87,7 @@ macro_rules! vk_fns {
                 pool: *mut VkCommandPool,
             ) -> VkResult;
             pub fn vkDestroyCommandPool(device: VkDevice, pool: VkCommandPool, allocator: *const c_void);
+            pub fn vkResetCommandPool(device: VkDevice, pool: VkCommandPool, flags: u32) -> VkResult;
             pub fn vkAllocateCommandBuffers(
                 device: VkDevice,
                 alloc_info: *const VkCommandBufferAllocateInfo,

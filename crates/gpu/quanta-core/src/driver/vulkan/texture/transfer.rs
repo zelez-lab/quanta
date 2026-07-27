@@ -61,7 +61,8 @@ impl VulkanDevice {
         }
 
         // Transition image layout + copy
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -201,7 +202,7 @@ impl VulkanDevice {
                 .store(rest, std::sync::atomic::Ordering::Relaxed);
         }
         drop(textures);
-        self.submit_and_wait(cmd)?.wait()?;
+        self.submit_and_wait(lease)?.wait()?;
 
         // Return staging buffer to pool for reuse
         self.return_staging_buffer(staging_buf, staging_mem, staging_cap);
@@ -236,7 +237,8 @@ impl VulkanDevice {
         let (staging_buf, staging_mem, staging_cap) = self.acquire_staging_buffer(size)?;
 
         // Transition + copy
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -356,7 +358,7 @@ impl VulkanDevice {
             }
         }
         drop(textures);
-        self.submit_and_wait(cmd)?.wait()?;
+        self.submit_and_wait(lease)?.wait()?;
 
         // Read from staging
         let mut result = vec![0u8; size];
@@ -393,7 +395,8 @@ impl VulkanDevice {
             return Ok(()); // Nothing to generate — image has only 1 mip level
         }
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -562,6 +565,6 @@ impl VulkanDevice {
             }
         }
         drop(textures);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 }

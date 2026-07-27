@@ -53,7 +53,8 @@ impl VulkanDevice {
                 .with_context(&format!("timestamp_write: handle {query_handle}"))
         })?;
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -78,7 +79,7 @@ impl VulkanDevice {
             }
         }
         drop(pools);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     pub(crate) fn timestamp_query_read_impl(&self, handle: u64) -> Result<Vec<u64>, QuantaError> {
@@ -230,7 +231,8 @@ impl VulkanDevice {
         let (src_rest, src_rest_access, src_rest_stage) = image_rest_state(src.usage);
         let (dst_rest, dst_rest_access, dst_rest_stage) = image_rest_state(dst.usage);
 
-        let cmd = self.alloc_command_buffer()?;
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
         let begin = ffi::VkCommandBufferBeginInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             p_next: core::ptr::null(),
@@ -500,7 +502,7 @@ impl VulkanDevice {
             );
         }
         drop(textures);
-        self.submit_and_wait(cmd).and_then(|mut p| p.wait())
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
     }
 
     /// Get-or-create the cached single-sample intermediate for a
