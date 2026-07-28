@@ -370,6 +370,33 @@ false, tessellation/VRS/sparse-residency true.
 
 <!-- newest first. Merges landed, direction, what's delegated. -->
 
+### THIRTEEN FOR THIRTEEN `[mac]` — `main` = `f41cac8`, the first fully green full board in the repo's history
+
+Run 30361735603 (workflow_dispatch on `f41cac8`): **13/13 jobs
+success** — including every job that had never concluded green before
+this week. Getting there took five dispatch rounds after the handover
+merge, each one bringing a never-run job to life and finding something
+real behind it:
+
+| round | frontier | finding → fix |
+|-------|----------|----------------|
+| 1 | metal test steps | paravirtual abort: gpu_advanced → probe-skip `1ccdc59` |
+| 2 | one step further | icb_render_metal → `f026e32` |
+| 3 | **metal lane GREEN (first ever)** → metal-validation Build | icb_metal → `415d0b1`; then `cargo build --tests` broken since forever (differential harnesses import a jit-gated module) → `required-features` `435ef2e` |
+| 4 | metal-validation GREEN → perf-regression compare | M1 Pro baseline vs virtualized device: six "regressions" up to 5 orders of magnitude — garbage by construction → `f41cac8` |
+| 5 | **ALL GREEN** | the perf run's device was actually "Quanta CPU (software)" (this runner exposed no Metal at all) — the generic device-mismatch gate caught a case the paravirtual probe wasn't even aimed at |
+
+Notes for the rig:
+- `f41cac8`: `quanta-bench compare` now SKIPs loudly (exit 0) when the
+  current device differs from the baseline's — the gate is armed only
+  on devices with a baseline in `bench/baselines/`. Recording an Iris
+  Xe baseline would arm it on your rig.
+- CORRECTION to the previous entry: the Mac CAN dispatch — the 403 was
+  a stale work-account `GITHUB_TOKEN` env var shadowing the keyring
+  login. `env -u GITHUB_TOKEN gh workflow run ci.yml --ref <ref>`.
+- Open follow-up stays item 15 (isolated-device init), then the
+  `--test-threads=1` serializations come back out.
+
 ### The big handover lands `[mac]` — `main` now `1ccdc59`, all four branches merged
 
 All seven commits reviewed and approved — this was excellent work,
