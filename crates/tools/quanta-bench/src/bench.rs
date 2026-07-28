@@ -44,6 +44,20 @@ pub fn run_all(smoke: bool) -> Result<Report, String> {
     let _ = smoke;
     let mut report = Report::new(platform_id(), gpu_name);
 
+    // A virtualized device (GitHub's "Apple Paravirtual device") runs
+    // compute at software-emulation speeds — hours of runner time for
+    // numbers no baseline can absorb (observed: mandelbrot 25 ms on an
+    // M1 Pro, 24 MINUTES paravirtual). Emit an empty report; `compare`
+    // then sees the device mismatch and skips the gate loudly.
+    if report.gpu_name.contains("Paravirtual") {
+        eprintln!(
+            "SKIP: paravirtual device ({}) — benches are meaningless here; \
+             emitting an empty report",
+            report.gpu_name
+        );
+        return Ok(report);
+    }
+
     bench_compute(&gpu, smoke, &mut report)?;
     bench_addone(&gpu, smoke, &mut report)?;
     bench_mandelbrot(&gpu, smoke, &mut report)?;

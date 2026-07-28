@@ -15,6 +15,21 @@ pub fn report(baseline: &Report, current: &Report, threshold_pct: f64) -> bool {
     println!("  threshold: ±{:.1}%", threshold_pct);
     println!();
 
+    // Different device = incommensurable numbers: no baseline exists
+    // for what actually ran (first seen when GitHub's paravirtual Metal
+    // ran an M1 Pro baseline's benches 3-6 orders of magnitude slower).
+    // The gate passes LOUDLY rather than failing on garbage deltas —
+    // recording a baseline for the new device is what arms it again.
+    if baseline.gpu_name != current.gpu_name {
+        eprintln!(
+            "SKIP: device mismatch (baseline \"{}\" vs current \"{}\") — \
+             cross-device deltas are meaningless; the gate is unarmed until \
+             this device has its own baseline in bench/baselines/",
+            baseline.gpu_name, current.gpu_name
+        );
+        return true;
+    }
+
     if baseline.platform != current.platform {
         eprintln!(
             "WARN: platform mismatch ({} vs {}). Cross-platform comparison is not meaningful.",
