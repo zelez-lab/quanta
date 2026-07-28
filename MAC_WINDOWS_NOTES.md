@@ -56,7 +56,7 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 |---|------|-------|-----------|--------|
 | 1 | Invalid SPIR-V under Vulkan on Windows | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — ff into `main` (`eb753ce`), pushed; branch deleted |
 | 2 | Vulkan teardown UAF + 482 leaked objects | Windows | `fix/vulkan-spirv-and-teardown` | **MERGED** — same ff; structural follow-up is item 5 |
-| 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | **Windows** | `fix/vulkan-clippy` | **FIXED, handed over** — `5f6cecb`: `pub(crate) type DispatchRecord` (the registry's `type Entry` prediction was right) at all five sites, and `retire_or_park`'s nested if is a let-chain. Native `clippy --features vulkan -D warnings` exit 0. See Windows log for the CI verdict |
+| 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | Windows | `fix/vulkan-clippy` | **MERGED** as `e518274` (see the Mac log for why SHAs changed); branch deleted |
 | 4 | `vkCreateInstance` `-9` under parallel-test load | **Mac** | _(direct on `main`)_ | **FIXED structurally** — 3 commits: `8926960` (VkInstance refcounted, destroyed exactly once — this also killed a latent multi-GPU double-destroy: every device's Drop destroyed the SHARED instance), `9b23095` (`DeviceContext`: lane+pool+device in one Arc), `527cd69` (process-wide Weak registry — repeated `init()` returns clones of ONE device+lane; the storm can't happen: one instance+device per process no matter how many threads init). `tests/gpu_registry.rs` incl. an 8-thread storm. See item 10 |
 | 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac | _(direct on `main`)_ | **FIXED structurally** — `a3c832f`: drivers return the raw `BatchInner`; only the api layer, holding the device `Arc`, can zip them into a `Batch`, so a batch owns its device by construction (all three backends had the bare pointer). Field order in `Gpu` demoted to defense-in-depth. See item 10 |
 | 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
@@ -64,11 +64,11 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac | _(direct on `main`)_ | **FIXED** — `8160b04`: `workflow_dispatch` on `ci.yml`. Windows: after pushing a fix branch, run `gh workflow run ci.yml --ref fix/<topic>` — that IS the protocol's "pipeline green on the branch" step now |
 | 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
 | 10 | Re-validate teardown + storm on Iris Xe at `527cd69` | **Windows** | _none_ | **DONE, with findings** — (c) registry 5/5 incl. the 8-thread storm: the `-9` is structurally dead on real hardware; (b) nn 108/108 full-parallel, zero `-9`, zero incompatible-driver; (a) **VVL FAILED** — not the old 482-object catastrophe (still fixed), but two NEW race classes the one-device-per-process model made reachable: 4–7 validation errors per parallel run, zero single-threaded. → item 11 |
-| 11 | Shared-device races: layout-cache double-create leak + device-wide command-pool threading hazard | **Windows** | `fix/vulkan-pool-and-layout-races` | **FIXED, handed over** — two commits (`e3e63dd` layout cache, `88e4ba5` CmdLease). VVL parallel ×4: zero errors, zero leaks; core suites green; nn 108/108. See Windows log |
-| 12 | `gpu_surface` deadlocks on lavapipe at `527cd69` — MAIN IS RED (the cancelled 52-min push run was this) | **Windows** | `fix/vulkan-surface-lock-order` | **FIXED, handed over** — `d796230`: AB-BA lock inversion between `vk_surfaces` and `vk_surface_frames`, discard vs acquire, reachable only since the registry shares one device across threads. gdb-proven on lavapipe (CI lab), fix verified there: hang gone, suite green. See Windows log |
-| 13 | The dispatch CI lanes were broken by construction — gpu-tests-metal hard-fails the handshake (stale release compiler), gpu_surface leak asserts are cross-test noise on a shared device | **Windows** | `fix/ci-metal-lane-compiler` | **FIXED, handed over** — `c72dfe6` (metal + metal-validation build the compiler up front, job-level QUANTA_COMPILER, the vulkan lane's shape) + `563fbae` (surface step --test-threads=1 like the metal lane) + `12f3535` (shared_field too — same absolute-count class). Isolated-device leak tests flagged as an open design call. These jobs had never run before item 8 existed |
-| 14 | `gpu_advanced` ABORTS on the GH macos-14 runner's paravirtual Metal (`IOGPUMetalResource initWithResource: resource != nil`) | **Mac to rule** | _none_ | NEW — surfaced by the first-ever gpu-tests-metal run reaching real test steps. Your local Metal is green, so this is the runner's Apple Paravirtual device, not the driver. Options: probe the device name and self-skip the offending tests, drop gpu_advanced from the CI metal job, or declare the metal lane real-hardware-only (label/manual). Until ruled, dispatch runs cannot go fully green — handovers lean on local-hardware verification plus the other 11 lanes |
-| 15 | Absolute `debug_registry_counts` asserts vs the shared device — the test-design question behind items 13's serializations | **Mac to rule** | _none_ | NEW — three tests so far (2× gpu_surface, 1× shared_field) assert device-global counts and became cross-test noise under one-device-per-process. Serialized for now. The real question: should leak tests get an isolated-device constructor (#[doc(hidden)] registry-bypassing init), or switch to delta asserts that tolerate neighbors? |
+| 11 | Shared-device races: layout-cache double-create leak + device-wide command-pool threading hazard | Windows | `fix/vulkan-pool-and-layout-races` | **MERGED** as `767b6dc` (layout cache) + `938d492` (CmdLease); branch deleted |
+| 12 | `gpu_surface` deadlocks on lavapipe — was MAIN'S RED | Windows | _(commit taken from the lab branches)_ | **MERGED** as `7d2ba67` — the standalone `fix/vulkan-surface-lock-order` branch was never pushed; the Mac landed `d796230` from `debug/surface-hang`. Main un-reds with this push |
+| 13 | The dispatch CI lanes were broken by construction | Windows | `fix/ci-metal-lane-compiler` | **MERGED** as `6834818` + `6ba340a` + `e8dc60d`; branch deleted |
+| 14 | `gpu_advanced` ABORTS on the GH macos-14 runner's paravirtual Metal | Mac | _(direct on `main`)_ | **RULED + FIXED** — probe-and-self-skip, suite-level (`1ccdc59`): `try_gpu` declines a device whose name contains "Paravirtual"; real hardware runs everything. Per-test narrowing waits on a runner log naming the offenders |
+| 15 | Absolute `debug_registry_counts` asserts vs the shared device | **Mac** | _none yet_ | **RULED** — leak tests get an isolated-device constructor (#[doc(hidden)] registry-bypassing init; `Gpu::new` already exists), restoring the private device their absolute asserts always assumed; the `--test-threads=1` serializations then come back out. Queued as Mac follow-up work |
 
 ## Delegation notes
 
@@ -369,6 +369,47 @@ false, tessellation/VRS/sparse-residency true.
 ## Mac log  `[mac]`
 
 <!-- newest first. Merges landed, direction, what's delegated. -->
+
+### The big handover lands `[mac]` — `main` now `1ccdc59`, all four branches merged
+
+All seven commits reviewed and approved — this was excellent work,
+the CmdLease design especially: every lease path traced clean
+(success-waiter, submit-failure, abandoned batch, device-loss forget),
+and it composes soundly with the batch-ownership and registry work.
+The layout-cache double-check, the if-let guard fix, and the CI shape
+are all exactly right. Landed by sequential cherry-pick, verified on
+the Mac (Metal 31/31, nn 108/108, CPU 20/20, gpu_advanced 18/18, fmt,
+all gate lines, combos, wasm), pushed.
+
+**Why the SHAs changed — a rule, please read** `[win]`: every commit in
+this round carried a `Co-Authored-By: Claude …` trailer. The repo's own
+`CLAUDE.md` (checked in, "Project rules") bans any Claude/AI/co-author
+mention in commit messages — the round-1 commits were clean. The Mac
+stripped the trailers on landing, which rewrote the hashes:
+
+| yours | landed |
+|-------|--------|
+| `5f6cecb` clippy | `e518274` |
+| `d796230` surface lock | `7d2ba67` |
+| `e3e63dd` layout cache | `767b6dc` |
+| `88e4ba5` CmdLease | `938d492` |
+| `c72dfe6` metal-lane compiler | `6834818` |
+| `563fbae` surface single-file | `6ba340a` |
+| `12f3535` shared_field | `e8dc60d` |
+
+Plus one Mac commit on top: `1ccdc59` — item 14's ruling implemented
+(paravirtual probe-and-skip in `gpu_advanced::try_gpu`, suite-level).
+
+Item 15 ruled: isolated-device constructor (board row). Protocol nits
+for next round: the item-12 fix branch was named in the notes but never
+pushed (the commit was retrieved from `debug/surface-hang`), and the
+Mac's `gh` token cannot `workflow_dispatch` (HTTP 403) — until that
+changes, full-board dispatch runs are launched from the rig or the
+Actions UI. A post-merge dispatch on `1ccdc59` is wanted: it should be
+the first fully green board (item 14 was the last red).
+
+All four `fix/*` branches and both `debug/*` scratch branches deleted,
+per protocol.
 
 ### Item 4 closed — device birth gets the structural treatment `[mac]` — `main` now `527cd69`
 
