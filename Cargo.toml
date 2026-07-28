@@ -227,6 +227,18 @@ quanta-tensor = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = "1"
 
+# The differential harnesses import quanta-ir's case generator, which
+# only exists under `jit` (via op-matrix-cases) — a plain
+# `cargo build --tests` must skip these targets, not fail on them.
+# Every lane that runs them names them with a jit-bearing feature set.
+[[test]]
+name = "op_matrix"
+required-features = ["jit"]
+
+[[test]]
+name = "differential"
+required-features = ["jit"]
+
 [[example]]
 name = "cookbook_transformer"
 required-features = ["nn"]
