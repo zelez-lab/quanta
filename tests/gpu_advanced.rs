@@ -11,7 +11,18 @@ use quanta::ray_tracing::RayTracingPipelineDesc;
 use quanta::{Format, TextureDesc, TextureUsage};
 
 fn try_gpu() -> Option<quanta::Gpu> {
-    quanta::init().ok()
+    let gpu = quanta::init().ok()?;
+    // GitHub's macos runners virtualize Metal as an "Apple Paravirtual
+    // device" that ABORTS (IOGPUMetalResource initWithResource:
+    // resource != nil) inside this suite's advanced paths — an abort
+    // kills the whole binary, so the probe skips the suite rather than
+    // individual tests. Real Metal hardware runs everything; narrowing
+    // to per-test skips needs a runner log that names the offenders.
+    if gpu.caps().name.contains("Paravirtual") {
+        eprintln!("skipping: paravirtual Metal device (CI runner) aborts advanced paths");
+        return None;
+    }
+    Some(gpu)
 }
 
 // === Ray Tracing ===
