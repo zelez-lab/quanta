@@ -20,6 +20,17 @@ fn try_apple_gpu() -> Option<quanta::Gpu> {
     quanta::init()
         .ok()
         .filter(|g| g.caps().vendor == quanta::Vendor::Apple)
+        // GitHub's macos runners virtualize Metal as an "Apple
+        // Paravirtual device" that SIGABRTs in the ICB render-bundle
+        // path (same class as gpu_advanced's aborts — see its
+        // try_gpu). Real Apple hardware runs everything.
+        .filter(|g| {
+            let paravirtual = g.caps().name.contains("Paravirtual");
+            if paravirtual {
+                eprintln!("skipping: paravirtual Metal device (CI runner) aborts ICB paths");
+            }
+            !paravirtual
+        })
 }
 
 #[test]
