@@ -122,6 +122,7 @@ test("web_canvas — surface presentation: triangle visible on a live canvas (st
     try {
       await expect(status).toContainText("PASS", { timeout: 30_000 });
       await expect(status).toContainText("presented via SurfaceTarget::Canvas");
+      await expect(status).toContainText("4x MSAA and resolved");
     } catch (e) {
       console.error("---console output---\n" + consoleMsgs.join("\n"));
       throw e;

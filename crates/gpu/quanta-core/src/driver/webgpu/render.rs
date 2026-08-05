@@ -124,6 +124,14 @@ impl WebgpuDevice {
                 "WebGPU render pipelines: conservative rasterization is not in the WebGPU spec",
             ));
         }
+        // The WebGPU spec allows multisample count 1 or 4 only; gate
+        // here so a 2x/8x pipeline errors in Rust instead of trapping
+        // in createRenderPipeline.
+        if desc.sample_count > 1 && desc.sample_count != 4 {
+            return Err(Self::not_supported(
+                "WebGPU multisampling is 4x only — pipeline sample_count must be 1 or 4",
+            ));
+        }
         let device = self.dev()?;
 
         let combined = desc.shader.combined();
@@ -260,6 +268,69 @@ impl WebgpuDevice {
         Ok(())
     }
 
+    /// Standalone MSAA resolve — the manual-path sibling of
+    /// `StoreOp::Resolve` (`msaa_target()` + `resolve_texture()`).
+    /// WebGPU has no dedicated resolve command; the canonical lowering
+    /// is a zero-draw render pass that LOADs the multisampled
+    /// attachment and aims `resolveTarget` at the destination. The
+    /// source keeps its samples (store = STORE), so a caller may
+    /// resolve mid-sequence and keep accumulating.
+    pub(super) fn resolve_texture_impl(&self, src: u64, dst: u64) -> Result<(), QuantaError> {
+        let device = self.dev()?;
+        let textures = self.state.textures.0.borrow();
+        let src_entry = textures
+            .get(&src)
+            .ok_or_else(|| Self::err("unknown MSAA source texture"))?;
+        let dst_entry = textures
+            .get(&dst)
+            .ok_or_else(|| Self::err("unknown resolve destination texture"))?;
+        if src_entry.samples <= 1 {
+            return Err(QuantaError::invalid_param(
+                "resolve_texture: the source must be a multisampled texture",
+            ));
+        }
+        if dst_entry.samples > 1 {
+            return Err(QuantaError::invalid_param(
+                "resolve_texture: the destination must be single-sample",
+            ));
+        }
+        if (dst_entry.width, dst_entry.height) != (src_entry.width, src_entry.height)
+            || dst_entry.format != src_entry.format
+        {
+            return Err(QuantaError::invalid_param(alloc::format!(
+                "resolve_texture: destination must match the source: destination \
+                 is {}x{} {:?}, source is {}x{} {:?}",
+                dst_entry.width,
+                dst_entry.height,
+                dst_entry.format,
+                src_entry.width,
+                src_entry.height,
+                src_entry.format,
+            )));
+        }
+
+        let rpass_desc = unsafe { ffi::quanta_rpass_desc_create() };
+        unsafe {
+            ffi::quanta_rpass_desc_add_color_attachment(
+                rpass_desc,
+                src_entry.view,
+                ffi::load_op::LOAD,
+                ffi::store_op::STORE,
+                dst_entry.view,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            );
+        }
+        let encoder = unsafe { ffi::quanta_create_command_encoder(device) };
+        let rp = unsafe { ffi::quanta_encoder_begin_render_pass(encoder, rpass_desc) };
+        unsafe { ffi::quanta_render_pass_end(rp) };
+        let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
+        unsafe { ffi::quanta_queue_submit(device, cmd) };
+        Ok(())
+    }
+
     pub(super) fn render_begin_impl(&self, target: &Texture) -> Result<RenderPass, QuantaError> {
         Ok(RenderPass {
             handle: target.handle,
@@ -289,42 +360,83 @@ impl WebgpuDevice {
         // (which surfaces only in the JS console, invisible to Rust).
         pass.validate_pass_shape()?;
 
-        // Declared color targets beyond the primary are not wired on
-        // this backend: the encoder below binds `pass.handle` as the
-        // sole CLEAR/STORE color attachment and never reads
-        // `pass.color_targets`. A pass that declares anything else —
-        // MRT, a builder-managed MSAA intermediate (`.msaa(n)`), or a
-        // subpass resolve (`StoreOp::Resolve`) — would be silently
-        // misdrawn into the wrong texture; fail loudly instead.
-        // (WebGPU has native `resolveTarget` machinery; wiring it is a
-        // documented deferral.)
-        if pass.color_targets.len() > 1
-            || pass.color_targets.first().is_some_and(|ct| {
-                ct.texture != pass.handle || !matches!(ct.store_op, crate::StoreOp::Store)
-            })
-        {
+        // The encoder binds exactly ONE color attachment; true MRT
+        // stays a loud NotSupported. Within that single slot both
+        // single-target shapes are wired: the plain pass (attachment ==
+        // pass target), and the MSAA pass — the attachment is a
+        // multisampled texture (the builder's pooled `.msaa(n)`
+        // intermediate, or a manual `msaa_target`) whose
+        // `StoreOp::Resolve` aims WebGPU's native `resolveTarget` at a
+        // single-sample destination.
+        if pass.color_targets.len() > 1 {
             return Err(QuantaError::not_supported(
-                "WebGPU render passes bind only the primary target: MRT, \
-                 builder-managed MSAA (.msaa) and subpass resolve are not \
-                 wired on this backend",
+                "WebGPU render passes bind a single color target — MRT is \
+                 not wired on this backend",
             ));
         }
 
         let textures = self.state.textures.0.borrow();
+        // The attachment is what the pass's color target names — for a
+        // builder-managed MSAA pass that is the pooled intermediate,
+        // not `pass.handle` (which stays the resolve destination).
+        let ct = pass.color_targets.first();
+        let attach_handle = ct.map_or(pass.handle, |ct| ct.texture);
         let target = textures
-            .get(&pass.handle)
+            .get(&attach_handle)
             .ok_or_else(|| Self::err("unknown render target"))?;
 
-        // Pre-walk: find the clear color and (if attached) the depth
-        // clear. Both end up on the rpass descriptor, not on encoder
-        // calls — WebGPU §16 lets the user specify them once at
-        // beginRenderPass time.
-        let mut clear_rgba = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+        // Resolve wiring, validated in Rust — the browser validates
+        // too, but only into the JS console, invisible to callers.
+        let resolve_view = match ct.map(|ct| &ct.store_op) {
+            Some(crate::StoreOp::Resolve(dest)) => {
+                let dest_entry = textures
+                    .get(&dest.handle())
+                    .ok_or_else(|| Self::err("unknown MSAA resolve destination texture"))?;
+                if target.samples <= 1 {
+                    return Err(QuantaError::invalid_param(
+                        "StoreOp::Resolve on a single-sample attachment — the pass's \
+                         color target must be the multisampled texture",
+                    ));
+                }
+                if dest_entry.samples > 1 {
+                    return Err(QuantaError::invalid_param(
+                        "MSAA resolve destination must be single-sample",
+                    ));
+                }
+                if (dest_entry.width, dest_entry.height) != (target.width, target.height)
+                    || dest_entry.format != target.format
+                {
+                    return Err(QuantaError::invalid_param(alloc::format!(
+                        "MSAA resolve destination must match the attachment: \
+                         destination is {}x{} {:?}, attachment is {}x{} {:?}",
+                        dest_entry.width,
+                        dest_entry.height,
+                        dest_entry.format,
+                        target.width,
+                        target.height,
+                        target.format,
+                    )));
+                }
+                dest_entry.view
+            }
+            _ => ffi::NULL_HANDLE,
+        };
+
+        // Pre-walk: clear values live on the rpass descriptor, not on
+        // encoder calls — WebGPU §16 takes them once at beginRenderPass
+        // time. A recorded Clear op wins; otherwise the color target's
+        // own LoadOp carries the decision (the builder-managed MSAA
+        // path sets Clear(color) or Load there).
+        let mut clear_rgba: Option<(f32, f32, f32, f32)> = match ct.map(|ct| &ct.load_op) {
+            Some(crate::LoadOp::Clear(c)) => Some((c.r, c.g, c.b, c.a)),
+            Some(crate::LoadOp::Load) => None,
+            _ => Some((0.0, 0.0, 0.0, 0.0)),
+        };
         let mut clear_depth: Option<f32> = None;
         for op in &pass.ops {
             match op {
                 crate::render_pass::RenderOp::Clear(color) => {
-                    clear_rgba = (color.r, color.g, color.b, color.a);
+                    clear_rgba = Some((color.r, color.g, color.b, color.a));
                 }
                 crate::render_pass::RenderOp::ClearDepth(d) => {
                     clear_depth = Some(*d);
@@ -333,17 +445,33 @@ impl WebgpuDevice {
             }
         }
 
+        // Store mapping mirrors Metal: Resolve is the
+        // MULTISAMPLE_RESOLVE analogue — the destination receives the
+        // resolve, the MSAA samples themselves are not kept.
+        let store_code = match ct.map(|ct| &ct.store_op) {
+            Some(crate::StoreOp::DontCare) | Some(crate::StoreOp::Resolve(_)) => {
+                ffi::store_op::DISCARD
+            }
+            _ => ffi::store_op::STORE,
+        };
+
         let rpass_desc = unsafe { ffi::quanta_rpass_desc_create() };
+        let (cr, cg, cb, ca) = clear_rgba.unwrap_or((0.0, 0.0, 0.0, 0.0));
         unsafe {
             ffi::quanta_rpass_desc_add_color_attachment(
                 rpass_desc,
                 target.view,
-                ffi::load_op::CLEAR,
-                ffi::store_op::STORE,
-                clear_rgba.0,
-                clear_rgba.1,
-                clear_rgba.2,
-                clear_rgba.3,
+                if clear_rgba.is_some() {
+                    ffi::load_op::CLEAR
+                } else {
+                    ffi::load_op::LOAD
+                },
+                store_code,
+                resolve_view,
+                cr,
+                cg,
+                cb,
+                ca,
             );
         }
         // If the API caller attached a depth target, wire its view onto

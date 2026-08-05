@@ -523,6 +523,7 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       view: number,
       load_op: number,
       store_op: number,
+      resolve_view: number,
       r: number,
       g: number,
       b: number,
@@ -530,12 +531,16 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
     ): void {
       const desc = state.handles.get<RenderPassDescriptor>(desc_h);
       const v = state.handles.get<GPUTextureView>(view);
-      desc.colorAttachments.push({
+      const att: any = {
         view: v,
         loadOp: loadOpName(load_op),
         storeOp: storeOpName(store_op),
         clearValue: { r, g, b, a },
-      });
+      };
+      if (resolve_view !== 0) {
+        att.resolveTarget = state.handles.get<GPUTextureView>(resolve_view);
+      }
+      desc.colorAttachments.push(att);
     },
 
     quanta_rpass_desc_set_depth_attachment(

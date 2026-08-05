@@ -42,6 +42,10 @@ pub(super) struct TextureEntry {
     pub width: u32,
     pub height: u32,
     pub format: crate::Format,
+    /// Sample count — the render path validates MSAA/resolve shapes
+    /// in Rust (browser validation only reaches the JS console).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    pub samples: u32,
     pub bytes_per_row: u32,
 }
 

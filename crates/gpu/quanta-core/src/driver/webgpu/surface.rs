@@ -307,6 +307,9 @@ impl WebgpuDevice {
                 width,
                 height,
                 format,
+                // Canvas frames are always single-sample; an MSAA pass
+                // reaches them as the resolve destination.
+                samples: 1,
                 bytes_per_row,
             },
         );

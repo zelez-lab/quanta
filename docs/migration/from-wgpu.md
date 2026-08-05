@@ -364,9 +364,9 @@ web target.
 
 - You are building a rendering engine that needs fine-grained control over every descriptor.
 - You need the wgpu ecosystem (winit integration, egui backends, etc.).
-- You need MSAA resolve or multiple render targets **in the browser** —
-  Quanta's canvas presentation (`SurfaceTarget::Canvas`) is single-target,
-  single-sample for now; the web render path rejects MRT/MSAA loudly.
+- You need multiple render targets **in the browser** — Quanta's web
+  render pass binds a single color target (4× MSAA with `resolveTarget`
+  works; true MRT is rejected loudly).
 
 ## When to use Quanta
 

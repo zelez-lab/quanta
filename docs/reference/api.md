@@ -596,7 +596,9 @@ loader offers the WSI extensions (`VK_KHR_surface` + `VK_KHR_swapchain`)
 `HTMLCanvasElement`/`OffscreenCanvas` id from the page's
 `registerCanvas`; `Fifo` only, one frame per browser task, device init
 via `quanta::webgpu::init_async()` / `init_poll()` with
-`quanta::webgpu::available()` as the sync runtime pre-flight). The
+`quanta::webgpu::available()` as the sync runtime pre-flight; 4× MSAA
+resolves into the acquired frame via the attachment's native
+`resolveTarget` — other sample counts are `NotSupported`). The
 windowless `SurfaceTarget::Headless` works on all three (WebGPU creates
 its own `OffscreenCanvas`). Backends without a present path return
 `NotSupported`; query `gpu.supports_surface_present()` to branch ahead of

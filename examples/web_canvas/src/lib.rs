@@ -3,11 +3,12 @@
 //! Runs the **public uniform frame loop** — the same shape as
 //! `examples/native_window.rs` on macOS — against a browser canvas:
 //! `init_async` → `create_surface(SurfaceTarget::Canvas { .. })` →
-//! `acquire` → `gpu.render(frame.texture())` → `present`. Two full
-//! loop iterations (a clear-only frame, then clear + centered
-//! triangle) prove the acquire/present bookkeeping recycles. The page
-//! validates what the compositor actually shows by drawing the WebGPU
-//! canvas onto a 2d canvas and sampling pixels.
+//! `acquire` → `gpu.render(frame.texture())` → `present`. Three full
+//! loop iterations: a clear-only frame, a clear + centered triangle,
+//! then the same scene at 4x MSAA through `.msaa(4)`/`.msaa_resolve()`
+//! with the canvas frame as the resolve destination. The Playwright
+//! harness asserts what the compositor actually shows from an element
+//! screenshot.
 //!
 //! ## Build
 //!
@@ -90,7 +91,7 @@ async fn run(canvas: u32) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("pulse 1: {e:?}"))?;
     frame.present().map_err(|e| format!("present 1: {e:?}"))?;
 
-    // Frame 2 — clear + triangle. What the compositor shows.
+    // Frame 2 — clear + triangle. Proves the plain single-sample pass.
     let frame = surface.acquire().map_err(|e| format!("acquire 2: {e:?}"))?;
     gpu.render(frame.texture())
         .map_err(|e| format!("render 2: {e:?}"))?
@@ -100,6 +101,30 @@ async fn run(canvas: u32) -> Result<Vec<u8>, String> {
         .pulse()
         .map_err(|e| format!("pulse 2: {e:?}"))?;
     frame.present().map_err(|e| format!("present 2: {e:?}"))?;
+
+    // Frame 3 — the same scene at 4x MSAA through the builder-managed
+    // pooled intermediate, resolved into the acquired canvas frame at
+    // pass end (WebGPU's native resolveTarget). This is the dija main
+    // pass shape; the compositor shows this frame.
+    let msaa_pipeline = gpu
+        .pipeline(
+            &PipelineDesc::new(ShaderSource::Combined(TRIANGLE_WGSL.as_bytes()))
+                .with_entries("vertex_main", "fragment_main")
+                .with_color_formats(vec![format])
+                .with_sample_count(4),
+        )
+        .map_err(|e| format!("msaa pipeline: {e:?}"))?;
+    let frame = surface.acquire().map_err(|e| format!("acquire 3: {e:?}"))?;
+    gpu.render(frame.texture())
+        .map_err(|e| format!("render 3: {e:?}"))?
+        .msaa(4)
+        .clear(Color::rgba(1.0, 0.0, 0.0, 1.0))
+        .pipeline(&msaa_pipeline)
+        .draw(3)
+        .msaa_resolve()
+        .pulse()
+        .map_err(|e| format!("pulse 3 (msaa resolve): {e:?}"))?;
+    frame.present().map_err(|e| format!("present 3: {e:?}"))?;
 
     // Hand the negotiated format back so the page can report it.
     Ok(format!("{format:?}").into_bytes())

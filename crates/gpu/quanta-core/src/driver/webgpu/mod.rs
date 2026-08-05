@@ -456,6 +456,15 @@ impl QGpuDevice for WebgpuDevice {
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
         let device = self.dev()?;
 
+        // The WebGPU spec allows sampleCount 1 or 4 only. Gate here so
+        // a 2x/8x request errors in Rust instead of trapping inside
+        // createTexture.
+        if desc.sample_count > 1 && desc.sample_count != 4 {
+            return Err(Self::not_supported(
+                "WebGPU multisampling is 4x only — texture sample_count must be 1 or 4",
+            ));
+        }
+
         let format = format_code(desc.format)?;
         let mut usage = ffi::texture_usage::COPY_SRC | ffi::texture_usage::COPY_DST;
         if desc.usage.has(crate::TextureUsage::SHADER_READ) {
@@ -497,6 +506,7 @@ impl QGpuDevice for WebgpuDevice {
                 width: desc.width,
                 height: desc.height,
                 format: desc.format,
+                samples: desc.sample_count.max(1),
                 bytes_per_row: bytes_per_row_aligned,
             },
         );
@@ -643,6 +653,11 @@ impl QGpuDevice for WebgpuDevice {
     #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         self.render_end_impl(pass)
+    }
+
+    #[cfg(feature = "render")]
+    fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
+        self.resolve_texture_impl(src_handle, dst_handle)
     }
 
     // ── Canvas presentation (step 096; see surface.rs) ─────────────────────
@@ -1047,13 +1062,29 @@ impl QGpuDevice for WebgpuDevice {
         Ok(())
     }
 
-    fn format_caps(&self, _format: Format) -> FormatCaps {
+    fn format_caps(&self, format: Format) -> FormatCaps {
         FormatCaps {
             filterable: true,
             renderable: true,
             storage: true,
             blendable: true,
-            msaa: false,
+            // 4x multisampling per the WebGPU format table — absent on
+            // the 32-bit-float family and the compressed formats.
+            msaa: !matches!(
+                format,
+                Format::R32Float
+                    | Format::RG32Float
+                    | Format::RGBA32Float
+                    | Format::Bc1Rgba
+                    | Format::Bc3Rgba
+                    | Format::Bc5Rg
+                    | Format::Bc7Rgba
+                    | Format::Astc4x4
+                    | Format::Astc6x6
+                    | Format::Astc8x8
+                    | Format::Etc2Rgb8
+                    | Format::Etc2Rgba8
+            ),
             depth: false,
         }
     }

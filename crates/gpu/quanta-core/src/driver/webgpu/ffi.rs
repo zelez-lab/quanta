@@ -298,12 +298,16 @@ unsafe extern "C" {
 
     // Render pass.
     pub fn quanta_rpass_desc_create() -> u32;
+    /// `resolve_view` is WebGPU's native `resolveTarget` — the view of
+    /// a single-sample destination the multisampled attachment
+    /// resolves into at pass end. `NULL_HANDLE` = no resolve.
     #[allow(clippy::too_many_arguments)]
     pub fn quanta_rpass_desc_add_color_attachment(
         desc: u32,
         view: u32,
         load_op: u32,
         store_op: u32,
+        resolve_view: u32,
         r: f32,
         g: f32,
         b: f32,

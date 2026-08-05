@@ -46,8 +46,9 @@
         statusEl.className = "ok";
         statusEl.textContent =
           `PASS — presented via SurfaceTarget::Canvas; negotiated format ` +
-          `${negotiated}. The canvas below shows the presented frame ` +
-          `(red clear, centered blue triangle).`;
+          `${negotiated}; final frame rendered at 4x MSAA and resolved ` +
+          `into the acquired surface texture. The canvas below shows the ` +
+          `presented frame (red clear, centered blue triangle).`;
       }
 
       main().catch(err => {

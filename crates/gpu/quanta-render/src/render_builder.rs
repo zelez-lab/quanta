@@ -272,8 +272,10 @@ impl RenderBuilder {
     ///   `msaa_pool` docs for the pool's full lifetime story — in
     ///   short: intermediates live until the device drops; dropping
     ///   the target does not evict its entry.
-    /// - backends whose render path cannot subpass-resolve (WebGPU
-    ///   today) fail the pass with `NotSupported`.
+    /// - on WebGPU multisampling is 4x only (the spec's guaranteed
+    ///   count) — `.msaa(4)` works, other counts fail with
+    ///   `NotSupported`; the resolve lowers to the color attachment's
+    ///   native `resolveTarget`.
     ///
     /// The manual path (`msaa_target()` + explicit `ColorTarget` +
     /// `resolve_texture`) remains for callers that want to own the

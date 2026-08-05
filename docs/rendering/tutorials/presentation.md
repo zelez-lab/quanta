@@ -80,12 +80,18 @@ const canvasId = mod.registerCanvas(document.getElementById("canvas"));
 
 ```rust
 // wasm side — the SAME frame loop as every other target
+use quanta::RenderGpu as _;   // create_surface lives on the extension trait
+
 let gpu = quanta::webgpu::init_async().await?;          // or init_poll(), below
 let mut surface = gpu.create_surface(
     &SurfaceTarget::Canvas { canvas: canvas_id },
     &SurfaceConfig::new(width, height),
 )?;
 ```
+
+Build with **both** features, `webgpu` and `render` — `webgpu` alone
+carries only the compute face, and `SurfaceTarget` is useless without
+the render face (`quanta = { …, features = ["webgpu", "render"] }`).
 
 `registerCanvas` accepts an `HTMLCanvasElement` or an `OffscreenCanvas`;
 `SurfaceTarget::Headless` works too (the driver creates its own
@@ -124,8 +130,16 @@ Web divergences, all inherent to the platform:
   displays the (cleared) texture at end of task. To skip a frame, skip
   the acquire — which the demand-driven loop does naturally.
 
+MSAA works at the spec's guaranteed count: render at 4× — the
+builder-managed `.msaa(4)`/`.msaa_resolve()`, or a manual
+`msaa_target` + `StoreOp::resolve(frame.texture())` — and the pass
+resolves into the acquired frame through WebGPU's native
+`resolveTarget`. Other sample counts are `NotSupported` (WebGPU is
+4×-only); true MRT stays `NotSupported`.
+
 `examples/web_canvas/` is the runnable proof — the public loop above
-presenting a triangle to a live canvas, asserted headlessly in CI
+presenting a triangle to a live canvas (final frame at 4× MSAA,
+resolved into the acquired surface texture), asserted headlessly in CI
 (`web-smoke.yml`). Build it with `quanta build web web_canvas`.
 
 ### The frame loop
