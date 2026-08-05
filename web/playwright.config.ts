@@ -36,12 +36,32 @@ export default defineConfig({
   },
   projects: [
     {
+      // The offscreen lanes (compute + render-to-texture readback).
+      // These stay on the default headless shell: its rasterization is
+      // what the vendored golden SHAs were recorded against, and the
+      // full build drifts them by a rounding step.
       name: "chromium-webgpu",
+      grepInvert: /web_canvas/,
       use: {
         ...devices["Desktop Chrome"],
         launchOptions: {
           // WebGPU is on by default in Chrome 113+; this flag is a
           // belt-and-braces guard for older Chromium revisions.
+          args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
+        },
+      },
+    },
+    {
+      // The presentation lane (step 096) needs a real compositor: the
+      // headless shell renders WebGPU offscreen fine but never
+      // composites a presented canvas frame — screenshots show white.
+      // The full Chromium build in new-headless mode does composite.
+      name: "chromium-webgpu-present",
+      grep: /web_canvas/,
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chromium",
+        launchOptions: {
           args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
         },
       },

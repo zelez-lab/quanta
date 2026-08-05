@@ -53,6 +53,39 @@ pub(super) struct PipelineEntry {
     pub layout: u32,
 }
 
+/// One canvas presentation surface (step 096). Render-only: populated
+/// by the render-gated surface path in `surface.rs`.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+pub(super) struct WebgpuSurface {
+    /// JS canvas handle — embedder-registered (`registerCanvas`) or
+    /// glue-created `OffscreenCanvas` for `Headless`. Never released
+    /// by the driver on the embedder-registered path; `owns_canvas`
+    /// marks the driver-created case.
+    pub canvas: u32,
+    /// JS `GPUCanvasContext` handle. Released on destroy.
+    pub context: u32,
+    /// The driver created the canvas (`Headless`) and releases its
+    /// handle on destroy.
+    pub owns_canvas: bool,
+    /// Configured extent — compared against the canvas backing size
+    /// at acquire (the Metal `drawableSize` poll, verbatim).
+    pub width: u32,
+    pub height: u32,
+    /// Negotiated frame format (`getPreferredCanvasFormat` for 8-bit
+    /// color requests, exact for `RGBA16Float`).
+    pub format: crate::Format,
+}
+
+/// One acquired-but-not-yet-presented canvas frame. Render-only.
+#[cfg_attr(not(feature = "render"), allow(dead_code))]
+pub(super) struct WebgpuSurfaceFrame {
+    /// The surface this frame came from — presents are checked
+    /// against it.
+    pub surface: u64,
+    /// Key of the frame's alias entry in `State::textures`.
+    pub texture_handle: u64,
+}
+
 /// One recorded ICB command. Compute = Dispatch; render = Draw.
 /// Mirrors the Lean `Quanta.Icb.Command` sum type.
 pub(super) enum WebgpuIcbCommand {
@@ -127,6 +160,12 @@ pub(super) struct State {
     /// Occlusion query sets (post-step-063 closure).
     /// Quanta u64 handle → (JS GPUQuerySet handle, slot count).
     pub query_sets: SendCell<BTreeMap<u64, (u32, u32)>>,
+    /// Canvas presentation surfaces (step 096). See `WebgpuSurface`.
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    pub surfaces: SendCell<BTreeMap<u64, WebgpuSurface>>,
+    /// Acquired canvas frames awaiting present/discard (step 096).
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    pub surface_frames: SendCell<BTreeMap<u64, WebgpuSurfaceFrame>>,
 }
 
 pub(super) struct WebgpuBindlessArray {
@@ -174,6 +213,8 @@ impl State {
             bindless_textures: SendCell::new(BTreeMap::new()),
             bindless_buffers: SendCell::new(BTreeMap::new()),
             query_sets: SendCell::new(BTreeMap::new()),
+            surfaces: SendCell::new(BTreeMap::new()),
+            surface_frames: SendCell::new(BTreeMap::new()),
         }
     }
 

@@ -59,7 +59,7 @@ path without throwing.
 | `supports_async_compute()` | `bool` | Whether a dedicated async-compute queue is available. **Returns `false` on every backend today** — no driver overrides it yet. For overlapping submission use `gpu.queue(QueueType::Compute)` |
 | `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Sampled2D` sampled reads, `&Texture2D` read-only texel access, `&mut Texture2D` read-write texel access). True on Metal, the software driver, and native Vulkan; false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` and `Field::native_handle()` return a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
-| `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, and on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain |
+| `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain, and on WebGPU (canvas presentation) |
 | `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
 | `supports_host_import()` | `bool` | Zero-copy host-memory import (`field_from_host`). True on Metal, the software driver, and Vulkan with `VK_EXT_external_memory_host`; false on WebGPU — the call still succeeds there via one staged copy |
 | `host_import_alignment()` | `Option<usize>` | Granularity the import contract checks pointers and lengths against (Metal: VM page size, 16 KiB on Apple silicon; Vulkan: `minImportedHostPointerAlignment`; software: 1). `None` when no import path exists |
@@ -87,7 +87,7 @@ device-family- and extension-dependent within a backend.
 | `supports_async_compute` | ✗ | ✗ | ✗ | ✗ |
 | `supports_compute_textures` | ✓ | ✓ | ✓ | ✗ |
 | `supports_native_handle_export` | ✓ | ✓ | ✗ | ✗ |
-| `supports_surface_present` | ✓ | WSI | ✗ | ✗ |
+| `supports_surface_present` | ✓ | WSI | ✗ | ✓ |
 | `supports_texture_write_region` | ✓ | ✓ | ✓ | ✗ |
 | `narrow_storage_u32_slot` | ✗ | ✗ | ✗ | ✓ |
 
@@ -587,12 +587,18 @@ with [`SurfaceTarget::from_window`](#surfacetargetfrom_window--the-one-value-win
 (feature `raw-window-handle`), or name the platform variant by hand.
 Dropping the `Surface` releases the swapchain.
 
-Supported on **Metal** (via a `CAMetalLayer`) and on **Vulkan** when the
+Supported on **Metal** (via a `CAMetalLayer`), on **Vulkan** when the
 loader offers the WSI extensions (`VK_KHR_surface` + `VK_KHR_swapchain`)
 — on X11 through `SurfaceTarget::Xlib`, on Android through
 `SurfaceTarget::AndroidWindow`, and on Windows through
-`SurfaceTarget::Win32`, plus the windowless
-`SurfaceTarget::Headless` on both. Backends without a present path return
+`SurfaceTarget::Win32` — and on **WebGPU** through
+`SurfaceTarget::Canvas { canvas }` (a glue-registered
+`HTMLCanvasElement`/`OffscreenCanvas` id from the page's
+`registerCanvas`; `Fifo` only, one frame per browser task, device init
+via `quanta::webgpu::init_async()` / `init_poll()` with
+`quanta::webgpu::available()` as the sync runtime pre-flight). The
+windowless `SurfaceTarget::Headless` works on all three (WebGPU creates
+its own `OffscreenCanvas`). Backends without a present path return
 `NotSupported`; query `gpu.supports_surface_present()` to branch ahead of
 time. A swapchain that becomes suboptimal (e.g. after a resize the app
 hasn't reconfigured yet) is self-healed on the next `acquire()` rather
@@ -613,7 +619,9 @@ Vulkan: the swapchain picks the first offered SRGB-nonlinear format from
 a surface that only offers `RGBA8` (Android) still works with a `BGRA8`
 request. Only a surface offering nothing expressible fails, with an error
 listing what it offered. On Metal the configured format is exact (Quanta
-sets the layer format). `surface.format()` returns what was actually
+sets the layer format). On WebGPU an 8-bit color request negotiates to
+the browser's `getPreferredCanvasFormat()`; `RGBA16Float` is exact and
+other formats are `NotSupported`. `surface.format()` returns what was actually
 negotiated; a frame's `texture().format()` reports the same, and building
 a pipeline for a different format is rejected at draw time. The chain
 order is fixed — for a different fallback preference, type the pipeline

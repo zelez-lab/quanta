@@ -53,6 +53,9 @@ examples/web_textured/generated/
 examples/web_diff/*.js
 examples/web_diff/*.wasm
 examples/web_diff/generated/
+examples/web_canvas/*.js
+examples/web_canvas/*.wasm
+examples/web_canvas/generated/
 
 # Playwright headless smoke harness (B‴) artifacts.
 web/test-results/

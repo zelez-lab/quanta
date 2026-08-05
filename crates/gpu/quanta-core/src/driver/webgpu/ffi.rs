@@ -430,6 +430,43 @@ unsafe extern "C" {
         compare_code: u32,
     ) -> u32;
 
+    // Canvas presentation (step 096). The canvas handle comes from the
+    // page (`registerCanvas` on the instantiated module) or from
+    // `quanta_canvas_create_offscreen` for headless surfaces. The
+    // context handle is a `GPUCanvasContext`. There is deliberately no
+    // present import: the browser composites the current texture when
+    // the task ends — queue submission order is the present ordering.
+
+    /// `navigator.gpu !== undefined`. Sync — safe before any device
+    /// exists; the runtime-capability pre-flight (R3).
+    pub fn quanta_webgpu_available() -> u32;
+    /// Create a driver-owned `OffscreenCanvas` (headless surfaces).
+    pub fn quanta_canvas_create_offscreen(width: u32, height: u32) -> u32;
+    /// `canvas.getContext("webgpu")`. Null (context already claimed as
+    /// 2d/webgl, or WebGPU absent) → `NULL_HANDLE`.
+    pub fn quanta_canvas_context_create(canvas: u32) -> u32;
+    /// Set the canvas backing size (the `drawableSize` analogue) and
+    /// `context.configure({device, format, usage, alphaMode:"opaque"})`.
+    pub fn quanta_canvas_context_configure(
+        context: u32,
+        canvas: u32,
+        device: u32,
+        format_code: u32,
+        usage: u32,
+        width: u32,
+        height: u32,
+    );
+    pub fn quanta_canvas_context_unconfigure(context: u32);
+    /// `context.getCurrentTexture()` — the per-frame color target.
+    pub fn quanta_canvas_get_current_texture(context: u32) -> u32;
+    /// Canvas backing-store extent — the acquire-time out-of-date poll
+    /// and `surface_current_extent` read these.
+    pub fn quanta_canvas_width(canvas: u32) -> u32;
+    pub fn quanta_canvas_height(canvas: u32) -> u32;
+    /// `navigator.gpu.getPreferredCanvasFormat()` as a format code
+    /// (`format::BGRA8UNORM` or `format::RGBA8UNORM`).
+    pub fn quanta_canvas_preferred_format() -> u32;
+
     // Universal release for handles without a destroy method (shader
     // modules, pipelines, bind-group layouts, samplers, textures' views).
     pub fn quanta_release(handle: u32);

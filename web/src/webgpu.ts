@@ -895,6 +895,74 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       return state.handles.alloc(s);
     },
 
+    // ── canvas presentation (step 096) ─────────────────────────────────────
+    // The canvas handle is embedder-registered (`registerCanvas` on the
+    // instantiated module) or created here for headless surfaces. There
+    // is no present import on purpose: the compositor shows the current
+    // texture when the task returns to the event loop.
+
+    quanta_webgpu_available(): number {
+      return navigator.gpu !== undefined ? 1 : 0;
+    },
+
+    quanta_canvas_create_offscreen(width: number, height: number): number {
+      return state.handles.alloc(new OffscreenCanvas(width, height));
+    },
+
+    quanta_canvas_context_create(canvas: number): number {
+      const c = state.handles.get<HTMLCanvasElement | OffscreenCanvas>(canvas);
+      // "webgpu" is missing from lib.dom's getContext overloads; the
+      // cast is the entire accommodation.
+      const ctx = (c.getContext as (id: string) => unknown)("webgpu");
+      return ctx === null ? 0 : state.handles.alloc(ctx);
+    },
+
+    quanta_canvas_context_configure(
+      context: number,
+      canvas: number,
+      device: number,
+      format_code: number,
+      usage: number,
+      width: number,
+      height: number,
+    ): void {
+      const ctx = state.handles.get<GPUCanvasContext>(context);
+      const c = state.handles.get<HTMLCanvasElement | OffscreenCanvas>(canvas);
+      const dev = state.handles.get<GPUDevice>(device);
+      // Drive the backing-store size (the drawableSize analogue). CSS
+      // layout size stays the embedder's.
+      c.width = width;
+      c.height = height;
+      ctx.configure({
+        device: dev,
+        format: formatName(format_code),
+        usage,
+        alphaMode: "opaque",
+      });
+    },
+
+    quanta_canvas_context_unconfigure(context: number): void {
+      state.handles.get<GPUCanvasContext>(context).unconfigure();
+    },
+
+    quanta_canvas_get_current_texture(context: number): number {
+      const ctx = state.handles.get<GPUCanvasContext>(context);
+      return state.handles.alloc(ctx.getCurrentTexture());
+    },
+
+    quanta_canvas_width(canvas: number): number {
+      return state.handles.get<HTMLCanvasElement | OffscreenCanvas>(canvas).width;
+    },
+
+    quanta_canvas_height(canvas: number): number {
+      return state.handles.get<HTMLCanvasElement | OffscreenCanvas>(canvas).height;
+    },
+
+    quanta_canvas_preferred_format(): number {
+      // Mirrors ffi.rs `format`: rgba8unorm = 0, bgra8unorm = 1.
+      return navigator.gpu.getPreferredCanvasFormat() === "rgba8unorm" ? 0 : 1;
+    },
+
     // ── universal handle release (for handles without a destroy method) ────
 
     quanta_release(handle: number): void {

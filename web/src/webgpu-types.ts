@@ -24,6 +24,16 @@ declare global {
 
   interface GPU {
     requestAdapter(): Promise<GPUAdapter | null>;
+    getPreferredCanvasFormat(): string;
+  }
+
+  // Canvas presentation (step 096). The context comes from
+  // `canvas.getContext("webgpu")`; presentation itself has no method —
+  // the browser composites the current texture when the task ends.
+  interface GPUCanvasContext {
+    configure(desc: any): void;
+    unconfigure(): void;
+    getCurrentTexture(): GPUTexture;
   }
 
   interface GPUAdapter {

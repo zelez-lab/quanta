@@ -119,10 +119,11 @@ creation is faster than Metal's `newLibraryWithSource:` or Vulkan's
 - Custom memory allocators (Quanta picks optimal memory types automatically).
 - Window creation (Quanta never creates windows — you hand it a
   presentation target). Presentation itself is covered: a `Surface`
-  over a `CAMetalLayer` (Metal) or a `VkSwapchainKHR` (Vulkan — X11 via
-  `SurfaceTarget::Xlib`, or a windowless `Headless` target),
-  created through `gpu.create_surface`; or exporting the rendered texture
-  to your own compositor via `texture.native_handle()` (Metal + Vulkan).
+  over a `CAMetalLayer` (Metal), a `VkSwapchainKHR` (Vulkan — X11 via
+  `SurfaceTarget::Xlib`, or a windowless `Headless` target), or a
+  browser canvas (WebGPU — `SurfaceTarget::Canvas`), created through
+  `gpu.create_surface`; or exporting the rendered texture to your own
+  compositor via `texture.native_handle()` (Metal + Vulkan).
 
 ## Migrating incrementally
 

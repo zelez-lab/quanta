@@ -20,6 +20,9 @@
 //! - `render.rs` — the render path (`pipeline_create` / `render_begin`
 //!   / `render_end` + the render-only enum→ABI-code translations),
 //!   feature-gated on `render` (step 085).
+//! - `surface.rs` — canvas presentation (`surface_create` / acquire /
+//!   present against an HTML canvas or `OffscreenCanvas`), feature-
+//!   gated on `render` (step 096).
 //! - `async_ext.rs` — the async-only public extension methods
 //!   (`field_read_bytes_async`, `pulse_wait_async`, …) that stand in
 //!   for the sync trait methods the browser event loop can't block on.
@@ -50,6 +53,8 @@ mod ffi;
 #[cfg(feature = "render")]
 mod render;
 mod state;
+#[cfg(feature = "render")]
+mod surface;
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -66,7 +71,7 @@ use crate::{
 #[cfg(feature = "render")]
 use crate::ray_tracing::{GeometryDesc, RayTracingPipelineDesc};
 #[cfg(feature = "render")]
-use crate::{Pipeline, RenderPass};
+use crate::{Pipeline, RenderPass, SurfaceConfig, SurfaceTarget};
 
 use ffi::{NULL_HANDLE, buffer_usage};
 use state::{SendCell, State};
@@ -112,20 +117,27 @@ impl WebgpuDevice {
     /// `pulse_wait_async`); use [`init_async`] for the dyn-trait path
     /// that fits Quanta's standard `Gpu` wrapper.
     pub async fn new_async() -> Result<Self, QuantaError> {
+        // Absence of WebGPU is a machine gap, not a caller mistake:
+        // every arm below is `NotSupported`, so a FEATURE compiled in
+        // never masquerades as a CAPABILITY the browser lacks. The
+        // sync pre-flight for this is [`available`].
         let adapter = Promise::register(|task| unsafe { ffi::quanta_request_adapter(task) })
             .await
-            .map_err(|_| Self::err("requestAdapter rejected"))?;
+            .map_err(|_| Self::not_supported("requestAdapter rejected"))?;
         if adapter == NULL_HANDLE {
-            return Err(Self::err("navigator.gpu unavailable"));
+            return Err(Self::not_supported(
+                "this browser offers no WebGPU adapter (navigator.gpu is \
+                 undefined, or the GPU is blocklisted)",
+            ));
         }
 
         let device = Promise::register(|task| unsafe { ffi::quanta_request_device(adapter, task) })
             .await
-            .map_err(|_| Self::err("requestDevice rejected"))?;
+            .map_err(|_| Self::not_supported("requestDevice rejected"))?;
         // Adapter handle is no longer needed — release the JS-side ref.
         unsafe { ffi::quanta_release(adapter) };
         if device == NULL_HANDLE {
-            return Err(Self::err("requestDevice returned no device"));
+            return Err(Self::not_supported("requestDevice returned no device"));
         }
 
         let caps = Caps {
@@ -163,6 +175,75 @@ pub async fn init_async() -> Result<Gpu, QuantaError> {
     let arc: Arc<dyn QGpuDevice> = Arc::from(boxed);
     arc.install_self_ref(Arc::downgrade(&arc));
     Ok(Gpu::new(arc))
+}
+
+/// Whether the browser exposes WebGPU at all (`navigator.gpu` exists).
+///
+/// The runtime pre-flight: `feature = "webgpu"` compiling never
+/// implies the capability — Safari lagged, Firefox gated it, any
+/// browser can refuse on a blocklisted GPU. Synchronous and safe to
+/// call before any device exists. `true` here still doesn't promise
+/// an adapter (blocklists reject later, as `NotSupported` from
+/// [`init_async`] / [`init_poll`]); `false` means don't bother.
+pub fn available() -> bool {
+    unsafe { ffi::quanta_webgpu_available() != 0 }
+}
+
+/// Device-acquisition state for [`init_poll`].
+enum InitSlot {
+    NotStarted,
+    Pending,
+    Ready(Gpu),
+    Failed(QuantaError),
+}
+
+std::thread_local! {
+    static INIT_SLOT: RefCell<InitSlot> = const { RefCell::new(InitSlot::NotStarted) };
+}
+
+/// Poll-based device init for synchronous, host-driven frame loops.
+///
+/// `requestAdapter`/`requestDevice` are Promises, but an entry point
+/// the JS glue calls synchronously (returning so the event loop can
+/// run) has no async context to await [`init_async`] in. This is the
+/// documented contract for that caller:
+///
+/// - The **first call** starts device acquisition on the driver's
+///   executor and returns `None`.
+/// - Subsequent calls return `None` while acquisition is in flight —
+///   poll once per frame and fall back to whatever the app renders
+///   with meanwhile.
+/// - Once resolved, every call returns `Some(Ok(gpu))` — clones of
+///   the **same** live device — or `Some(Err(..))` (sticky; a browser
+///   without WebGPU reports `NotSupported` here, once, forever).
+///
+/// The pending window is short — typically resolved before the first
+/// or second animation frame. Apps with an async context of their own
+/// should just await [`init_async`] instead.
+pub fn init_poll() -> Option<Result<Gpu, QuantaError>> {
+    let needs_start = INIT_SLOT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        matches!(*slot, InitSlot::NotStarted) && {
+            *slot = InitSlot::Pending;
+            true
+        }
+    });
+    if needs_start {
+        spawn_local(async {
+            let result = init_async().await;
+            INIT_SLOT.with(|slot| {
+                *slot.borrow_mut() = match result {
+                    Ok(gpu) => InitSlot::Ready(gpu),
+                    Err(e) => InitSlot::Failed(e),
+                };
+            });
+        });
+    }
+    INIT_SLOT.with(|slot| match &*slot.borrow() {
+        InitSlot::NotStarted | InitSlot::Pending => None,
+        InitSlot::Ready(gpu) => Some(Ok(gpu.clone())),
+        InitSlot::Failed(e) => Some(Err(e.clone())),
+    })
 }
 
 // ── Enum → code translations (Rust API → ABI integer codes) ─────────────────
@@ -562,6 +643,56 @@ impl QGpuDevice for WebgpuDevice {
     #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
         self.render_end_impl(pass)
+    }
+
+    // ── Canvas presentation (step 096; see surface.rs) ─────────────────────
+
+    fn supports_surface_present(&self) -> bool {
+        cfg!(feature = "render")
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_create(
+        &self,
+        target: &SurfaceTarget,
+        config: &SurfaceConfig,
+    ) -> Result<u64, QuantaError> {
+        self.surface_create_impl(target, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_configure(&self, surface: u64, config: &SurfaceConfig) -> Result<(), QuantaError> {
+        self.surface_configure_impl(surface, config)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_format(&self, surface: u64) -> Result<Format, QuantaError> {
+        self.surface_format_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_current_extent(&self, surface: u64) -> Option<(u32, u32)> {
+        self.surface_current_extent_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_acquire(&self, surface: u64) -> Result<(u64, Texture), QuantaError> {
+        self.surface_acquire_impl(surface)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_present(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_present_impl(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_discard(&self, surface: u64, frame: u64) -> Result<(), QuantaError> {
+        self.surface_discard_impl(surface, frame)
+    }
+
+    #[cfg(feature = "render")]
+    fn surface_destroy(&self, surface: u64) -> Result<(), QuantaError> {
+        self.surface_destroy_impl(surface)
     }
 
     // Spec-absent features on WebGPU: every method below returns

@@ -297,10 +297,11 @@ pulse.wait()?;
 ### Presentation: wgpu vs Quanta
 
 wgpu's surface loop maps directly onto Quanta's `Surface`. Native
-present is real on Metal (`CAMetalLayer`) and Vulkan (`VkSwapchainKHR` —
+present is real on Metal (`CAMetalLayer`), Vulkan (`VkSwapchainKHR` —
 X11 via `SurfaceTarget::Xlib`, plus a windowless `Headless`
-target); query `gpu.supports_surface_present()` first (on Vulkan it is
-gated on loader WSI support).
+target), and in the browser (`SurfaceTarget::Canvas` over a
+glue-registered canvas); query `gpu.supports_surface_present()` first
+(on Vulkan it is gated on loader WSI support).
 
 Like wgpu, Quanta takes a `raw-window-handle` window straight to a
 surface: `SurfaceTarget::from_window(&window)` is the analog of
@@ -320,7 +321,9 @@ one-closure equivalent of wgpu's acquire/present cycle.
 | `SurfaceError::Lost` / suboptimal reconfigure | self-heals on Vulkan: a swapchain reported *suboptimal* finishes the frame and rebuilds on the next `acquire`, no error |
 | `frame.texture` + `create_view()` | `frame.texture()` (render into it directly) |
 | `frame.present()` | `frame.present()` |
-| `PresentMode::{Fifo, Immediate, Mailbox}` | `PresentMode::{Fifo, Immediate, Mailbox}` |
+| `PresentMode::{Fifo, Immediate, Mailbox}` | `PresentMode::{Fifo, Immediate, Mailbox}` (browser canvases: `Fifo` only) |
+| `canvas.getContext("webgpu")` + `ctx.configure({device, format})` | `gpu.create_surface(&SurfaceTarget::Canvas { canvas }, &config)` — the canvas id comes from the glue's `registerCanvas(canvasEl)`; Quanta owns `getContext`/`configure`/`getCurrentTexture` |
+| `navigator.gpu.getPreferredCanvasFormat()` | automatic — an 8-bit color request negotiates to the preferred format; read it back with `surface.format()` |
 
 A hard `VK_ERROR_OUT_OF_DATE_KHR` (like wgpu's `Outdated`) still surfaces
 as `SurfaceOutdated` — reconfigure with the new extent and retry. See
@@ -359,12 +362,11 @@ web target.
 
 ## When to stay with wgpu
 
-- You need browser surface/swapchain management. Quanta's `Surface`
-  presents natively on Metal and Vulkan, but the WebGPU backend's surface
-  is a reserved `NotSupported` variant — there is no canvas presentation
-  path yet.
 - You are building a rendering engine that needs fine-grained control over every descriptor.
 - You need the wgpu ecosystem (winit integration, egui backends, etc.).
+- You need MSAA resolve or multiple render targets **in the browser** —
+  Quanta's canvas presentation (`SurfaceTarget::Canvas`) is single-target,
+  single-sample for now; the web render path rejects MRT/MSAA loudly.
 
 ## When to use Quanta
 

@@ -111,6 +111,55 @@ test("web_textured — SetTexture+SetSampler wiring (step C)", async ({ page }) 
   }
 });
 
+test("web_canvas — surface presentation: triangle visible on a live canvas (step 096)", async ({ page }) => {
+  const consoleMsgs: string[] = [];
+  page.on("console", (msg) => consoleMsgs.push(`[${msg.type()}] ${msg.text()}`));
+  page.on("pageerror", (e) => consoleMsgs.push(`[pageerror] ${e.message}`));
+  const { server, url } = await startStaticServer(join(REPO_ROOT, "examples", "web_canvas"));
+  try {
+    await page.goto(url);
+    const status = page.locator("#status");
+    try {
+      await expect(status).toContainText("PASS", { timeout: 30_000 });
+      await expect(status).toContainText("presented via SurfaceTarget::Canvas");
+    } catch (e) {
+      console.error("---console output---\n" + consoleMsgs.join("\n"));
+      throw e;
+    }
+
+    // The pixels: compositor ground truth via an element screenshot
+    // (in-page canvas readback of presented WebGPU frames is not
+    // reliable in Chromium — this is why the page banner does not
+    // assert pixels itself). Decode the PNG in-page with an Image +
+    // 2d canvas and sample inside the triangle and in a corner.
+    const png = await page.locator("#canvas").screenshot();
+    const pixels = await page.evaluate(async (b64) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + b64;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      const ctx = c.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      const at = (fx: number, fy: number) =>
+        Array.from(
+          ctx.getImageData(Math.floor(img.width * fx), Math.floor(img.height * fy), 1, 1).data,
+        );
+      return { center: at(0.5, 0.56), corner: at(0.03, 0.03) };
+    }, png.toString("base64"));
+    // Center: triangle blue (0.2, 0.4, 0.9). Corner: clear red.
+    expect(pixels.center[2]!).toBeGreaterThan(200);
+    expect(pixels.center[0]!).toBeLessThan(80);
+    expect(pixels.center[1]!).toBeLessThan(130);
+    expect(pixels.corner[0]!).toBeGreaterThan(200);
+    expect(pixels.corner[1]!).toBeLessThan(60);
+    expect(pixels.corner[2]!).toBeLessThan(60);
+  } finally {
+    server.close();
+  }
+});
+
 test("web_diff — WGSL lane: saxpy + reduce_sum + counter + race + op-matrix", async ({ page }) => {
   const consoleMsgs: string[] = [];
   page.on("console", (msg) => consoleMsgs.push(`[${msg.type()}] ${msg.text()}`));

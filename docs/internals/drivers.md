@@ -372,6 +372,29 @@ The W3C spec exposes a few features (e.g. `timestamp-query`,
 `depth-clip-control`) via `device.features`; the driver translates
 those into the corresponding `Caps` bits at discovery time.
 
+### Canvas presentation (step 096)
+
+`src/driver/webgpu/surface.rs` implements the surface contract against
+a browser canvas, deliberately on the **Metal model**: out-of-date is
+an extent poll at acquire (canvas backing size vs. configured extent —
+the `drawableSize` check), the acquired `getCurrentTexture()` is
+aliased into the ordinary texture registry so the render path stays
+surface-blind, and `surface_present` is pure bookkeeping (the browser
+composites when the task returns; queue submission order is the present
+ordering — there is no present import in the ABI at all). The canvas
+crosses the boundary as a glue-registered handle
+(`registerCanvas(canvasEl)` on the instantiated module →
+`SurfaceTarget::Canvas { canvas }`); `Headless` uses a driver-owned
+`OffscreenCanvas`. Format negotiation resolves 8-bit color requests to
+`getPreferredCanvasFormat()`; `Fifo` is the only present mode; one
+frame per browser task (a second acquire without present is refused);
+`surface_destroy` deliberately does **not** `unconfigure()` — that
+would destroy the pending frame and blank the canvas before the
+compositor shows it. Device init stays async-only
+(`webgpu::init_async`), with `webgpu::init_poll()` as the documented
+poll-per-frame contract for synchronous host-driven callers and
+`webgpu::available()` as the sync runtime pre-flight.
+
 ### CPU software device
 
 Returns `false` for every capability except the always-software
@@ -413,6 +436,7 @@ the up-front check fail explicitly rather than silently.
 | Ray tracing | ⚠️ AS proc-addr foundation; build dispatch returns `NotSupported` (lavapipe segfault, awaiting AMDGPU runner) | ⚠️ family-gated; intersector dispatch pending | `NotSupported` | software lifecycle |
 | Indirect command buffer | ✅ native (`MTLIndirectCommandBuffer`, compute + render-bundle draw via `executeCommandsInBuffer`) | ✅ native (secondary command buffers + `vkCmdExecuteCommands`; render bundles record in `RENDER_PASS_CONTINUE` mode) | `NotSupported` (render bundles are a separate path) | ✅ full software |
 | Occlusion queries | ✅ native | ✅ native | ✅ native (async read via `mapAsync`; sync `occlusion_query_read` returns `NotSupported`) | ✅ software |
+| Surface present | ✅ native (`VkSwapchainKHR`, loader-WSI-gated) | ✅ native (`CAMetalLayer` drawables) | ✅ native (canvas `getCurrentTexture`; `Fifo` only, single-sample single-target) | `NotSupported` |
 | Compute textures (storage image) | ✅ native storage load + write + sample (emitter bakes an R32f image; sampled `&Sampled2D` slots bind as `COMBINED_IMAGE_SAMPLER` with a cached per-device compute sampler — nearest, clamp-to-edge, unnormalized coords — matching the CPU executor) | ✅ native (storage load + write + sample) | `NotSupported` (`wave_dispatch` rejects texture bindings loudly) | ✅ software |
 
 `supports_compute_textures()` reports this row: `true` on Metal, Vulkan, and

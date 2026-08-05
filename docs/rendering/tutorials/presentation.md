@@ -65,6 +65,69 @@ let target = SurfaceTarget::MetalLayer { layer };
 let mut surface = gpu.create_surface(&target, &SurfaceConfig::new(1280, 720))?;
 ```
 
+### In the browser: `SurfaceTarget::Canvas`
+
+On the web the platform's "window handle" is a canvas, and it lives in
+JS — no pointer can name it. The embedding page registers it with
+Quanta's glue and hands the returned id into wasm:
+
+```js
+// page side (index.html)
+const mod = await instantiate("./app.wasm");
+const canvasId = mod.registerCanvas(document.getElementById("canvas"));
+// pass canvasId into your wasm entry point
+```
+
+```rust
+// wasm side — the SAME frame loop as every other target
+let gpu = quanta::webgpu::init_async().await?;          // or init_poll(), below
+let mut surface = gpu.create_surface(
+    &SurfaceTarget::Canvas { canvas: canvas_id },
+    &SurfaceConfig::new(width, height),
+)?;
+```
+
+`registerCanvas` accepts an `HTMLCanvasElement` or an `OffscreenCanvas`;
+`SurfaceTarget::Headless` works too (the driver creates its own
+`OffscreenCanvas`). Quanta drives the canvas **backing-store** size (the
+`drawableSize` analogue — `configure` sets it to the configured extent);
+the CSS layout size stays the embedder's.
+
+**Device init is async on this target** — the browser only surfaces
+adapter acquisition through Promises, so the sync `quanta::init()` never
+returns a WebGPU device. Two contracts:
+
+- an async context awaits `quanta::webgpu::init_async()` once at boot;
+- a synchronous, host-driven frame loop polls
+  `quanta::webgpu::init_poll()` once per frame: the first call starts
+  acquisition, `None` means still pending (render with your fallback),
+  then `Some(Ok(gpu))` — the same live device every call — or a sticky
+  `Some(Err(..))`.
+
+And the capability is **runtime, not compile-time**: the `webgpu`
+feature compiling says nothing about the browser.
+`quanta::webgpu::available()` is the sync pre-flight (`navigator.gpu`
+exists); a browser that refuses an adapter reports `NotSupported` from
+init, and `gpu.supports_surface_present()` completes the same
+capability-query pattern as everywhere else.
+
+Web divergences, all inherent to the platform:
+
+- `acquire()` **never blocks** and `Timeout` never fires — the host's
+  `requestAnimationFrame` cadence is the back-pressure. One frame per
+  browser task: acquiring again without presenting is refused loudly.
+- **Presentation is implicit.** `present()` is bookkeeping — the
+  browser composites when the task returns to the event loop, ordered
+  after the frame's submitted work, so the "present after `.pulse()`"
+  contract holds unchanged.
+- **A discarded frame cannot be un-shown**: the compositor still
+  displays the (cleared) texture at end of task. To skip a frame, skip
+  the acquire — which the demand-driven loop does naturally.
+
+`examples/web_canvas/` is the runnable proof — the public loop above
+presenting a triangle to a live canvas, asserted headlessly in CI
+(`web-smoke.yml`). Build it with `quanta build web web_canvas`.
+
 ### The frame loop
 
 The frame loop is one closure per frame — `render_frame` folds acquire →
@@ -135,7 +198,9 @@ Rules of the loop:
   dropped. Don't store it (or its `native_handle()`) across iterations;
   acquire a fresh frame each time.
 - **Dropping an unpresented frame discards it** — the image returns to the
-  swapchain unshown. That's the correct way to skip a frame.
+  swapchain unshown. That's the correct way to skip a frame on the native
+  backends; on WebGPU a discard cannot un-show (see the browser section) —
+  skip the acquire instead.
 - **Reconfigure on `SurfaceOutdated`.** Present or drop any acquired frames
   first, then `surface.configure(...)` with the new extent.
 - Dropping the `Surface` releases the swapchain (and, for
@@ -158,6 +223,11 @@ SRGB-nonlinear colorspace, from the chain
 Only a surface offering nothing Quanta can name fails, and the error
 lists what it offered. On Metal there is no negotiation — Quanta sets the
 layer's format, so the frames always use exactly what you configured.
+On WebGPU an 8-bit color request (`BGRA8`/`RGBA8`) negotiates to the
+browser's `getPreferredCanvasFormat()` — both work everywhere, but only
+the preferred one avoids a per-present swizzle (the same reality as
+Android's `RGBA8`-offering surfaces on Vulkan); `RGBA16Float` is honored
+exactly, and other formats are `NotSupported` on a canvas.
 
 Read the negotiated result with `surface.format()` and build your
 pipelines against it — the frame texture carries the negotiated format,
@@ -212,7 +282,8 @@ cargo run --example native_window_x11 --no-default-features --features vulkan,re
 | `PresentMode::Mailbox`   | Triple-buffered: low latency without tearing.        |
 
 Backends without `Immediate`/`Mailbox` reject at create/configure time with
-`NotSupported`.
+`NotSupported`. On WebGPU only `Fifo` exists — the browser compositor
+always presents at its own cadence.
 
 On Vulkan, a swapchain the driver reports as *suboptimal* (a resize the
 window system tolerated) self-heals: the frame completes normally and the
@@ -255,7 +326,7 @@ the importer's reads by native means — before the importer samples it.
 |---------|------------------------------------|------------------------------------|
 | Metal   | ✅ `CAMetalLayer` drawables         | ✅ `id<MTLTexture>`                 |
 | Vulkan  | ✅ `VkSwapchainKHR` (Headless via `VK_EXT_headless_surface`, X11 via `SurfaceTarget::Xlib`, Android via `SurfaceTarget::AndroidWindow` over an `ANativeWindow` that must outlive the surface, Windows via `SurfaceTarget::Win32` over an `HWND` and its `HINSTANCE` that must both outlive the surface; needs loader WSI support — query `supports_surface_present`) | ✅ `VkImage` + memory/format/layout |
-| WebGPU  | `NotSupported` (reserved variant)  | `NotSupported` (reserved variant)  |
+| WebGPU  | ✅ canvas via `SurfaceTarget::Canvas` (glue-registered `HTMLCanvasElement`/`OffscreenCanvas`; Headless via a driver-owned `OffscreenCanvas`; `Fifo` only; runtime capability — query `webgpu::available()` / `supports_surface_present`) | `NotSupported` (reserved variant)  |
 | CPU     | `NotSupported`                     | `NotSupported` (no native object)  |
 
 ## Next

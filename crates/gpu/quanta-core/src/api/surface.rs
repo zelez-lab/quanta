@@ -101,9 +101,8 @@ impl SurfaceConfig {
 /// The platform target a presentation surface presents to.
 ///
 /// Marked `#[non_exhaustive]`: window-system variants land with their
-/// backend implementations (Vulkan Wayland/X11/Win32 handles, a WebGPU
-/// canvas selector, an OS-provided buffer target) — match with a
-/// wildcard arm.
+/// backend implementations (Vulkan Wayland handles, an OS-provided
+/// buffer target) — match with a wildcard arm.
 ///
 /// With the `raw-window-handle` feature on, [`SurfaceTarget::from_window`]
 /// maps a winit-style window (anything implementing rwh 0.6's
@@ -170,12 +169,29 @@ pub enum SurfaceTarget {
         /// `HWND` of the target window, as a raw pointer.
         hwnd: *mut core::ffi::c_void,
     },
+    /// A browser canvas, named by the handle the embedding page got
+    /// from Quanta's JS glue (`mod.registerCanvas(canvasElement)` on
+    /// the instantiated module — accepts an `HTMLCanvasElement` or an
+    /// `OffscreenCanvas`). The consumer hands over the platform's
+    /// window object exactly as on every other target; on the web
+    /// that object lives in JS and can never be named by a pointer,
+    /// so the handle is a slot in the glue's handle table instead.
+    /// Which driver presents to it is Quanta's business (WebGPU
+    /// here). The registration must stay live for the surface's
+    /// lifetime; the embedder keeps ownership of the canvas itself
+    /// (its CSS/layout size stays the embedder's — Quanta drives only
+    /// the backing-store size, the `drawableSize` analogue).
+    /// Non-web backends return `NotSupported`.
+    Canvas {
+        /// Glue handle-table id of the canvas, from `registerCanvas`.
+        canvas: u32,
+    },
     /// A presentation target with no window attached: the backend
     /// creates and owns its native target (Metal: an off-screen
-    /// `CAMetalLayer`; Vulkan: `VK_EXT_headless_surface`). The full
-    /// acquire/present machinery runs — frames just aren't composited
-    /// anywhere. For tests, warm-up, and consumers that composite
-    /// through another channel.
+    /// `CAMetalLayer`; Vulkan: `VK_EXT_headless_surface`; WebGPU: an
+    /// `OffscreenCanvas`). The full acquire/present machinery runs —
+    /// frames just aren't composited anywhere. For tests, warm-up,
+    /// and consumers that composite through another channel.
     Headless,
 }
 

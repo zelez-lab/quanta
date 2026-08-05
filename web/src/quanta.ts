@@ -52,12 +52,21 @@ export interface QuantaModule {
   /** Diagnostic accessor to inspect handle pressure. */
   liveHandles(): number;
   /**
-   * Invoke a wasm export of the form
-   * `extern "C" fn run(task: u32)` and resolve with the bytes the Rust
-   * side hands back via `quanta_complete_bytes`. Reject if the Rust
-   * side calls `quanta_complete_err`.
+   * Register a canvas for presentation (step 096). The returned id is
+   * what `SurfaceTarget::Canvas { canvas }` names on the Rust side —
+   * pass it into the wasm entry point. The registration stays live
+   * until the page drops the module; quanta never releases it (the
+   * embedder owns the canvas, quanta drives only its backing size).
    */
-  runReturningBytes(exportName: string): Promise<Uint8Array>;
+  registerCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): number;
+  /**
+   * Invoke a wasm export of the form
+   * `extern "C" fn run(task: u32, ...)` and resolve with the bytes the
+   * Rust side hands back via `quanta_complete_bytes`. Reject if the
+   * Rust side calls `quanta_complete_err`. Trailing `args` are passed
+   * after the task id (e.g. a registered canvas handle).
+   */
+  runReturningBytes(exportName: string, ...args: number[]): Promise<Uint8Array>;
 }
 
 export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
@@ -119,7 +128,8 @@ export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
   return {
     exports: instance.exports,
     liveHandles: () => handles.size(),
-    runReturningBytes(exportName: string): Promise<Uint8Array> {
+    registerCanvas: (canvas) => handles.alloc(canvas),
+    runReturningBytes(exportName: string, ...args: number[]): Promise<Uint8Array> {
       const fn = (instance.exports as Record<string, unknown>)[exportName];
       if (typeof fn !== "function") {
         return Promise.reject(
@@ -130,7 +140,7 @@ export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
         const task = nextTopLevelTask++;
         topLevelTasks.set(task, { resolve, reject });
         try {
-          (fn as (t: number) => void)(task);
+          (fn as (t: number, ...rest: number[]) => void)(task, ...args);
         } catch (e) {
           topLevelTasks.delete(task);
           reject(e instanceof Error ? e : new Error(String(e)));
