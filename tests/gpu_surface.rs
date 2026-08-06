@@ -14,6 +14,17 @@ fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
 }
 
+/// The leak-checking frame-loop tests initialize through the
+/// registry-bypassing constructor: their absolute
+/// `debug_registry_counts` snapshots are only sound on a device no
+/// parallel test can allocate on, and the shared `init()` device
+/// stopped being that when the device registry made every `init()` in
+/// the process converge on it (a neighbor's live frame textures land
+/// in the count).
+fn try_isolated_gpu() -> Option<quanta::Gpu> {
+    quanta::init_isolated().ok()
+}
+
 // --- Part A: native-handle export ---
 
 #[test]
@@ -441,7 +452,7 @@ fn assert_demand_driven_cadence(gpu: &quanta::Gpu, surface: &mut quanta::Surface
 
 #[test]
 fn surface_sparse_then_burst_cadence() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -461,7 +472,7 @@ fn surface_sparse_then_burst_cadence() {
 
 #[test]
 fn render_frame_runs_closure_and_presents() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -712,7 +723,7 @@ fn appkit_view_surface_end_to_end() {
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_layer_demand_driven_cadence() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };

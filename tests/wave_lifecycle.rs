@@ -10,8 +10,13 @@
 //!
 //! Requires a GPU; skips gracefully if none available.
 
-fn try_gpu() -> Option<quanta::Gpu> {
-    quanta::init().ok()
+/// Every test in this file asserts absolute `debug_registry_counts`
+/// snapshots, which are only sound on a device no parallel test can
+/// allocate on — so the whole file initializes through the
+/// registry-bypassing constructor instead of the process-shared
+/// `init()` device.
+fn try_isolated_gpu() -> Option<quanta::Gpu> {
+    quanta::init_isolated().ok()
 }
 
 // --- Kernel (proc macro compiles at build time) ---
@@ -26,7 +31,7 @@ fn lifecycle_add_one(data: &[f32], result: &mut [f32]) {
 
 #[test]
 fn wave_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -47,7 +52,7 @@ fn wave_drop_frees_registry_entry() {
 #[cfg(feature = "software")]
 #[test]
 fn cpu_wave_drop_frees_registry_entry() {
-    let gpu = quanta::init_cpu();
+    let gpu = quanta::init_cpu_isolated();
     let before = gpu.debug_registry_counts();
     let wave = lifecycle_add_one(&gpu).unwrap();
     let during = gpu.debug_registry_counts();
@@ -69,7 +74,7 @@ fn pass_through(wave: quanta::Wave) -> quanta::Wave {
 
 #[test]
 fn moved_wave_frees_exactly_once() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -116,7 +121,7 @@ fn moved_wave_frees_exactly_once() {
 
 #[test]
 fn hundred_wave_create_dispatch_drop_does_not_grow_registry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };

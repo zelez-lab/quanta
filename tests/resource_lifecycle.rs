@@ -18,6 +18,15 @@ fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
 }
 
+/// Count-asserting tests initialize through the registry-bypassing
+/// constructor: absolute `debug_registry_counts` snapshots are only
+/// sound on a device no parallel test can allocate on, and the shared
+/// `init()` device stopped being that when the device registry made
+/// every `init()` in the process converge on it.
+fn try_isolated_gpu() -> Option<quanta::Gpu> {
+    quanta::init_isolated().ok()
+}
+
 // ─── Shaders (pipeline lifecycle) ───────────────────────────────────────────
 
 #[quanta::vertex]
@@ -76,7 +85,7 @@ fn small_texture_desc() -> TextureDesc {
 
 #[test]
 fn texture_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -96,7 +105,7 @@ fn texture_drop_frees_registry_entry() {
 #[cfg(feature = "software")]
 #[test]
 fn cpu_texture_drop_frees_registry_entry() {
-    let gpu = quanta::init_cpu();
+    let gpu = quanta::init_cpu_isolated();
     let before = gpu.debug_registry_counts();
     let tex = gpu.create_texture(&small_texture_desc()).unwrap();
     let during = gpu.debug_registry_counts();
@@ -111,7 +120,7 @@ fn cpu_texture_drop_frees_registry_entry() {
 
 #[test]
 fn sampler_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -130,7 +139,7 @@ fn sampler_drop_frees_registry_entry() {
 
 #[test]
 fn pipeline_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -154,7 +163,7 @@ fn pipeline_drop_frees_registry_entry() {
 
 #[test]
 fn texture_view_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -193,7 +202,7 @@ fn texture_view_drop_frees_registry_entry() {
 
 #[test]
 fn occlusion_query_drop_frees_registry_entry() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -223,7 +232,7 @@ fn occlusion_query_drop_frees_registry_entry() {
 
 #[test]
 fn explicit_view_destroy_does_not_double_free() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -264,7 +273,7 @@ fn pass_through(tex: quanta::Texture) -> quanta::Texture {
 
 #[test]
 fn moved_texture_frees_exactly_once() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -296,7 +305,7 @@ fn moved_texture_frees_exactly_once() {
 
 #[test]
 fn hundred_frame_reuse_does_not_grow_registries() {
-    let Some(gpu) = try_gpu() else {
+    let Some(gpu) = try_isolated_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
     };
@@ -339,6 +348,9 @@ fn hundred_frame_reuse_does_not_grow_registries() {
 /// device loss on Iris Xe). Later frames must keep working.
 #[test]
 fn drop_textures_while_render_in_flight() {
+    // No count asserts here — this one stays on the SHARED device on
+    // purpose: destroy-in-flight is exercised against the production
+    // lane, concurrent neighbors included.
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;

@@ -95,6 +95,28 @@ fn rebuild_after_last_drop() {
     assert!((field.read().unwrap()[7] - 14.0).abs() < 1e-6);
 }
 
+/// The registry-bypassing constructor (test infrastructure for the
+/// absolute-count leak suites): `init_isolated()` builds a PRIVATE
+/// device — not the shared one — and leaves the registry untouched, so
+/// `init()` keeps converging on the same shared device afterwards.
+#[test]
+fn isolated_init_bypasses_registry() {
+    let Some(shared) = try_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    let isolated = quanta::init_isolated().expect("isolated init");
+    assert!(
+        !Arc::ptr_eq(shared.device_handle(), isolated.device_handle()),
+        "init_isolated() must build a private device, not the shared one"
+    );
+    let again = quanta::init().expect("init after isolated");
+    assert!(
+        Arc::ptr_eq(shared.device_handle(), again.device_handle()),
+        "init_isolated() must not disturb the registry's shared device"
+    );
+}
+
 /// The Iris Xe repro shape: many threads init + dispatch + drop
 /// concurrently. Pre-registry this stormed the driver with an
 /// instance+device per thread; now every thread shares one context and

@@ -68,7 +68,10 @@ fn two_holders_one_writes_one_reads() {
 /// registry release — the leak-check idiom over the shared form.
 #[test]
 fn shared_freed_exactly_once() {
-    let Some(gpu) = try_gpu() else {
+    // Absolute count snapshots need a device no parallel test can
+    // allocate on — the registry-bypassing constructor, not the
+    // process-shared `init()` device.
+    let Some(gpu) = quanta::init_isolated().ok() else {
         eprintln!("skipping: no GPU available");
         return;
     };

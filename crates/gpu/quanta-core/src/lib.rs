@@ -244,32 +244,110 @@ pub fn init() -> Result<Gpu, QuantaError> {
     let forced = forced_backend()?;
 
     let mut devs = devices();
-    if let Some(dev) = devs.drain(..).next() {
-        Ok(dev)
-    } else if let Some(backend) = forced {
-        // Name the ACTUAL gap: a forced backend can be missing from
-        // this machine (no driver) or from this BUILD (feature not
-        // compiled in / platform never compiles it). Blaming the
-        // machine for a feature gap sends users hunting for drivers
-        // they don't need — e.g. QUANTA_BACKEND=cpu in a build without
-        // `software`.
-        let name = forced_backend_name(backend);
-        Err(QuantaError::not_supported(
-            match forced_backend_build_gap(backend) {
-                Some(gap) => alloc::format!(
-                    "QUANTA_BACKEND forces the {name} backend, but {gap} \
-                     (discovery will not fall through to another backend)"
-                ),
-                None => alloc::format!(
-                    "QUANTA_BACKEND forces the {name} backend, but no {name} \
-                     device is available on this machine (discovery will not \
-                     fall through to another backend)"
-                ),
-            },
-        ))
-    } else {
-        Err(QuantaError::no_device())
+    match devs.drain(..).next() {
+        Some(dev) => Ok(dev),
+        None => Err(no_device_after_discovery(forced)),
     }
+}
+
+/// The `init` family's terminal error when discovery yields nothing.
+/// With the `QUANTA_BACKEND` lever set, names the forced backend's
+/// actual gap: a forced backend can be missing from this machine (no
+/// driver) or from this BUILD (feature not compiled in / platform
+/// never compiles it). Blaming the machine for a feature gap sends
+/// users hunting for drivers they don't need — e.g.
+/// `QUANTA_BACKEND=cpu` in a build without `software`.
+#[cfg(feature = "std")]
+fn no_device_after_discovery(forced: Option<ForcedBackend>) -> QuantaError {
+    let Some(backend) = forced else {
+        return QuantaError::no_device();
+    };
+    let name = forced_backend_name(backend);
+    QuantaError::not_supported(match forced_backend_build_gap(backend) {
+        Some(gap) => alloc::format!(
+            "QUANTA_BACKEND forces the {name} backend, but {gap} \
+             (discovery will not fall through to another backend)"
+        ),
+        None => alloc::format!(
+            "QUANTA_BACKEND forces the {name} backend, but no {name} \
+             device is available on this machine (discovery will not \
+             fall through to another backend)"
+        ),
+    })
+}
+
+/// Test-support constructor: initialize a PRIVATE device, bypassing
+/// the process-wide device registry.
+///
+/// Same discovery contract as [`init`] — per-OS probe order, the
+/// `QUANTA_BACKEND` forcing lever, `QUANTA_VALIDATE` wrapping, the
+/// loud software last resort — but the registry is never read or
+/// written: the returned `Gpu` (and its clones) hold a freshly built
+/// device with its own deferred lane and MSAA pool, which no other
+/// initialization path in the process can observe or share. The
+/// shared registry device, if live, is untouched.
+///
+/// This exists for the lifecycle/leak suites: absolute
+/// `debug_registry_counts` snapshots are only sound on a device no
+/// parallel test can allocate on, and the shared `init()` device
+/// stopped being that when the registry made every `init()` converge
+/// on one device per process. Every call builds a real driver device,
+/// so per-test use recreates the pre-registry driver load — reserve
+/// it for count-asserting tests. Production code wants the registry
+/// semantics: use [`init`].
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub fn init_isolated() -> Result<Gpu, QuantaError> {
+    let forced = forced_backend()?;
+    // Unused when no discovery-bearing feature is enabled, same as in
+    // `devices()`.
+    #[allow(unused_variables)]
+    let allows = |b: ForcedBackend| forced.is_none() || forced == Some(b);
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    if allows(ForcedBackend::Metal)
+        && let Some(dev) = driver::metal::discover().into_iter().next()
+    {
+        return Ok(Gpu::new(maybe_validate(dev)));
+    }
+
+    #[cfg(all(
+        feature = "vulkan",
+        any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "windows",
+            all(feature = "vulkan-portability", target_os = "macos"),
+        )
+    ))]
+    if allows(ForcedBackend::Vulkan)
+        && let Some(dev) = driver::vulkan::discover().into_iter().next()
+    {
+        return Ok(Gpu::new(maybe_validate(dev)));
+    }
+
+    // The CPU software device: when forced, or as the last resort —
+    // an isolated leak test must run on the software lane exactly
+    // where `init()` would have. The loud fallback line follows
+    // `devices()`' discipline, including its silence under the
+    // QUANTA_CPU=1 opt-in.
+    #[cfg(feature = "software")]
+    if (forced == Some(ForcedBackend::Cpu) || forced.is_none())
+        && let Some(dev) = driver::cpu::discover().into_iter().next()
+    {
+        let cpu_opt_in = std::env::var("QUANTA_CPU")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if forced.is_none() && !cpu_opt_in {
+            std::eprintln!(
+                "quanta: no GPU backend available — isolated init falling \
+                 back to SOFTWARE rendering (CPU device)"
+            );
+        }
+        return Ok(Gpu::new(maybe_validate(dev)));
+    }
+
+    Err(no_device_after_discovery(forced))
 }
 
 /// Why a forced backend cannot exist in THIS binary, if so — a missing
@@ -335,6 +413,23 @@ pub fn init_cpu() -> Gpu {
         .into_iter()
         .next()
         .expect("cpu discover always yields one device")
+}
+
+/// Test-support sibling of [`init_cpu`]: a PRIVATE CPU software device
+/// that bypasses the process-wide device registry — same contract as
+/// [`init_isolated`], pinned to the software backend. For the
+/// CPU-lane lifecycle/leak tests whose absolute
+/// `debug_registry_counts` snapshots need a device no parallel test
+/// can allocate on.
+#[cfg(feature = "software")]
+#[doc(hidden)]
+pub fn init_cpu_isolated() -> Gpu {
+    Gpu::new(maybe_validate(
+        driver::cpu::discover()
+            .into_iter()
+            .next()
+            .expect("cpu discover always yields one device"),
+    ))
 }
 
 /// Initialize a WebGPU device. Browser-only. Async because the WebGPU

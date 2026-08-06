@@ -110,7 +110,10 @@ fn kernel_reads_imported_region() {
 /// entry — same leak-check idiom as every wrapper before it.
 #[test]
 fn import_registers_and_frees_one_entry() {
-    let Some(gpu) = try_gpu() else {
+    // Absolute count snapshots need a device no parallel test can
+    // allocate on — the registry-bypassing constructor, not the
+    // process-shared `init()` device.
+    let Some(gpu) = quanta::init_isolated().ok() else {
         eprintln!("skipping: no GPU available");
         return;
     };
