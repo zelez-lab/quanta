@@ -56,8 +56,14 @@ fn vertex_main(@builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
-@group(0) @binding(0) var src_sampler: sampler;
-@group(0) @binding(1) var src_texture: texture_2d<f32>;
+// Quanta's cross-backend binding contract, hand-spelled: texture slot N
+// binds at @binding(8 + 2N), its sampler at @binding(8 + 2N + 1) —
+// uniforms/slices own bindings 0-7. The driver maps `set_texture(0, …)` /
+// `set_sampler(0, …)` to these exact indices (the same contract the DSL
+// emitter and the Vulkan/Metal drivers express in their own ABIs), so a
+// raw WGSL module must declare them here, not at the API slot numbers.
+@group(0) @binding(8) var src_texture: texture_2d<f32>;
+@group(0) @binding(9) var src_sampler: sampler;
 
 @fragment
 fn fragment_main(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
@@ -107,13 +113,16 @@ async fn run() -> Result<Vec<u8>, String> {
         .map_err(|e| format!("render_begin: {:?}", e))?;
     pass.clear(Color::rgba(0.0, 0.0, 0.0, 1.0));
     pass.set_pipeline(&pipeline);
+    // Texture and sampler share SLOT 0 — the API slot names the pair;
+    // the driver resolves the pair to bindings 8 (texture) and 9
+    // (sampler) per the contract above.
     pass.set_sampler(
         0,
         SamplerDesc::default()
             .with_filters(Filter::Nearest, Filter::Nearest)
             .with_mip_filter(Filter::Nearest),
     );
-    pass.set_texture(1, &source);
+    pass.set_texture(0, &source);
     pass.draw(3);
     let _pulse = dev
         .render_end(pass)

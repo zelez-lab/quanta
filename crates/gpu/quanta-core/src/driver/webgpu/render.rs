@@ -526,43 +526,101 @@ impl WebgpuDevice {
         let buffers = self.state.buffers.0.borrow();
         let mut current_pipeline: Option<&state::PipelineEntry> = None;
 
-        /// One slot of a pending bind group. The JS-side resource is
-        /// either a buffer (long-lived; not owned by `render_end`), a
-        /// texture view (long-lived; lookup via `state.textures`), a
-        /// sampler (created here from a `SamplerDesc`; owned), or a
-        /// freshly-allocated uniform buffer holding push-constant
-        /// bytes (WebGPU has no push constants — the SetValue
-        /// fallback below allocates a per-call buffer; owned).
+        /// One BINDING of a pending bind group, keyed by the WGSL
+        /// binding index — NOT the API slot. The RenderOp slots live in
+        /// three separate API-level spaces that every driver maps onto
+        /// its own shader ABI (Vulkan: buffers at `binding = slot`,
+        /// combined image samplers at `8 + slot`; Metal: separate
+        /// `[[buffer]]`/`[[texture]]`/`[[sampler]]` index spaces). The
+        /// WGSL contract is the emitter's: uniforms/slices at
+        /// `@binding(slot)` (0-7), textures at `@binding(8 + 2*slot)`,
+        /// samplers at `@binding(8 + 2*slot + 1)`. Keying by raw slot
+        /// collapsed all three spaces onto one map key, so a draw
+        /// binding a uniform AND a texture AND a sampler at slot 0 kept
+        /// only the last insert — every sampler-carrying family lost
+        /// its uniform (dija's first live frame).
+        ///
+        /// The JS-side resource is either a buffer (long-lived; not
+        /// owned by `render_end`), a texture view (long-lived; lookup
+        /// via `state.textures`), a sampler (created here from a
+        /// `SamplerDesc`; owned), or a freshly-allocated uniform buffer
+        /// holding push-constant bytes (WebGPU has no push constants —
+        /// the SetValue fallback below allocates a per-call buffer;
+        /// owned).
         enum BindEntry {
             Buffer(u32),
             TextureView(u32),
             Sampler(u32),
             OwnedBuffer(u32),
         }
+        /// Texture bindings start past the eight uniform/slice slots;
+        /// each texture slot owns a (texture, sampler) binding pair —
+        /// the same constants as `emit_wgsl::shader`.
+        const TEXTURE_BINDING_BASE: u32 = 8;
+        let texture_binding = |slot: u32| TEXTURE_BINDING_BASE + 2 * slot;
+        let sampler_binding = |slot: u32| TEXTURE_BINDING_BASE + 2 * slot + 1;
         let mut bind_entries: alloc::collections::BTreeMap<u32, BindEntry> =
             alloc::collections::BTreeMap::new();
 
         // Helper: flush pending bind entries into a real bind group
         // and bind it. Hoisted out of the match for the two draw
         // variants below.
+        //
+        // A texture binding with no explicit `SetSampler` on its slot
+        // falls back to ONE lazily-created linear-clamp default sampler
+        // (`SamplerDesc::default()`), mirroring the Vulkan render
+        // driver's `default_desc` fallback: the shader contract pairs
+        // every sampled slot's `tex_N` with an `smp_N` binding, and the
+        // auto layout demands the pair be bound — a native arm that
+        // never calls `set_sampler` still draws, so this one must too.
         let flush_bg = |bind_entries: &mut alloc::collections::BTreeMap<u32, BindEntry>,
-                        cur: Option<&state::PipelineEntry>|
+                        cur: Option<&state::PipelineEntry>,
+                        default_sampler: &mut Option<u32>|
          -> Option<u32> {
             if bind_entries.is_empty() {
                 return None;
             }
             let p = cur?;
+            let missing_samplers: alloc::vec::Vec<u32> = bind_entries
+                .iter()
+                .filter(|(binding, entry)| {
+                    matches!(entry, BindEntry::TextureView(_))
+                        && **binding >= TEXTURE_BINDING_BASE
+                        && (**binding - TEXTURE_BINDING_BASE) % 2 == 0
+                        && !bind_entries.contains_key(&(**binding + 1))
+                })
+                .map(|(binding, _)| *binding + 1)
+                .collect();
+            for binding in missing_samplers {
+                let s = *default_sampler.get_or_insert_with(|| {
+                    let d = crate::texture::SamplerDesc::default();
+                    unsafe {
+                        ffi::quanta_create_sampler(
+                            device,
+                            filter_code(d.mag_filter),
+                            filter_code(d.min_filter),
+                            filter_code(d.mip_filter),
+                            address_code(d.address_u),
+                            address_code(d.address_v),
+                            address_code(d.address_v),
+                            d.max_anisotropy as u32,
+                            ffi::compare::UNSET,
+                        )
+                    }
+                });
+                bind_entries.insert(binding, BindEntry::Sampler(s));
+            }
             let bg_desc = unsafe { ffi::quanta_bg_desc_create(p.layout) };
-            for (slot, entry) in bind_entries.iter() {
+            for (binding, entry) in bind_entries.iter() {
                 match entry {
                     BindEntry::Buffer(h) | BindEntry::OwnedBuffer(h) => unsafe {
-                        ffi::quanta_bg_desc_add_buffer(bg_desc, *slot, *h)
+                        ffi::quanta_bg_desc_add_buffer(bg_desc, *binding, *h)
                     },
                     BindEntry::TextureView(h) => unsafe {
-                        ffi::quanta_bg_desc_add_texture_view(bg_desc, *slot, *h)
+                        ffi::quanta_bg_desc_add_texture_view(bg_desc, *binding, *h)
                     },
                     BindEntry::Sampler(h) => unsafe {
-                        ffi::quanta_bg_desc_add_sampler(bg_desc, *slot, *h)
+                        ffi::quanta_bg_desc_add_sampler(bg_desc, *binding, *h)
                     },
                 }
             }
@@ -571,6 +629,9 @@ impl WebgpuDevice {
             bind_entries.clear();
             Some(bg)
         };
+        // The pass-wide default sampler, minted on first missing-sampler
+        // flush and released with the other owned resources after submit.
+        let mut default_sampler: Option<u32> = None;
 
         let mut owned_bgs: Vec<u32> = Vec::new();
         // Resources allocated within this pass that must be released
@@ -623,7 +684,9 @@ impl WebgpuDevice {
                     vertex_count,
                     instance_count,
                 } => {
-                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                    if let Some(bg) =
+                        flush_bg(&mut bind_entries, current_pipeline, &mut default_sampler)
+                    {
                         owned_bgs.push(bg);
                     }
                     unsafe {
@@ -634,7 +697,9 @@ impl WebgpuDevice {
                     index_count,
                     instance_count,
                 } => {
-                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                    if let Some(bg) =
+                        flush_bg(&mut bind_entries, current_pipeline, &mut default_sampler)
+                    {
                         owned_bgs.push(bg);
                     }
                     unsafe {
@@ -667,7 +732,7 @@ impl WebgpuDevice {
                         .get(handle)
                         .ok_or_else(|| Self::err("unknown texture for SetTexture"))?
                         .view;
-                    bind_entries.insert(*slot, BindEntry::TextureView(view));
+                    bind_entries.insert(texture_binding(*slot), BindEntry::TextureView(view));
                 }
                 RenderOp::SetSampler { slot, sampler } => {
                     let s = unsafe {
@@ -694,7 +759,7 @@ impl WebgpuDevice {
                                 .unwrap_or(ffi::compare::UNSET),
                         )
                     };
-                    bind_entries.insert(*slot, BindEntry::Sampler(s));
+                    bind_entries.insert(sampler_binding(*slot), BindEntry::Sampler(s));
                     owned_samplers.push(s);
                 }
                 RenderOp::SetValue { slot, offset, len } => {
@@ -739,7 +804,9 @@ impl WebgpuDevice {
                     buffer_handle,
                     offset,
                 } => {
-                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                    if let Some(bg) =
+                        flush_bg(&mut bind_entries, current_pipeline, &mut default_sampler)
+                    {
                         owned_bgs.push(bg);
                     }
                     let &buf = buffers
@@ -754,7 +821,9 @@ impl WebgpuDevice {
                     offset,
                     index_handle,
                 } => {
-                    if let Some(bg) = flush_bg(&mut bind_entries, current_pipeline) {
+                    if let Some(bg) =
+                        flush_bg(&mut bind_entries, current_pipeline, &mut default_sampler)
+                    {
                         owned_bgs.push(bg);
                     }
                     let &idx_buf = buffers.get(index_handle).ok_or_else(|| {
@@ -851,6 +920,9 @@ impl WebgpuDevice {
             unsafe { ffi::quanta_release(bg) };
         }
         for s in owned_samplers {
+            unsafe { ffi::quanta_release(s) };
+        }
+        if let Some(s) = default_sampler {
             unsafe { ffi::quanta_release(s) };
         }
         // SetValue's per-call uniform buffers go through

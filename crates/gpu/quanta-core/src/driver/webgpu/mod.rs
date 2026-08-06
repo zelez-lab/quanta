@@ -322,14 +322,27 @@ impl QGpuDevice for WebgpuDevice {
 
     // ── Buffers ────────────────────────────────────────────────────────────
 
+    /// A `Field` is usage-agnostic on every native backend — Metal and
+    /// Vulkan buffers carry no creation-time usage contract, so the same
+    /// `Field` legally feeds a compute kernel, a vertex fetch, an index
+    /// fetch, or a uniform binding. WebGPU is the one API that enforces
+    /// usage AT CREATION, so this driver grants every render-lane bit up
+    /// front; anything narrower silently forks the cross-backend contract
+    /// (a `bind_vertices(field)` that draws on Metal/Vulkan invalidated
+    /// every submit here — dija's first live frame). `MAP_*` stays off:
+    /// those bits genuinely restrict combinations, and mapping goes
+    /// through the copy path.
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {
         let device = self.dev()?;
-        let mut wgpu_usage = buffer_usage::COPY_SRC | buffer_usage::COPY_DST;
-        if usage.has(FieldUsage::UNIFORM) {
-            wgpu_usage |= buffer_usage::UNIFORM;
-        } else {
-            wgpu_usage |= buffer_usage::STORAGE;
-        }
+        let _ = usage; // creation usage is uniform across Fields — see above
+        let wgpu_usage = buffer_usage::COPY_SRC
+            | buffer_usage::COPY_DST
+            | buffer_usage::STORAGE
+            | buffer_usage::UNIFORM
+            | buffer_usage::VERTEX
+            | buffer_usage::INDEX
+            | buffer_usage::INDIRECT
+            | buffer_usage::QUERY_RESOLVE;
         let buf = unsafe { ffi::quanta_create_buffer(device, size as f64, wgpu_usage) };
         let handle = self.state.alloc_handle();
         self.state.buffers.0.borrow_mut().insert(handle, buf);
