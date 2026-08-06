@@ -17,9 +17,22 @@
 //!
 //! Informational: the probe asserts correctness of one dispatch but
 //! never fails on timing. Grep CI logs for `wave-cache probe:`.
+//!
+//! Phase markers go to STDERR (unbuffered — a crash cannot eat them the
+//! way block-buffered stdout loses `println!` output under CI pipes):
+//! the probe's first lavapipe run segfaulted with empty stdout, so the
+//! markers are what localizes any recurrence.
+
+/// Phase marker on stderr; stderr is unbuffered, so this survives a
+/// crash that swallows pending stdout.
+fn mark(phase: &str) {
+    eprintln!("wave-cache probe [phase] {phase}");
+}
 
 fn main() {
+    mark("init");
     let gpu = quanta::init().expect("probe requires a GPU device");
+    mark("init done");
     println!("wave-cache probe: device = {}", gpu.name());
 
     let def = build_def();
@@ -31,12 +44,14 @@ fn main() {
     fin.write(&vec![1.5f32; N]).unwrap();
 
     // Warm-up + correctness: one full create/bind/dispatch/read cycle.
+    mark("warmup create");
     let mut wave = gpu.wave_jit(&bytes).unwrap();
     wave.bind(0, &fin);
     wave.bind(1, &fout);
     let mut pulse = gpu.dispatch(&wave, N as u32).unwrap();
     pulse.wait().unwrap();
     let out = fout.read().unwrap();
+    mark("warmup done");
     assert!(
         (out[0] - 2.5).abs() < 1e-6,
         "probe kernel wrong: {}",
@@ -44,6 +59,7 @@ fn main() {
     );
 
     // Creation only: the cost a wave/pipeline cache would remove.
+    mark("create loop");
     const CREATES: u32 = 32;
     let t = std::time::Instant::now();
     for _ in 0..CREATES {
@@ -53,7 +69,10 @@ fn main() {
     let per_create = t.elapsed().as_secs_f64() * 1e6 / CREATES as f64;
     println!("wave-cache probe: creation only: {per_create:.1} us/op ({CREATES} creates)");
 
+    mark("create loop done");
+
     // Creation + dispatch + wait: today's create-per-dispatch shape.
+    mark("full loop");
     const FULL: u32 = 16;
     let t = std::time::Instant::now();
     for _ in 0..FULL {
@@ -66,7 +85,10 @@ fn main() {
     let per_full = t.elapsed().as_secs_f64() * 1e6 / FULL as f64;
     println!("wave-cache probe: creation+dispatch+wait: {per_full:.1} us/op ({FULL} iters)");
 
+    mark("full loop done");
+
     // Reused wave: the floor a perfect cache would approach.
+    mark("reuse loop");
     const REUSED: u32 = 32;
     let t = std::time::Instant::now();
     for _ in 0..REUSED {
@@ -83,6 +105,9 @@ fn main() {
         per_full - per_reuse,
         100.0 * (per_full - per_reuse) / per_full
     );
+    use std::io::Write as _;
+    std::io::stdout().flush().ok();
+    mark("done (teardown follows)");
 }
 
 /// A minimal add-one kernel, built as runtime IR so the probe needs no
