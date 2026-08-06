@@ -264,6 +264,22 @@ browser loads. ABI conventions:
   handle)` / `quanta_reject(task)`. Rust executor (~150 LOC) turns
   those into `Future::poll → Ready`.
 
+### Render-lane binding contract
+
+Render-pass bind groups are assembled per draw in `render.rs`, keyed by
+the **resolved WGSL binding index**, never the API slot — the three
+API-level slot spaces map as: uniform/storage slot → `@binding(slot)`
+(0-7), texture slot → `@binding(8 + 2*slot)`, sampler slot →
+`@binding(8 + 2*slot + 1)` (the WebGPU twin of Vulkan's `binding = slot`
+/ `8 + slot` combined-image-sampler translation; the WGSL shader emitter
+declares the same indices). A texture binding whose slot carries no
+explicit sampler gets one lazily-minted linear-clamp default sampler per
+pass (Vulkan `default_desc` parity — the auto layout requires the pair).
+`field_alloc` grants every render-lane usage bit at creation (STORAGE |
+UNIFORM | VERTEX | INDEX | INDIRECT | QUERY_RESOLVE + copies): WebGPU is
+the only backend that enforces buffer usage at creation, and anything
+narrower forks the cross-backend `Field` contract.
+
 ### B′ — WebIDL → Rust + TS code tables
 
 Step `1d93e78` (2026-04-28). Eliminates the lockstep hazard between

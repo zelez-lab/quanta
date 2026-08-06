@@ -418,6 +418,25 @@ declaration order (first texture param ↔ `.texture(0, …)`/`.sampler(0, …)`
 and uniform params take buffer slots in declaration order among uniforms
 (first uniform ↔ `.uniform(0, …)`).
 
+**Slots are API-level; each driver maps them onto its shader ABI.** Buffer
+slots and texture slots are separate spaces (binding a uniform at slot 0 and
+a texture at slot 0 is the normal shape), and the translation is the
+driver's job: Metal uses its native per-kind index spaces; Vulkan binds
+buffers at `binding = slot` and combined image samplers at `8 + slot`;
+WebGPU binds buffers at `@binding(slot)` (0-7), textures at
+`@binding(8 + 2*slot)`, and samplers at `@binding(8 + 2*slot + 1)`. DSL
+shaders express the right bindings automatically. **Hand-authored shaders
+must declare the contract bindings, not the API slot numbers** — a raw WGSL
+module sampling texture slot 0 declares its texture at `@binding(8)` and
+its sampler at `@binding(9)` (`examples/web_textured` is the reference), and
+raw SPIR-V follows the Vulkan spelling above.
+
+**A texture slot with no explicit `.sampler(slot, …)` samples through a
+default sampler** — linear min/mag filtering, clamp-to-edge addressing (the
+`SamplerDesc::default()` shape) — on every backend that binds samplers
+separately. Set the sampler explicitly whenever filtering or addressing
+matters.
+
 ### Backend-managed MSAA
 
 | Method | Description |

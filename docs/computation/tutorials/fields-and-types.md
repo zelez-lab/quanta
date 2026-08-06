@@ -111,6 +111,15 @@ let render  = gpu.field_with_usage::<f32>(n, FieldUsage::default_render())?;   /
 let uniform = gpu.field_with_usage::<f32>(n, FieldUsage::default_uniform())?;  // READ | UNIFORM | TRANSFER
 ```
 
+Usage never *gates* which lane may consume a field: the same `Field` can
+feed a compute kernel, a vertex fetch (`.vertices(slot, &field)`), an
+index buffer, or a uniform binding on every backend. Metal and Vulkan
+buffers carry no creation-time usage contract, and on WebGPU — the one
+API that enforces usage at creation — the driver grants every lane's
+usage bits up front so the cross-backend behavior stays identical. The
+presets are an intent declaration (and may guide allocation placement),
+not a permission set.
+
 When using `#[derive(quanta::Fields)]`, you do not call these directly --
 the generated dispatch code allocates, writes, and reads for you.
 

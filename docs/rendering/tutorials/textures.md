@@ -286,6 +286,12 @@ For depth/shadow comparison samplers, add `.with_compare(CompareOp::Less)`
 (or any other `CompareOp` variant). Dropping a `Sampler` releases the
 driver resource.
 
+A render pass that binds a texture slot without a matching
+`.sampler(slot, …)` samples through a **default sampler** — the
+`SamplerDesc::default()` shape (linear min/mag, clamp-to-edge) — on every
+backend that binds samplers separately. Convenient for one-off draws; set
+the sampler explicitly whenever filtering or addressing matters.
+
 | Filter           | Behavior                                |
 |------------------|-----------------------------------------|
 | `Filter::Nearest`| Snap to nearest texel (pixelated)       |
