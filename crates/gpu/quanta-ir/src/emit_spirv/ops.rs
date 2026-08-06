@@ -1074,22 +1074,23 @@ impl SpvEmitter {
             // applies to storage buffers (which is the point of an
             // explicit fence; thread-local memory needs no fence).
             KernelOp::Fence { order } => {
-                let order_bits: u32 = match order {
-                    crate::MemoryOrder::Relaxed => 0,
-                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
-                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
-                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
-                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
-                };
-                let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
-                let semantics = self.emit_constant_u32(
-                    order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
-                );
-                Self::emit_op(
-                    &mut self.sec_function,
-                    OP_MEMORY_BARRIER,
-                    &[scope_wg, semantics],
-                );
+                let order_bits: u32 = vulkan_semantics_bits(*order);
+                // A Relaxed fence orders nothing — emit no barrier at all.
+                // An OpMemoryBarrier whose semantics carry storage-class
+                // bits but no ordering bit is itself invalid under Vulkan
+                // (VUID-StandaloneSpirv-None-04733), and the WGSL emitter
+                // already lowers the Relaxed fence to a no-op.
+                if order_bits != 0 {
+                    let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
+                    let semantics = self.emit_constant_u32(
+                        order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
+                    );
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_MEMORY_BARRIER,
+                        &[scope_wg, semantics],
+                    );
+                }
             }
 
             KernelOp::SharedDecl { .. } => {
@@ -1353,19 +1354,13 @@ impl SpvEmitter {
                     &[ptr_elem, chain, var_id, zero, idx],
                 );
 
-                // Scope: Device (1). Semantics derived from `order`:
-                //   Relaxed → 0, Acquire → ACQUIRE, Release → RELEASE,
-                //   AcqRel → ACQ_REL, SeqCst → SEQ_CST. We OR with
-                //   WorkgroupMemory so the atomic also synchronizes shared
-                //   memory writes — matches the prior behavior.
+                // Scope: Device (1). Semantics derived from `order` via
+                // `vulkan_semantics_bits` (SeqCst clamps to ACQ_REL —
+                // VUID-StandaloneSpirv-None-04732). We OR with
+                // WorkgroupMemory so the atomic also synchronizes shared
+                // memory writes — matches the prior behavior.
                 let scope = self.emit_constant_u32(1);
-                let order_bits: u32 = match order {
-                    crate::MemoryOrder::Relaxed => 0,
-                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
-                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
-                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
-                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
-                };
+                let order_bits: u32 = vulkan_semantics_bits(*order);
                 // A storage-class semantics bit (WorkgroupMemory) is legal only
                 // alongside a non-relaxed memory order —
                 // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore
@@ -1397,13 +1392,22 @@ impl SpvEmitter {
 
                 let result_id = self.alloc_id();
                 if matches!(op, AtomicOp::CompareExchange) {
-                    // OpAtomicCompareExchange: result_type, result, pointer, scope, equal_sem, unequal_sem, value, comparator
+                    // OpAtomicCompareExchange: result_type, result, pointer, scope, equal_sem, unequal_sem, value, comparator.
+                    // The Unequal operand cannot carry a release component
+                    // (see `vulkan_cas_failure_bits`), so it is derived from
+                    // the same `order` under the failure clamp rather than
+                    // stamped with the success semantics.
+                    let failure_bits = vulkan_cas_failure_bits(*order);
+                    let unequal = self.emit_constant_u32(if failure_bits == 0 {
+                        0
+                    } else {
+                        failure_bits | MEMORY_SEMANTICS_WORKGROUP
+                    });
                     Self::emit_op(
                         &mut self.sec_function,
                         atomic_opcode,
                         &[
-                            result_ty, result_id, chain, scope, semantics, semantics, val_id,
-                            val_id,
+                            result_ty, result_id, chain, scope, semantics, unequal, val_id, val_id,
                         ],
                     );
                 } else {
@@ -1425,7 +1429,7 @@ impl SpvEmitter {
                 desired,
                 ty,
                 success_order,
-                failure_order: _,
+                failure_order,
             } => {
                 let (var_id, elem_ty, _) = *self
                     .field_vars
@@ -1445,17 +1449,13 @@ impl SpvEmitter {
                 );
 
                 let scope = self.emit_constant_u32(1); // Device
-                // SPIR-V `OpAtomicCompareExchange` takes `Equal` and
-                // `Unequal` semantics; we use `success_order` for both
-                // since `failure ≤ success` and SPIR-V doesn't enforce
-                // the LLVM split.
-                let order_bits: u32 = match success_order {
-                    crate::MemoryOrder::Relaxed => 0,
-                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
-                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
-                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
-                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
-                };
+                // SPIR-V `OpAtomicCompareExchange` takes distinct `Equal`
+                // (success) and `Unequal` (failure) semantics. Equal carries
+                // `success_order`; Unequal carries `failure_order` under the
+                // failure clamp — no release component is legal on a failed
+                // CAS (see `vulkan_cas_failure_bits`). Both mappings apply
+                // the Vulkan SeqCst → AcqRel clamp.
+                let order_bits: u32 = vulkan_semantics_bits(*success_order);
                 // A storage-class semantics bit (WorkgroupMemory) is legal only
                 // alongside a non-relaxed memory order —
                 // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore
@@ -1466,6 +1466,12 @@ impl SpvEmitter {
                 } else {
                     order_bits | MEMORY_SEMANTICS_WORKGROUP
                 });
+                let failure_bits = vulkan_cas_failure_bits(*failure_order);
+                let unequal = self.emit_constant_u32(if failure_bits == 0 {
+                    0
+                } else {
+                    failure_bits | MEMORY_SEMANTICS_WORKGROUP
+                });
 
                 // OpAtomicCompareExchange: result_type result pointer scope
                 //   equal_sem unequal_sem value comparator
@@ -1474,7 +1480,7 @@ impl SpvEmitter {
                     &mut self.sec_function,
                     OP_ATOMIC_COMPARE_EXCHANGE,
                     &[
-                        result_ty, result_id, chain, scope, semantics, semantics, des_val, exp_val,
+                        result_ty, result_id, chain, scope, semantics, unequal, des_val, exp_val,
                     ],
                 );
                 self.set_reg(*dst, result_id, result_ty);
@@ -1514,15 +1520,10 @@ impl SpvEmitter {
 
                 // Scope: Workgroup (2) — the contenders are the
                 // lanes of this workgroup only. Semantics: order
-                // bits | WorkgroupMemory, mirroring the buffer arm.
+                // bits | WorkgroupMemory, mirroring the buffer arm
+                // (SeqCst clamps to ACQ_REL — see `vulkan_semantics_bits`).
                 let scope = self.emit_constant_u32(2);
-                let order_bits: u32 = match order {
-                    crate::MemoryOrder::Relaxed => 0,
-                    crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
-                    crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
-                    crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
-                    crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
-                };
+                let order_bits: u32 = vulkan_semantics_bits(*order);
                 // A storage-class semantics bit (WorkgroupMemory) is legal only
                 // alongside a non-relaxed memory order —
                 // VUID-StandaloneSpirv-MemorySemantics-10871. Relaxed therefore
@@ -1554,12 +1555,20 @@ impl SpvEmitter {
 
                 let result_id = self.alloc_id();
                 if matches!(op, AtomicOp::CompareExchange) {
+                    // The Unequal operand cannot carry a release component
+                    // (see `vulkan_cas_failure_bits`) — same split as the
+                    // buffer CompareExchange arm above.
+                    let failure_bits = vulkan_cas_failure_bits(*order);
+                    let unequal = self.emit_constant_u32(if failure_bits == 0 {
+                        0
+                    } else {
+                        failure_bits | MEMORY_SEMANTICS_WORKGROUP
+                    });
                     Self::emit_op(
                         &mut self.sec_function,
                         atomic_opcode,
                         &[
-                            result_ty, result_id, chain, scope, semantics, semantics, val_id,
-                            val_id,
+                            result_ty, result_id, chain, scope, semantics, unequal, val_id, val_id,
                         ],
                     );
                 } else {

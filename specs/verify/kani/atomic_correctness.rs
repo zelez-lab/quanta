@@ -44,14 +44,20 @@ const MEMORY_SEMANTICS_WORKGROUP: u32 = 0x100;
 
 // ── Model of the AtomicCAS instruction word sequence ─────────────────
 //
-// Production: emit_op_atomic_cas (ops_ext.rs:76-118)
+// Production: emit_op_atomic_cas (ops_ext.rs)
 //   Self::emit_op(
 //       &mut self.sec_function,
 //       OP_ATOMIC_COMPARE_EXCHANGE,       // opcode word
 //       &[result_ty, result_id, chain,    // operands
-//         scope, semantics, semantics,
+//         scope, semantics, unequal,
 //         des_val, exp_val],
 //   );
+//
+// `semantics` (Equal) and `unequal` (Unequal/failure) are distinct
+// operands: the failure semantics cannot carry a release component, and
+// SeqCst clamps to AcqRel under Vulkan (VUID-StandaloneSpirv-None-04732)
+// — see vulkan_semantics_bits / vulkan_cas_failure_bits in
+// emit_spirv/constants.rs. The word count (9) is unchanged.
 //
 // emit_op encodes the header word as:
 //   ((1 + operands.len()) << 16) | opcode

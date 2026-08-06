@@ -144,7 +144,14 @@ fn spirv_emits_and_validates() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("shared_atomic_hist.spv");
     std::fs::write(&path, &spv).unwrap();
-    if let Some(out) = run_validator("spirv-val", &[path.to_str().unwrap()]) {
+    // `--target-env` is what arms the Vulkan-environment rules (e.g. the
+    // SeqCst semantics ban, VUID-04732) — plain `spirv-val` checks only
+    // the core spec and let an invalid-for-Vulkan module through here for
+    // months.
+    if let Some(out) = run_validator(
+        "spirv-val",
+        &["--target-env", "vulkan1.3", path.to_str().unwrap()],
+    ) {
         assert!(
             out.status.success(),
             "spirv-val rejected the module:\n{}",

@@ -228,7 +228,48 @@ pub(crate) const MEMORY_SEMANTICS_UNIFORM_MEMORY: u32 = 0x40;
 pub(crate) const MEMORY_SEMANTICS_ACQUIRE: u32 = 0x2;
 pub(crate) const MEMORY_SEMANTICS_RELEASE: u32 = 0x4;
 pub(crate) const MEMORY_SEMANTICS_ACQ_REL: u32 = 0x8;
-pub(crate) const MEMORY_SEMANTICS_SEQ_CST: u32 = 0x10;
+
+// There is intentionally no SEQ_CST (0x10) constant: SPIR-V consumed by
+// Vulkan must not use SequentiallyConsistent memory semantics
+// (VUID-StandaloneSpirv-None-04732). Every memory-semantics word is built
+// through the two mappings below rather than an ad-hoc match, so the
+// forbidden bit has nothing to be spelled with.
+
+/// Ordering bits of a memory-semantics word in the Vulkan environment.
+///
+/// The strongest ordering Vulkan admits is AcquireRelease, so `SeqCst`
+/// clamps to ACQ_REL. Used for Fence, AtomicOp, SharedAtomicOp and the
+/// Equal (success) operand of OpAtomicCompareExchange.
+pub(crate) fn vulkan_semantics_bits(order: crate::MemoryOrder) -> u32 {
+    match order {
+        crate::MemoryOrder::Relaxed => 0,
+        crate::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
+        crate::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
+        crate::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
+        // SequentiallyConsistent is forbidden under Vulkan
+        // (VUID-StandaloneSpirv-None-04732); AcquireRelease is the
+        // strongest ordering it admits.
+        crate::MemoryOrder::SeqCst => MEMORY_SEMANTICS_ACQ_REL,
+    }
+}
+
+/// Ordering bits of the Unequal (failure) operand of
+/// OpAtomicCompareExchange in the Vulkan environment.
+///
+/// A failed CAS performs no store, so this operand cannot carry a release
+/// component — Release and AcquireRelease are invalid here (the same rule
+/// the LLVM emitter applies to `cmpxchg`'s failure ordering). Dropping the
+/// release half gives Release → None and AcqRel → Acquire; SeqCst, already
+/// clamped to AcqRel for Vulkan (see `vulkan_semantics_bits`), also lands
+/// on Acquire.
+pub(crate) fn vulkan_cas_failure_bits(order: crate::MemoryOrder) -> u32 {
+    match order {
+        crate::MemoryOrder::Relaxed | crate::MemoryOrder::Release => 0,
+        crate::MemoryOrder::Acquire | crate::MemoryOrder::AcqRel | crate::MemoryOrder::SeqCst => {
+            MEMORY_SEMANTICS_ACQUIRE
+        }
+    }
+}
 
 pub(crate) const OP_MEMORY_BARRIER: u16 = 225;
 

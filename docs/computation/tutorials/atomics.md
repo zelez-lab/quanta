@@ -132,7 +132,7 @@ single ordering they use `success_order`.
 ### Backend-specific lowering
 
 Most of the time you don't need to think about this — the compiler picks the
-right thing. Two facts worth knowing:
+right thing. Three facts worth knowing:
 
 - **Metal device atomics are always `memory_order_relaxed`.** MSL rejects any
   stronger ordering on `device atomic_*` pointers; `xcrun metal` errors out.
@@ -143,6 +143,13 @@ right thing. Two facts worth knowing:
   failure), and `Fence`. Threadgroup atomics are unaffected.
 - **WGSL has no per-op ordering.** Non-`Relaxed` `Fence` lowers to
   `storageBarrier()`; `Relaxed` is a no-op. CAS uses `success_order` only.
+- **Vulkan SPIR-V has no `SeqCst`.** SequentiallyConsistent memory semantics
+  are forbidden in the Vulkan environment (VUID-StandaloneSpirv-None-04732),
+  so both SPIR-V emitters clamp `SeqCst` to `AcqRel` on `AtomicOp`,
+  `AtomicCas`, and `Fence`. CAS emits both semantics operands: success keeps
+  the (clamped) `success_order`; the failure operand cannot carry a release
+  component, so `Release` maps to `Relaxed` and `AcqRel` / `SeqCst` map to
+  `Acquire`.
 
 If you need fine-grained ordering control today (Rust `AtomicXxxx::fetch_add`
 parity), reach for `Fence` around your atomics rather than expecting the

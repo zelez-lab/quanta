@@ -246,22 +246,23 @@ impl SpvEmitter {
             }
 
             KernelOp::Fence { order } => {
-                let order_bits: u32 = match order {
-                    quanta_ir::MemoryOrder::Relaxed => 0,
-                    quanta_ir::MemoryOrder::Acquire => MEMORY_SEMANTICS_ACQUIRE,
-                    quanta_ir::MemoryOrder::Release => MEMORY_SEMANTICS_RELEASE,
-                    quanta_ir::MemoryOrder::AcqRel => MEMORY_SEMANTICS_ACQ_REL,
-                    quanta_ir::MemoryOrder::SeqCst => MEMORY_SEMANTICS_SEQ_CST,
-                };
-                let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
-                let semantics = self.emit_constant_u32(
-                    order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
-                );
-                Self::emit_op(
-                    &mut self.sec_function,
-                    OP_MEMORY_BARRIER,
-                    &[scope_wg, semantics],
-                );
+                let order_bits: u32 = vulkan_semantics_bits(*order);
+                // A Relaxed fence orders nothing — emit no barrier at all.
+                // An OpMemoryBarrier whose semantics carry storage-class
+                // bits but no ordering bit is itself invalid under Vulkan
+                // (VUID-StandaloneSpirv-None-04733), and the WGSL emitter
+                // already lowers the Relaxed fence to a no-op.
+                if order_bits != 0 {
+                    let scope_wg = self.emit_constant_u32(SCOPE_WORKGROUP);
+                    let semantics = self.emit_constant_u32(
+                        order_bits | MEMORY_SEMANTICS_UNIFORM_MEMORY | MEMORY_SEMANTICS_WORKGROUP,
+                    );
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_MEMORY_BARRIER,
+                        &[scope_wg, semantics],
+                    );
+                }
             }
 
             KernelOp::SharedDecl { .. } => {
@@ -375,11 +376,8 @@ impl SpvEmitter {
                 desired,
                 ty,
                 success_order,
-                failure_order: _,
+                failure_order,
             } => {
-                // SPIR-V `OpAtomicCompareExchange` takes a single scope/
-                // semantics pair; we use `success_order` since LLVM's
-                // constraint guarantees it dominates `failure_order`.
                 self.emit_op_atomic_cas(
                     *dst,
                     *field,
@@ -388,6 +386,7 @@ impl SpvEmitter {
                     *desired,
                     *ty,
                     *success_order,
+                    *failure_order,
                 )?;
             }
 
