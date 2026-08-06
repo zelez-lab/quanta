@@ -70,3 +70,7 @@ examples/*/target/
 # get created under the repo root so they can't drift back into history.
 /roadmap/
 /research/
+
+# Core dumps (container/qemu crash-investigation artifacts).
+core
+*.core

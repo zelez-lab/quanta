@@ -26,8 +26,16 @@ pub struct VkPhysicalDeviceProperties {
     pub sparse_properties: VkPhysicalDeviceSparseProperties,
 }
 
-/// Raw limits — only the offsets we care about.
-/// The Vulkan spec mandates a fixed layout, so field positions are stable.
+/// The FULL `VkPhysicalDeviceLimits`, in spec field order.
+///
+/// This struct is embedded BY VALUE in [`VkPhysicalDeviceProperties`],
+/// so it is not a "read the fields we care about" convenience: the
+/// driver writes `sizeof(VkPhysicalDeviceProperties)` bytes into our
+/// buffer, and any missing tail is a stack overflow on every
+/// `vkGetPhysicalDeviceProperties`. It previously stopped at 56 of the
+/// 106 fields (424 bytes vs 504), overflowing by 80 bytes on every
+/// Vulkan discovery — harmless in dev builds by stack-layout luck, a
+/// segfault in release ones. Keep every field, in order, forever.
 #[repr(C)]
 pub struct VkPhysicalDeviceLimitsRaw {
     pub max_image_dimension_1d: u32,
@@ -85,8 +93,57 @@ pub struct VkPhysicalDeviceLimitsRaw {
     pub max_compute_work_group_count: [u32; 3],
     pub max_compute_work_group_invocations: u32,
     pub max_compute_work_group_size: [u32; 3],
-    // The rest of the struct (we don't use, but must pad for layout correctness).
-    pub _tail: [u8; 172],
+    pub sub_pixel_precision_bits: u32,
+    pub sub_texel_precision_bits: u32,
+    pub mipmap_precision_bits: u32,
+    pub max_draw_indexed_index_value: u32,
+    pub max_draw_indirect_count: u32,
+    pub max_sampler_lod_bias: f32,
+    pub max_sampler_anisotropy: f32,
+    pub max_viewports: u32,
+    pub max_viewport_dimensions: [u32; 2],
+    pub viewport_bounds_range: [f32; 2],
+    pub viewport_sub_pixel_bits: u32,
+    pub min_memory_map_alignment: usize,
+    pub min_texel_buffer_offset_alignment: u64,
+    pub min_uniform_buffer_offset_alignment: u64,
+    pub min_storage_buffer_offset_alignment: u64,
+    pub min_texel_offset: i32,
+    pub max_texel_offset: u32,
+    pub min_texel_gather_offset: i32,
+    pub max_texel_gather_offset: u32,
+    pub min_interpolation_offset: f32,
+    pub max_interpolation_offset: f32,
+    pub sub_pixel_interpolation_offset_bits: u32,
+    pub max_framebuffer_width: u32,
+    pub max_framebuffer_height: u32,
+    pub max_framebuffer_layers: u32,
+    pub framebuffer_color_sample_counts: u32,
+    pub framebuffer_depth_sample_counts: u32,
+    pub framebuffer_stencil_sample_counts: u32,
+    pub framebuffer_no_attachments_sample_counts: u32,
+    pub max_color_attachments: u32,
+    pub sampled_image_color_sample_counts: u32,
+    pub sampled_image_integer_sample_counts: u32,
+    pub sampled_image_depth_sample_counts: u32,
+    pub sampled_image_stencil_sample_counts: u32,
+    pub storage_image_sample_counts: u32,
+    pub max_sample_mask_words: u32,
+    pub timestamp_compute_and_graphics: u32,
+    pub timestamp_period: f32,
+    pub max_clip_distances: u32,
+    pub max_cull_distances: u32,
+    pub max_combined_clip_and_cull_distances: u32,
+    pub discrete_queue_priorities: u32,
+    pub point_size_range: [f32; 2],
+    pub line_width_range: [f32; 2],
+    pub point_size_granularity: f32,
+    pub line_width_granularity: f32,
+    pub strict_lines: u32,
+    pub standard_sample_locations: u32,
+    pub optimal_buffer_copy_offset_alignment: u64,
+    pub optimal_buffer_copy_row_pitch_alignment: u64,
+    pub non_coherent_atom_size: u64,
 }
 
 #[repr(C)]

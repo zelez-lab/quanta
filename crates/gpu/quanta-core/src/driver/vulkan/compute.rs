@@ -21,6 +21,16 @@ pub(crate) type DispatchRecord = ([u32; 3], [u32; 3]);
 /// Try to optimize SPIR-V binary via spirv-opt if available.
 /// Falls back to the original input on any failure (missing binary, crash, etc.).
 fn try_optimize_spirv(spirv: &[u8]) -> Vec<u8> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // A missing spirv-opt fails the spawn on EVERY call — and a failed
+    // posix_spawn still pays a full vfork+exec round trip, a real
+    // per-wave tax on the JIT path (visible as one vfork per wave_jit
+    // under gdb). Remember the first not-found and stop asking; other
+    // spawn failures (EMFILE, ...) may be transient and keep retrying.
+    static SPIRV_OPT_ABSENT: AtomicBool = AtomicBool::new(false);
+    if SPIRV_OPT_ABSENT.load(Ordering::Relaxed) {
+        return spirv.to_vec();
+    }
     let child = std::process::Command::new("spirv-opt")
         .args(["--target-env=vulkan1.3", "-O", "-"])
         .stdin(Stdio::piped())
@@ -29,7 +39,12 @@ fn try_optimize_spirv(spirv: &[u8]) -> Vec<u8> {
         .spawn();
     let mut child = match child {
         Ok(c) => c,
-        Err(_) => return spirv.to_vec(),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                SPIRV_OPT_ABSENT.store(true, Ordering::Relaxed);
+            }
+            return spirv.to_vec();
+        }
     };
     // Write SPIR-V to stdin
     if let Some(ref mut stdin) = child.stdin.take() {
