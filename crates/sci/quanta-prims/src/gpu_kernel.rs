@@ -953,6 +953,42 @@ pub fn block_reduce_max_f32_tree_buffer(data: &[f32], out: &mut [f32]) {
     }
 }
 
+// ── Top-level kernels: reduce staging (pad-copy) ──────────────────
+//
+// Device-side staging for the resident device-wide reduces: copy the
+// `n` live elements of `src` into `dst` and fill the tail with the
+// reduce identity, all on the GPU — the pass never round-trips
+// through host memory, so it encodes into the deferred lane like any
+// other dispatch. One variant per reduce element type; the identity
+// arrives as the `pad` value parameter (slot 3).
+
+/// f32 pad-copy: `dst[i] = if i < n { src[i] } else { pad }`.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn pad_copy_f32(src: &[f32], dst: &mut [f32], n: u32, pad: f32) {
+    let i = quark_id();
+    let j = if i < n { i } else { 0u32 };
+    let v = if i < n { src[j as usize] } else { pad };
+    dst[i as usize] = v;
+}
+
+/// i32 pad-copy: `dst[i] = if i < n { src[i] } else { pad }`.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn pad_copy_i32(src: &[i32], dst: &mut [i32], n: u32, pad: i32) {
+    let i = quark_id();
+    let j = if i < n { i } else { 0u32 };
+    let v = if i < n { src[j as usize] } else { pad };
+    dst[i as usize] = v;
+}
+
+/// u32 pad-copy: `dst[i] = if i < n { src[i] } else { pad }`.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn pad_copy_u32(src: &[u32], dst: &mut [u32], n: u32, pad: u32) {
+    let i = quark_id();
+    let j = if i < n { i } else { 0u32 };
+    let v = if i < n { src[j as usize] } else { pad };
+    dst[i as usize] = v;
+}
+
 // ── Device functions: block scan family ──────────────────────────
 //
 // Block-wide **inclusive** prefix-sum scan. For each lane k in the

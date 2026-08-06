@@ -14,7 +14,7 @@
 //! branches carry the knee constants T9230 pins down.
 
 use crate::activation::dsl as act_dsl;
-use crate::functional::{adopt_f32_field, f32_input, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::QuantaError;
@@ -40,16 +40,19 @@ mod dsl {
     }
 
     /// Cross-entropy backward, elementwise: `dx = scale·(p − onehot)` with
-    /// `p = exp(x−m)/l` reconstructed from the stats.
+    /// `p = exp(x−m)/l` reconstructed from the stats. The upstream gradient
+    /// arrives as a 1-element device buffer (`gscale`) so the backward never
+    /// reads it on the host: `scale = gscale[0] · red_scale`.
     #[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
     pub fn ce_bwd(
         x: &[f32],
         stats: &[f32],
         labels: &[u32],
         dx: &mut [f32],
+        gscale: &[f32],
         n: u32,
         c: u32,
-        scale: f32,
+        red_scale: f32,
     ) {
         let i = quark_id();
         let total = n * c;
@@ -64,6 +67,7 @@ mod dsl {
         } else {
             0.0f32
         };
+        let scale = gscale[0u32 as usize] * red_scale;
         if i < total {
             dx[idx as usize] = scale * (p - ind);
         }
@@ -227,8 +231,10 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
     let gpu = logits.value().gpu().clone();
 
     // Zero-copy logits binding; stats + labels stay device fields the
-    // backward captures. The per-row loss values are the one genuine
-    // host read here — the scalar total is a host sum.
+    // backward captures. Nothing here reads host memory: the scalar
+    // total is a device-resident tree sum, so a full training step
+    // encodes end-to-end and only a host read of the loss (logging)
+    // forces the deferred-lane flush.
     let xi = f32_input(&gpu, &logits.value())?;
     let sf = gpu.field::<f32>(n * 2).map_err(lift)?;
     let lf = gpu.field::<u32>(n).map_err(lift)?;
@@ -250,29 +256,42 @@ pub fn cross_entropy_var<T: DiffScalar + ToF64>(
     w.set_value(4, n as u32);
     w.set_value(5, c as u32);
     gpu.dispatch(&w, n as u32).map_err(lift)?;
-    let rows = rf.read().map_err(lift)?;
 
     let red_scale = match reduction {
         Reduction::Mean => 1.0 / n as f64,
         Reduction::Sum => 1.0,
     };
-    let total: f64 = rows.iter().map(|&v| v as f64).sum::<f64>() * red_scale;
-    let out_arr =
-        Array::from_slice(&gpu, &[T::from_f64(total)], &[1]).map_err(AutogradError::from)?;
+    // Device-resident total: tree-sum the per-row losses on the GPU and
+    // keep the `[1]` scalar there (an f32 tree sum in place of the former
+    // f64 host fold — a few ULP of drift, inside the oracle tolerances;
+    // the gradients never depended on the total and are unchanged).
+    let rows_arr = Array::<f32>::from_field(&gpu, rf, &[n]).map_err(AutogradError::from)?;
+    let total = rows_arr.sum_device().map_err(AutogradError::from)?;
+    let total = match reduction {
+        Reduction::Sum => total,
+        Reduction::Mean => {
+            let s = Array::full(&gpu, red_scale as f32, &[1]).map_err(AutogradError::from)?;
+            total.mul(&s).map_err(AutogradError::from)?
+        }
+    };
+    let out_arr = T::array_from_f32(total).map_err(AutogradError::from)?;
 
     let gpu_b = gpu.clone();
     let backward = move |g: &Array<T>| -> Result<Vec<Array<T>>, AutogradError> {
-        let g0 = to_f32_host(g)?[0];
-        let scale = g0 * red_scale as f32;
+        // The upstream gradient stays a device scalar: bind it (zero-copy
+        // for f32) and fold `red_scale` in on the GPU — no host read, so
+        // the backward encodes into the same open lane as the forward.
+        let gi = f32_input(&gpu_b, g)?;
         let dxf = gpu_b.field::<f32>(n * c).map_err(lift)?;
         let mut w = dsl::ce_bwd(&gpu_b).map_err(lift)?;
         w.bind(0, xi.field());
         w.bind(1, &sf);
         w.bind(2, &lf);
         w.bind(3, &dxf);
-        w.set_value(4, n as u32);
-        w.set_value(5, c as u32);
-        w.set_value(6, scale);
+        w.bind(4, gi.field());
+        w.set_value(5, n as u32);
+        w.set_value(6, c as u32);
+        w.set_value(7, red_scale as f32);
         gpu_b.dispatch(&w, (n * c) as u32).map_err(lift)?;
         let dx = adopt_f32_field::<T>(&gpu_b, dxf, &[n, c])?;
         Ok(vec![dx])

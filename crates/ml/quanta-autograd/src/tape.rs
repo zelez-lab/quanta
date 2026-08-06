@@ -293,10 +293,11 @@ impl<T: DiffScalar> Var<T> {
                 Op::Sigmoid(a, y) => accum(&mut grads[*a], vjp::sigmoid(&g, y)?)?,
                 Op::Tanh(a, y) => accum(&mut grads[*a], vjp::tanh(&g, y)?)?,
                 Op::Sum(a, in_shape) => {
-                    // sum → scalar: ∂(Σx)/∂xᵢ = 1, so grad broadcasts the scalar
-                    // g to every input element: g_in = ones(in_shape) · g_scalar.
-                    let gval = g.to_vec()?[0];
-                    let gin = Array::full(&gpu, gval, in_shape)?;
+                    // sum → scalar: ∂(Σx)/∂xᵢ = 1, so grad broadcasts the
+                    // device scalar g to every input element — sourced from
+                    // the device (no host read; the deferred lane stays open,
+                    // mirroring the SumAxis broadcast below).
+                    let gin = g.broadcast_to(in_shape)?.contiguous()?;
                     accum(&mut grads[*a], gin)?;
                 }
                 Op::Matmul(a, b, av, bv) => {

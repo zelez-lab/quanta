@@ -41,6 +41,18 @@ pub trait DiffScalar: FloatScalar + ReduceScalar {
         let converted: Vec<Self> = host.iter().map(|&x| Self::from_f64(x as f64)).collect();
         Array::from_slice(gpu, &converted, shape)
     }
+
+    /// Adopt an `Array<f32>` an f32 device pipeline produced as an
+    /// `Array<Self>` — the inverse of [`DiffScalar::as_f32_array`].
+    /// Identity (zero-copy, no completion point) when `Self` IS `f32`;
+    /// any other scalar converts through the host (a completion point,
+    /// like [`DiffScalar::array_from_f32_field`]).
+    fn array_from_f32(a: Array<f32>) -> Result<Array<Self>, ArrayError> {
+        let shape = a.shape().to_vec();
+        let host = a.to_vec()?;
+        let converted: Vec<Self> = host.iter().map(|&x| Self::from_f64(x as f64)).collect();
+        Array::from_slice(a.gpu(), &converted, &shape)
+    }
 }
 
 impl DiffScalar for f32 {
@@ -58,5 +70,9 @@ impl DiffScalar for f32 {
         shape: &[usize],
     ) -> Result<Array<f32>, ArrayError> {
         Array::from_field(gpu, field, shape)
+    }
+
+    fn array_from_f32(a: Array<f32>) -> Result<Array<f32>, ArrayError> {
+        Ok(a)
     }
 }

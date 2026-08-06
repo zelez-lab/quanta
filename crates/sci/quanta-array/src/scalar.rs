@@ -31,6 +31,9 @@ pub trait FloatScalar: ArrayScalar {}
 ///
 /// The reductions take an on-device [`Field`](quanta_core::Field) so the data
 /// never round-trips through host memory — the array stays GPU-resident.
+/// The `_resident` forms go one step further: the reduced scalar itself
+/// stays on the device as a 1-element field (no readback, no deferred-lane
+/// flush), bit-equal to the host-returning forms.
 pub trait ReduceScalar: ArrayScalar {
     fn reduce_add(
         gpu: &quanta_core::Gpu,
@@ -47,10 +50,26 @@ pub trait ReduceScalar: ArrayScalar {
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<Self, quanta_core::QuantaError>;
+    fn reduce_add_resident(
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
+        n: usize,
+    ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError>;
+    fn reduce_min_resident(
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
+        n: usize,
+    ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError>;
+    fn reduce_max_resident(
+        gpu: &quanta_core::Gpu,
+        data: &quanta_core::Field<Self>,
+        n: usize,
+    ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError>;
 }
 
 macro_rules! reduce_scalar {
-    ($t:ty, $add:ident, $min:ident, $max:ident) => {
+    ($t:ty, $add:ident, $min:ident, $max:ident, $add_res:ident, $min_res:ident,
+     $max_res:ident) => {
         impl ReduceScalar for $t {
             fn reduce_add(
                 gpu: &quanta_core::Gpu,
@@ -73,6 +92,27 @@ macro_rules! reduce_scalar {
             ) -> Result<Self, quanta_core::QuantaError> {
                 quanta_prims::$max(gpu, data, n)
             }
+            fn reduce_add_resident(
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
+                n: usize,
+            ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError> {
+                quanta_prims::$add_res(gpu, data, n)
+            }
+            fn reduce_min_resident(
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
+                n: usize,
+            ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError> {
+                quanta_prims::$min_res(gpu, data, n)
+            }
+            fn reduce_max_resident(
+                gpu: &quanta_core::Gpu,
+                data: &quanta_core::Field<Self>,
+                n: usize,
+            ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError> {
+                quanta_prims::$max_res(gpu, data, n)
+            }
         }
     };
 }
@@ -81,19 +121,28 @@ reduce_scalar!(
     f32,
     device_reduce_add_f32_field,
     device_reduce_min_f32_field,
-    device_reduce_max_f32_field
+    device_reduce_max_f32_field,
+    device_reduce_add_f32_resident,
+    device_reduce_min_f32_resident,
+    device_reduce_max_f32_resident
 );
 reduce_scalar!(
     i32,
     device_reduce_add_i32_field,
     device_reduce_min_i32_field,
-    device_reduce_max_i32_field
+    device_reduce_max_i32_field,
+    device_reduce_add_i32_resident,
+    device_reduce_min_i32_resident,
+    device_reduce_max_i32_resident
 );
 reduce_scalar!(
     u32,
     device_reduce_add_u32_field,
     device_reduce_min_u32_field,
-    device_reduce_max_u32_field
+    device_reduce_max_u32_field,
+    device_reduce_add_u32_resident,
+    device_reduce_min_u32_resident,
+    device_reduce_max_u32_resident
 );
 
 macro_rules! int_scalar {

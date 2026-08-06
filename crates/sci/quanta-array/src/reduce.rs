@@ -28,6 +28,22 @@ impl<T: ReduceScalar> Array<T> {
         Ok(T::reduce_add(self.gpu(), src.field_ref(), n)?)
     }
 
+    /// Device-resident sum: the same tree reduction as [`Array::sum`], but
+    /// the scalar stays on the GPU as a 1-element `[1]` array — no host
+    /// readback, and no deferred-lane flush (every pass encodes through the
+    /// lane). Bit-equal to `sum` for the same input. Reading the result
+    /// (`to_vec`) completes the pending work exactly like any other field
+    /// read. An empty array sums to a `[1]` zero.
+    pub fn sum_device(&self) -> Result<Array<T>, ArrayError> {
+        let src = self.contiguous_or_self()?;
+        let n = src.len();
+        if n == 0 {
+            return Array::full(self.gpu(), T::ZERO, &[1]);
+        }
+        let f = T::reduce_add_resident(self.gpu(), src.field_ref(), n)?;
+        Array::from_field(self.gpu(), f, &[1])
+    }
+
     /// Minimum element (numpy `arr.min()`). Errors on an empty array.
     pub fn min(&self) -> Result<T, ArrayError> {
         let src = self.contiguous_or_self()?;

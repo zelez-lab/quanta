@@ -340,12 +340,14 @@ impl<T: DiffScalar> Var<T> {
     }
 
     /// Sum of all elements → a 1-element (scalar) `Var`. The natural way to
-    /// produce a scalar loss to call `grad` on.
+    /// produce a scalar loss to call `grad` on. The scalar stays
+    /// device-resident ([`Array::sum_device`]) — no host readback, so under
+    /// deferred dispatch the forward keeps encoding; reading the loss value
+    /// (`to_vec` for logging) is what completes the pending work.
     pub fn sum(&self) -> Result<Var<T>, AutogradError> {
         let x = self.value();
-        let s = x.sum()?;
         let in_shape = x.shape().to_vec();
-        let scalar = Array::full(x.gpu(), s, &[1])?;
+        let scalar = x.sum_device()?;
         Ok(self.tape_handle().push(Op::Sum(self.id, in_shape), scalar))
     }
 

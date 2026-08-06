@@ -88,6 +88,13 @@ device-wide bitonic network, one launch per compare-exchange pass. Each
 call round-trips host ↔ GPU — inside a larger pipeline, prefer the
 `block_*` kernels and keep intermediates resident.
 
+Each reduce also has a `…_field` spelling (device field in, host scalar
+out) and a `…_resident` spelling (device field in, 1-element device
+field out). The resident form never touches host memory — under
+deferred dispatch it encodes into the open lane without forcing a
+flush — and runs the identical pass structure, so all three spellings
+are bit-equal for the same input.
+
 ## Backend matrix
 
 | Primitive                  | Metal | Vulkan | WebGPU | CPU |

@@ -20,6 +20,15 @@
 //! partials are fed back in until one value remains (256× shrink
 //! per pass — a 1M-element input takes 3 passes).
 //!
+//! Each reduce comes in three spellings: host data in / host scalar
+//! out (`device_reduce_<op>_<ty>`), device field in / host scalar
+//! out (`…_field`), and device field in / **1-element device field
+//! out** (`…_resident`) — the resident form never touches host
+//! memory, so under deferred dispatch it encodes into the open lane
+//! without forcing a flush. All three run the identical pass
+//! structure over identical padded values, so their results are
+//! bit-equal for the same input.
+//!
 //! Note for f32: the GPU tree-reduction order differs from a
 //! sequential fold, so sums land within a few ULP of the
 //! reference, not bit-equal.
@@ -41,7 +50,8 @@ use crate::gpu_kernel::{
     block_reduce_max_u32_tree_buffer, block_reduce_min_f32_buffer,
     block_reduce_min_f32_tree_buffer, block_reduce_min_i32_buffer,
     block_reduce_min_i32_tree_buffer, block_reduce_min_u32_buffer,
-    block_reduce_min_u32_tree_buffer, global_bitonic_pass_u32,
+    block_reduce_min_u32_tree_buffer, global_bitonic_pass_u32, pad_copy_f32, pad_copy_i32,
+    pad_copy_u32,
 };
 use quanta_core::{Field, Gpu, QuantaError};
 
@@ -49,8 +59,8 @@ use quanta_core::{Field, Gpu, QuantaError};
 const BLOCK: usize = 256;
 
 macro_rules! device_reduce {
-    ($(#[$doc:meta])* $name:ident, $field_name:ident, $ty:ty, $builder:ident,
-     $tree_builder:ident, $identity:expr) => {
+    ($(#[$doc:meta])* $name:ident, $field_name:ident, $resident_name:ident, $ty:ty,
+     $builder:ident, $tree_builder:ident, $pad_kernel:ident, $identity:expr) => {
         $(#[$doc])*
         pub fn $name(gpu: &Gpu, data: &[$ty]) -> Result<$ty, QuantaError> {
             if data.is_empty() {
@@ -98,6 +108,53 @@ macro_rules! device_reduce {
             }
             Ok(current[0])
         }
+
+        /// Fully device-resident variant: reduces the first `n` elements of
+        /// an on-device field into a **1-element field** that stays on the
+        /// GPU. Every pass (the pad-copy staging included) goes through the
+        /// dispatch lane, so nothing here reads host memory or forces a
+        /// deferred-lane flush; reading the returned field completes the
+        /// pending passes like any other field read. Identical pass
+        /// structure and padding to the host-returning variants — the
+        /// result is bit-equal to theirs.
+        pub fn $resident_name(
+            gpu: &Gpu,
+            data: &Field<$ty>,
+            n: usize,
+        ) -> Result<Field<$ty>, QuantaError> {
+            if n == 0 {
+                return Err(QuantaError::invalid_param(
+                    "device-wide reduce requires a non-empty input",
+                ));
+            }
+            let builder = |g: &Gpu| {
+                if g.supports_subgroups() {
+                    $builder(g)
+                } else {
+                    $tree_builder(g)
+                }
+            };
+            let padded = n.div_ceil(BLOCK) * BLOCK;
+            let mut cur = if padded == n {
+                // Block-aligned input: the reduce reads exactly [0, n) —
+                // bind the source directly, no staging copy.
+                reduce_pass_resident(gpu, data, padded, $identity, builder)?
+            } else {
+                let staged = gpu.field::<$ty>(padded)?;
+                let mut w = $pad_kernel(gpu)?;
+                w.bind(0, data);
+                w.bind(1, &staged);
+                w.set_value(2, n as u32);
+                w.set_value(3, $identity);
+                gpu.dispatch(&w, padded as u32)?;
+                reduce_pass_resident(gpu, &staged, padded, $identity, builder)?
+            };
+            while cur.len() > 1 {
+                let len = cur.len();
+                cur = reduce_pass_resident(gpu, &cur, len, $identity, builder)?;
+            }
+            Ok(cur)
+        }
     };
 }
 
@@ -131,6 +188,37 @@ fn reduce_pass_field<T: Copy>(
     out_field.read()
 }
 
+/// One device-resident block-reduce pass over an already-padded field
+/// (`padded_len` a multiple of [`BLOCK`], or the input of a 1-block
+/// pass): reduce on the GPU, return the per-block partials in a fresh
+/// field **already padded for the next pass** — the tail beyond
+/// `num_blocks` is identity, written host-side into the fresh buffer
+/// (fresh fields owe the lane nothing, so the upload never flushes).
+/// The dispatch pulse is dropped un-waited; the lane orders the pass.
+fn reduce_pass_resident<T: Copy>(
+    gpu: &Gpu,
+    src: &Field<T>,
+    padded_len: usize,
+    identity: T,
+    builder: impl FnOnce(&Gpu) -> Result<quanta_core::Wave, QuantaError>,
+) -> Result<Field<T>, QuantaError> {
+    let num_blocks = padded_len / BLOCK;
+    let out_len = if num_blocks == 1 {
+        1
+    } else {
+        num_blocks.div_ceil(BLOCK) * BLOCK
+    };
+    let out_field = gpu.field::<T>(out_len)?;
+    if out_len > num_blocks {
+        out_field.write_at(num_blocks, &vec![identity; out_len - num_blocks])?;
+    }
+    let mut wave = builder(gpu)?;
+    wave.bind(0, src);
+    wave.bind(1, &out_field);
+    gpu.dispatch(&wave, padded_len as u32)?;
+    Ok(out_field)
+}
+
 /// One block-reduce pass: pad `current` to a multiple of [`BLOCK`]
 /// with `identity`, reduce on the GPU, return the per-block
 /// partials (256× smaller).
@@ -159,41 +247,41 @@ fn reduce_pass<T: Copy>(
 
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
-    device_reduce_add_u32, device_reduce_add_u32_field, u32, block_reduce_add_u32_buffer, block_reduce_add_u32_tree_buffer, 0u32
+    device_reduce_add_u32, device_reduce_add_u32_field, device_reduce_add_u32_resident, u32, block_reduce_add_u32_buffer, block_reduce_add_u32_tree_buffer, pad_copy_u32, 0u32
 );
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
-    device_reduce_add_i32, device_reduce_add_i32_field, i32, block_reduce_add_i32_buffer, block_reduce_add_i32_tree_buffer, 0i32
+    device_reduce_add_i32, device_reduce_add_i32_field, device_reduce_add_i32_resident, i32, block_reduce_add_i32_buffer, block_reduce_add_i32_tree_buffer, pad_copy_i32, 0i32
 );
 device_reduce!(
     /// Device-wide sum of `data` on the GPU. Errors on empty input.
     /// Tree-reduction order: expect a few ULP of drift vs a
     /// sequential fold.
-    device_reduce_add_f32, device_reduce_add_f32_field, f32, block_reduce_add_f32_buffer, block_reduce_add_f32_tree_buffer, 0f32
+    device_reduce_add_f32, device_reduce_add_f32_field, device_reduce_add_f32_resident, f32, block_reduce_add_f32_buffer, block_reduce_add_f32_tree_buffer, pad_copy_f32, 0f32
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_u32, device_reduce_min_u32_field, u32, block_reduce_min_u32_buffer, block_reduce_min_u32_tree_buffer, u32::MAX
+    device_reduce_min_u32, device_reduce_min_u32_field, device_reduce_min_u32_resident, u32, block_reduce_min_u32_buffer, block_reduce_min_u32_tree_buffer, pad_copy_u32, u32::MAX
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_i32, device_reduce_min_i32_field, i32, block_reduce_min_i32_buffer, block_reduce_min_i32_tree_buffer, i32::MAX
+    device_reduce_min_i32, device_reduce_min_i32_field, device_reduce_min_i32_resident, i32, block_reduce_min_i32_buffer, block_reduce_min_i32_tree_buffer, pad_copy_i32, i32::MAX
 );
 device_reduce!(
     /// Device-wide minimum of `data` on the GPU. Errors on empty input.
-    device_reduce_min_f32, device_reduce_min_f32_field, f32, block_reduce_min_f32_buffer, block_reduce_min_f32_tree_buffer, f32::INFINITY
+    device_reduce_min_f32, device_reduce_min_f32_field, device_reduce_min_f32_resident, f32, block_reduce_min_f32_buffer, block_reduce_min_f32_tree_buffer, pad_copy_f32, f32::INFINITY
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_u32, device_reduce_max_u32_field, u32, block_reduce_max_u32_buffer, block_reduce_max_u32_tree_buffer, 0u32
+    device_reduce_max_u32, device_reduce_max_u32_field, device_reduce_max_u32_resident, u32, block_reduce_max_u32_buffer, block_reduce_max_u32_tree_buffer, pad_copy_u32, 0u32
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_i32, device_reduce_max_i32_field, i32, block_reduce_max_i32_buffer, block_reduce_max_i32_tree_buffer, i32::MIN
+    device_reduce_max_i32, device_reduce_max_i32_field, device_reduce_max_i32_resident, i32, block_reduce_max_i32_buffer, block_reduce_max_i32_tree_buffer, pad_copy_i32, i32::MIN
 );
 device_reduce!(
     /// Device-wide maximum of `data` on the GPU. Errors on empty input.
-    device_reduce_max_f32, device_reduce_max_f32_field, f32, block_reduce_max_f32_buffer, block_reduce_max_f32_tree_buffer, f32::NEG_INFINITY
+    device_reduce_max_f32, device_reduce_max_f32_field, device_reduce_max_f32_resident, f32, block_reduce_max_f32_buffer, block_reduce_max_f32_tree_buffer, pad_copy_f32, f32::NEG_INFINITY
 );
 
 /// Sort `data` ascending on the GPU and return the sorted copy.

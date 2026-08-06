@@ -87,6 +87,51 @@ fn reduce_u32() {
     assert_eq!(a.max().unwrap(), 7);
 }
 
+#[test]
+fn sum_device_matches_sum_bitwise() {
+    let g = gpu();
+    // Sizes crossing every pass boundary: unpadded single block, aligned
+    // single block, 2-block, aligned multi-pass, 3-pass with padding.
+    for n in [1usize, 5, 256, 257, 4096, 65536, 70000] {
+        let data: Vec<f32> = (0..n).map(|i| ((i % 97) as f32) * 0.37 - 11.0).collect();
+        let a = Array::from_slice(&g, &data, &[n]).unwrap();
+        let host = a.sum().unwrap();
+        let dev = a.sum_device().unwrap();
+        assert_eq!(dev.shape(), &[1]);
+        let dv = dev.to_vec().unwrap()[0];
+        // Identical pass structure over identical padded values —
+        // bit-equal, not merely close.
+        assert_eq!(
+            dv.to_bits(),
+            host.to_bits(),
+            "n={n}: device {dv} vs host {host}"
+        );
+    }
+}
+
+#[test]
+fn sum_device_strided_and_int() {
+    let g = gpu();
+    let a = Array::from_slice(&g, &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+    let t = a.transpose(0, 1).unwrap();
+    assert_eq!(t.sum_device().unwrap().to_vec().unwrap()[0], 21.0);
+    let b = Array::from_slice(&g, &[3i32, -1, 7, 2, -5, 4], &[6]).unwrap();
+    assert_eq!(b.sum_device().unwrap().to_vec().unwrap()[0], 10);
+    let u = Array::from_slice(&g, &[3u32, 1, 7, 2, 5, 4], &[6]).unwrap();
+    assert_eq!(u.sum_device().unwrap().to_vec().unwrap()[0], 22);
+}
+
+#[test]
+fn sum_device_after_ufunc_chain() {
+    let g = gpu();
+    let data: Vec<f32> = (0..512).map(|i| i as f32 * 0.25).collect();
+    let a = Array::from_slice(&g, &data, &[512]).unwrap();
+    let b = a.mul(&a).unwrap(); // pending deferred producer
+    let dev = b.sum_device().unwrap(); // encodes behind it — no flush yet
+    let host = b.sum().unwrap(); // the host reduce completes the lane
+    assert_eq!(dev.to_vec().unwrap()[0].to_bits(), host.to_bits());
+}
+
 // Note: f64 has the math ufuncs (FloatScalar) but no device reduce —
 // quanta-prims only provides reduces for u32/i32/f32, so `f64_array.sum()`
 // does not compile. That's the honest boundary, not a silent fallback.

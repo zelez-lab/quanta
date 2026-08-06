@@ -73,6 +73,17 @@ assert_eq!(counts.sum()?, 23);
 assert_eq!(counts.max()?, 9);
 ```
 
+`sum()` returns a host scalar, which completes any pending deferred
+work. When the total feeds further GPU work (a loss, a normalizer),
+`sum_device()` runs the identical reduction but keeps the result as a
+1-element `[1]` array on the device — bit-equal to `sum()`, and no
+host round-trip until you actually read it:
+
+```rust,ignore
+let total = a.sum_device()?;          // [1] array, still on the GPU
+let scaled = b.mul(&total.broadcast_to(b.shape())?)?;
+```
+
 ## Reshape and transpose (no copy)
 
 ```rust,ignore
