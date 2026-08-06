@@ -321,14 +321,22 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     }
     let fn_params = fn_params.join(", ");
 
+    // The entry function keeps the shader's REAL name — the runtime passes
+    // `ShaderBinary.entry_point` (the `#[quanta::vertex]` fn name, which is
+    // `shader.name` here) into `GPURenderPipelineDescriptor.entryPoint`, so a
+    // `fn main` module fails every pipeline with "entry point doesn't exist".
+    // MSL and SPIR-V already name their entries this way; the same exposure
+    // to pathological names (a shader named after one of its own module-scope
+    // bindings, or a WGSL reserved word) is accepted identically — it fails
+    // loudly at validation, exactly as it would on the natives.
     if let Some(v) = &shader.varyings {
         // Shared-struct model: the out struct IS the varyings struct, and the
         // body's tail literal assigns every member explicitly.
         emit_varyings_struct(&mut out, v);
 
         out.push_str(&format!(
-            "@vertex\nfn main({fn_params}) -> {} {{\n",
-            v.struct_name
+            "@vertex\nfn {}({fn_params}) -> {} {{\n",
+            shader.name, v.struct_name
         ));
         for p in &attr_params {
             out.push_str(&format!("    let {} = in.{};\n", p.name, p.name));
@@ -346,7 +354,8 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     out.push_str("};\n\n");
 
     out.push_str(&format!(
-        "@vertex\nfn main({fn_params}) -> VertexOutput {{\n"
+        "@vertex\nfn {}({fn_params}) -> VertexOutput {{\n",
+        shader.name
     ));
     for p in &attr_params {
         out.push_str(&format!("    let {} = in.{};\n", p.name, p.name));
@@ -394,9 +403,11 @@ pub fn emit_fragment_shader(shader: &ShaderDef) -> Result<String, String> {
                 shader.name
             )
         })?;
+        // Real entry name — same contract as the vertex emitter (see the
+        // comment there): the runtime's `fragment_entry` names this.
         out.push_str(&format!(
-            "@fragment\nfn main({recv}: {}) -> @location(0) vec4<f32> {{\n",
-            v.struct_name
+            "@fragment\nfn {}({recv}: {}) -> @location(0) vec4<f32> {{\n",
+            shader.name, v.struct_name
         ));
         let (color_expr, _ty) = walk_body(
             &shader.body_source,
@@ -416,12 +427,16 @@ pub fn emit_fragment_shader(shader: &ShaderDef) -> Result<String, String> {
     // then, like the vertex-index builtins; the walker lowers the call to
     // this exact identifier).
     if body_calls(&shader.body_source, "frag_coord") {
-        out.push_str(
-            "@fragment\nfn main(@builtin(position) _frag_coord: vec4<f32>) \
-             -> @location(0) vec4<f32> {\n",
-        );
+        out.push_str(&format!(
+            "@fragment\nfn {}(@builtin(position) _frag_coord: vec4<f32>) \
+             -> @location(0) vec4<f32> {{\n",
+            shader.name
+        ));
     } else {
-        out.push_str("@fragment\nfn main() -> @location(0) vec4<f32> {\n");
+        out.push_str(&format!(
+            "@fragment\nfn {}() -> @location(0) vec4<f32> {{\n",
+            shader.name
+        ));
     }
 
     // Lower the body; the fragment tail is the output color.

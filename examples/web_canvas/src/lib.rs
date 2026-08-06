@@ -3,12 +3,17 @@
 //! Runs the **public uniform frame loop** — the same shape as
 //! `examples/native_window.rs` on macOS — against a browser canvas:
 //! `init_async` → `create_surface(SurfaceTarget::Canvas { .. })` →
-//! `acquire` → `gpu.render(frame.texture())` → `present`. Three full
+//! `acquire` → `gpu.render(frame.texture())` → `present`. Four full
 //! loop iterations: a clear-only frame, a clear + centered triangle,
-//! then the same scene at 4x MSAA through `.msaa(4)`/`.msaa_resolve()`
-//! with the canvas frame as the resolve destination. The Playwright
+//! the same scene at 4x MSAA through `.msaa(4)`/`.msaa_resolve()`
+//! with the canvas frame as the resolve destination, and finally the
+//! same triangle again through a pipeline built from **runtime-emitted
+//! render-DSL WGSL with NAMED entry points** — the seam no
+//! compile-time check covers (naga validates a module in isolation;
+//! only a real `CreateRenderPipeline` checks the descriptor's
+//! `entryPoint` against the module — dija's R8). The Playwright
 //! harness asserts what the compositor actually shows from an element
-//! screenshot.
+//! screenshot, so the last (DSL-emitted) frame is the asserted one.
 //!
 //! ## Build
 //!
@@ -126,8 +131,89 @@ async fn run(canvas: u32) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("pulse 3 (msaa resolve): {e:?}"))?;
     frame.present().map_err(|e| format!("present 3: {e:?}"))?;
 
+    // Frame 4 — the same triangle through a pipeline built from
+    // RUNTIME-EMITTED render-DSL WGSL with NAMED entry points. This is
+    // the R8 seam: `ShaderBinary.entry_point` carries the shader's real
+    // fn name into `GPURenderPipelineDescriptor.entryPoint`, and only a
+    // live `CreateRenderPipeline` validates that name against the
+    // module — naga and every compile-time check pass a `fn main`
+    // module that fails here. The pair also exercises the R7 shapes in
+    // a REAL pipeline: `vertex_id()` quad synthesis with NO vertex
+    // buffer (and no input struct), plus a flat u32 varying branched on
+    // with `== 1u32` in the fragment. This is the frame the compositor
+    // shows and the harness screenshots.
+    let (vs_wgsl, fs_wgsl) = emit_dsl_pair().map_err(|e| format!("dsl emit: {e}"))?;
+    let dsl_pipeline = gpu
+        .pipeline(
+            &PipelineDesc::new(ShaderSource::Stages {
+                vertex: vs_wgsl.as_bytes(),
+                fragment: fs_wgsl.as_bytes(),
+            })
+            .with_entries("canvas_dsl_vertex", "canvas_dsl_fragment")
+            .with_color_formats(vec![format]),
+        )
+        .map_err(|e| format!("dsl pipeline (named entries): {e:?}"))?;
+    let frame = surface.acquire().map_err(|e| format!("acquire 4: {e:?}"))?;
+    gpu.render(frame.texture())
+        .map_err(|e| format!("render 4: {e:?}"))?
+        .clear(Color::rgba(1.0, 0.0, 0.0, 1.0))
+        .pipeline(&dsl_pipeline)
+        .draw(3)
+        .pulse()
+        .map_err(|e| format!("pulse 4 (dsl): {e:?}"))?;
+    frame.present().map_err(|e| format!("present 4: {e:?}"))?;
+
     // Hand the negotiated format back so the page can report it.
     Ok(format!("{format:?}").into_bytes())
+}
+
+/// Emit the frame-4 shader pair through the REAL render-DSL WGSL emitter
+/// at runtime (the same emitter the compiler embeds in `ShaderBinary.wgsl`
+/// at build time). Bodies are in the token-spaced wire form the macro
+/// ships. The vertex synthesizes the same centered triangle as
+/// `TRIANGLE_WGSL` from `vertex_id()` — no vertex buffer, no input
+/// struct — and forwards a flat u32 varying the fragment branches on.
+fn emit_dsl_pair() -> Result<(String, String), String> {
+    use quanta_ir::{ShaderDef, ShaderStage, ShaderType, ShaderVaryings, VaryingField};
+
+    let varyings = |binding: Option<&str>| ShaderVaryings {
+        struct_name: "DslVary".to_string(),
+        position: "clip".to_string(),
+        fields: vec![VaryingField {
+            name: "shade".to_string(),
+            ty: ShaderType::U32,
+        }],
+        binding: binding.map(str::to_string),
+    };
+
+    let vertex = ShaderDef {
+        name: "canvas_dsl_vertex".to_string(),
+        stage: ShaderStage::Vertex,
+        params: vec![],
+        return_type: ShaderType::Vec4,
+        body_source: "{ let vid = vertex_id ( ) ; \
+                       let mut x = 0.0 ; let mut y = - 0.8 ; \
+                       if vid == 1u32 { x = - 0.8 ; y = 0.8 ; } else { } \
+                       if vid == 2u32 { x = 0.8 ; y = 0.8 ; } else { } \
+                       DslVary { clip : Vec4 :: new ( x , y , 0.0 , 1.0 ) , shade : 1u32 } }"
+            .to_string(),
+        varyings: Some(varyings(None)),
+    };
+    let fragment = ShaderDef {
+        name: "canvas_dsl_fragment".to_string(),
+        stage: ShaderStage::Fragment,
+        params: vec![],
+        return_type: ShaderType::Vec4,
+        body_source: "{ let c = if s . shade == 1u32 { 0.9 } else { 0.1 } ; \
+                       Vec4 :: new ( 0.2 , 0.4 , c , 1.0 ) }"
+            .to_string(),
+        varyings: Some(varyings(Some("s"))),
+    };
+
+    Ok((
+        quanta_ir::emit_wgsl::emit_vertex_shader(&vertex)?,
+        quanta_ir::emit_wgsl::emit_fragment_shader(&fragment)?,
+    ))
 }
 
 /// Smoke-test entry. The page registers its canvas with the glue and

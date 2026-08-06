@@ -9,3 +9,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 quanta = { path = "../..", default-features = false, features = ["webgpu", "render"] }
+# Frame 4 emits a render-DSL shader pair AT RUNTIME and builds a pipeline
+# from it with NAMED entry points — the seam no compile-time check covers
+# (naga validates a module in isolation; only a real CreateRenderPipeline
+# checks the descriptor's entryPoint against the module).
+quanta-ir = { path = "../../crates/gpu/quanta-ir" }

@@ -1281,7 +1281,7 @@ fn fixtures() -> Vec<Fixture> {
             wgsl: WgslExpect::Translates {
                 contains: &[
                     "@location(1) @interpolate(flat) kind: u32,",
-                    "fn main(s: Surface) -> @location(0) vec4<f32> {",
+                    "fn varyings_struct_frag(s: Surface) -> @location(0) vec4<f32> {",
                     "s.kind == 1u",
                     "let c = _wif0;",
                 ],
@@ -1339,7 +1339,7 @@ fn fixtures() -> Vec<Fixture> {
                     "@builtin(position) clip: vec4<f32>,",
                     "@location(0) uv: vec2<f32>,",
                     "@location(1) fade: f32,",
-                    "fn main(s: V) -> @location(0) vec4<f32> {",
+                    "fn varyings_float_pair_frag(s: V) -> @location(0) vec4<f32> {",
                     "vec4<f32>(s.uv.x, s.uv.y, s.fade, 1.0f)",
                 ],
             },
@@ -2618,6 +2618,20 @@ fn wgsl_verdicts_hold() {
                             f.name
                         ));
                     }
+                }
+                // The entry function must carry the shader's REAL name —
+                // the runtime passes `ShaderBinary.entry_point` into the
+                // pipeline descriptor, so a `fn main` module is naga-clean
+                // and still fails every CreateRenderPipeline in a real
+                // browser (dija's R8). Asserted for every fixture so the
+                // contract can't regress silently.
+                let entry = format!("fn {}(", f.name);
+                if !wgsl.contains(&entry) {
+                    failures.push(format!(
+                        "[{}] WGSL module does not name its entry point \
+                         ({entry:?} missing).\n--- WGSL ---\n{wgsl}",
+                        f.name
+                    ));
                 }
             }
             // Handled above; unreachable here.
