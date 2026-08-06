@@ -613,8 +613,18 @@ jobs:
       # (roadmap design record deferred_dispatch.md): per-op pipeline
       # creation cost on lavapipe, which exists nowhere but CI. Grep the
       # log for "wave-cache probe:". Informational — never fails on timing.
-      - name: Wave-creation cost probe (lavapipe)
-        run: cargo run --release --example probe_wave_creation --no-default-features --features vulkan,jit,compute
+      #
+      # BOTH profiles on purpose: the probe's first run segfaulted in
+      # --release, and it was the first thing ever to run this driver as
+      # a release build — every green vulkan suite here is `cargo test`
+      # (dev profile). Running dev first then release bisects
+      # profile-dependent breakage (release-only UB) from a plain driver
+      # bug in the same log; the stderr "[phase]" markers name the
+      # crashing phase.
+      - name: Wave-creation cost probe (lavapipe, dev then release)
+        run: |
+          cargo run --example probe_wave_creation --no-default-features --features vulkan,jit,compute
+          cargo run --release --example probe_wave_creation --no-default-features --features vulkan,jit,compute
 
       # The swapchain path: VK_EXT_headless_surface gives lavapipe a real
       # VkSurfaceKHR + VkSwapchainKHR without a window system, so the
