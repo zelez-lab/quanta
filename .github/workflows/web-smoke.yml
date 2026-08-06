@@ -64,6 +64,13 @@ jobs:
       - name: Build smoke-test deliverables (wasm + JS glue)
         run: cargo run -p quanta-cli -- build web
 
+      # web/dist is COMMITTED build output (quanta::web_glue embeds it so a
+      # cargo dependency alone carries the browser glue). The build above
+      # just regenerated it from web/src — any diff means the TypeScript
+      # changed without recommitting the compiled glue.
+      - name: Committed glue matches the TypeScript (web/dist drift)
+        run: git diff --exit-code web/dist
+
       - name: Run headless WebGPU smoke harness
         working-directory: web
         env:

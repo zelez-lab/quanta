@@ -88,6 +88,13 @@ pub mod intrinsics;
 /// `cargo test` runs the subset check without needing a wasm32 build.
 pub mod webgpu_generated_codes;
 
+/// The compiled browser glue (`web/dist/*.js`), embedded as `(path,
+/// contents)` pairs so a cargo dependency alone carries everything a page
+/// needs to load the wasm32/WebGPU face — no repo checkout, no
+/// `quanta-cli`, no Node. Ungated and target-independent: a native build
+/// tool reads it without pulling any GPU feature into its graph.
+pub mod web_glue;
+
 // The shared substrate: device discovery (`init` / `devices` /
 // `init_cpu`), the `Gpu` handle, fields, textures, sync, and — under
 // the matching features — the compute / render data models.

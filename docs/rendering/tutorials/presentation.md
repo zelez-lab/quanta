@@ -142,6 +142,40 @@ presenting a triangle to a live canvas (final frame at 4× MSAA,
 resolved into the acquired surface texture), asserted headlessly in CI
 (`web-smoke.yml`). Build it with `quanta build web web_canvas`.
 
+### Shipping the glue
+
+The wasm module imports ~80 `env` functions that only Quanta's JS glue
+provides — a page cannot load the WebGPU face without it. Two ways to
+obtain it, both carrying the SAME files:
+
+- **In this repo**: `quanta build web <example>` compiles the TypeScript
+  and stages the glue next to the example's wasm.
+- **From the crate alone** — for external build tools (a bundler CLI, a
+  build script) that depend on Quanta through cargo and never see this
+  repo: `quanta::web_glue::FILES` embeds every glue file as a
+  `(relative path, contents)` pair. Write them all into one directory
+  (preserving the `generated/` subdirectory) beside your `.wasm`, and
+  load `quanta::web_glue::ENTRY` (`quanta.js`) from the page. The
+  constants are target-independent and behind no feature gate, so a
+  native tool reads them without pulling any GPU backend into its
+  own build graph.
+
+The glue's JS API is **stable, documented surface**:
+
+- `instantiate(wasmUrl: string): Promise<QuantaModule>` (module
+  `quanta.js`) — fetches and instantiates the wasm, wiring the full
+  import object and the executor callbacks.
+- `QuantaModule.registerCanvas(canvas: HTMLCanvasElement |
+  OffscreenCanvas): number` — registers a canvas for presentation and
+  returns the id that `SurfaceTarget::Canvas { canvas }` names on the
+  Rust side. The registration stays live until the page drops the
+  module; the embedder owns the canvas, Quanta drives only its backing
+  size.
+- `makeImports(state: GlueState): WebAssembly.ModuleImports` (module
+  `webgpu.js`) — the raw import object, for embedders that instantiate
+  the wasm themselves instead of going through `instantiate` (a bundler
+  that composes Quanta's imports with its own `env` entries does this).
+
 ### The frame loop
 
 The frame loop is one closure per frame — `render_frame` folds acquire →
