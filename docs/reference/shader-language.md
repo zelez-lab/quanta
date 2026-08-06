@@ -206,20 +206,14 @@ Math intrinsics (GLSL/WGSL names): `sin`, `cos`, `tan`, `asin`, `acos`,
 
 ## Backend support
 
-Metal and Vulkan are the supported render backends and emit native binaries for
-the full grammar on this page. The WebGPU/WGSL backend covers the classic
-subset (varying structs, uniforms, slices, textures, `if`/`else`, the math
-intrinsics), but **does not yet** emit:
-
-| Feature                                   | WGSL status                         |
-|-------------------------------------------|-------------------------------------|
-| `frag_coord()`                            | not yet emitted                     |
-| `u32` varyings / `u32` shader params      | not yet emitted                     |
-| `vertex_id()` / `instance_id()`           | not yet emitted                     |
-| Bounded `for` loops                       | not yet emitted                     |
-
-A shader using any of these ships with `wgsl: None` and a build-time note
-(rather than invalid WGSL), matching Quanta's "WebGPU is largely
-`NotSupported`" posture. The same shader still emits native Metal + Vulkan
-binaries. See [Migration from wgpu](../migration/from-wgpu.md) for the WGSL↔DSL
-mapping.
+Metal, Vulkan, and WebGPU/WGSL all emit the full grammar on this page — the
+WGSL emitter is at construct parity with the two natives, including the stage
+builtins (`frag_coord()` → `@builtin(position)`, `vertex_id()` /
+`instance_id()` → `@builtin(vertex_index)` / `@builtin(instance_index)`),
+`u32` shader params and varyings (`@interpolate(flat)` on both interface
+ends), and bounded `for` loops. A construct the grammar rejects (a method
+call, a `while` loop, a non-constant or inclusive loop range, a wrong-stage
+builtin) rejects identically on all three backends. If a future gap ever
+appears, the shader ships with `wgsl: None` and a build-time note rather than
+invalid WGSL — Metal and Vulkan binaries are unaffected. See
+[Migration from wgpu](../migration/from-wgpu.md) for the WGSL↔DSL mapping.

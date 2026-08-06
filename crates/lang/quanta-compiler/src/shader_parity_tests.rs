@@ -13,8 +13,8 @@
 //! structural rejection on every emitter.
 //!
 //! The render-shader grammar lives in three hand-maintained emitters —
-//! SPIR-V (`emit_spirv`), MSL syn-AST (`emit_msl`), and a lagging WGSL
-//! string-replace stub (`quanta_ir::emit_wgsl`). Their divergence has
+//! SPIR-V (`emit_spirv`), MSL syn-AST (`emit_msl`), and the WGSL
+//! tokenizer + walker (`quanta_ir::emit_wgsl`). Their divergence has
 //! shipped breakage before (invalid MSL from formatted bodies, SPIR-V
 //! passthrough fallbacks that misrender on Vulkan), yet no test drove the
 //! same body through all three. This table is that safety net: one fixture
@@ -63,21 +63,29 @@
 //!   at construct parity with the SPIR-V walker. `&T` uniforms bind as
 //!   `@group(0) @binding(N) var<uniform>` at their shared decl-index; `&[T]`
 //!   slices bind as `var<storage, read>` arrays with a `name[u32(index)]`
-//!   access; textures bind as a `texture_2d<f32>` + `sampler` pair at
+//!   access (an already-u32 index — a counter, a u32 varying — indexes
+//!   directly); textures bind as a `texture_2d<f32>` + `sampler` pair at
 //!   `8+2*slot` with `sample(N, uv)` → `textureSample(tex_N, smp_N, uv)`.
 //!   Statement-`if`/`else` is native WGSL; a value-`if` (`let x = if a { b }
 //!   else { c }`) lowers to a fresh `var` assigned in each arm; `let mut` →
-//!   `var`. Every construct the SPIR-V walker rejects — a method call, a
-//!   `while` loop, an unknown intrinsic, an `if`-expression without
-//!   `else`, an out-of-range swizzle, indexing a non-slice — the WGSL walker
-//!   `Reject`s with the same error substring MSL uses. So each fixture is
-//!   `Translates` (with substrings the walker genuinely emits, all validated
-//!   by `naga` in `wgsl_validates`) or `Reject` — no `KnownBroken` remains.
-//!   Bounded `for i in A .. N` loops now translate on SPIR-V (a real
-//!   structured loop with loop-carried OpPhi) and MSL (a native `for` over a
-//!   `uint` counter); the WGSL walker still rejects them — a documented gap
-//!   like `frag_coord()` and u32 params, so the loop fixtures carry a WGSL
-//!   `Reject` verdict rather than a divergence entry.
+//!   `var`; bounded `for i in A .. N` loops lower to a native WGSL `for`
+//!   over a `var i: u32` counter (same const-bound / no-`..=` rejections as
+//!   the natives). u32 params, varyings (`@interpolate(flat)` on the shared
+//!   struct — both interface ends at once), locals, and `Nu32`/`Nu` literals
+//!   are real u32; WGSL has no implicit conversions, so every point where
+//!   SPIR-V emits `OpConvertFToU`/`OpConvertUToF` the walker wraps the text
+//!   in `u32(...)`/`f32(...)`. The stage builtins (`vertex_id()` /
+//!   `instance_id()` / `frag_coord()`) lower to `@builtin(vertex_index)` /
+//!   `@builtin(instance_index)` / `@builtin(position)` entry-point params
+//!   (frag_coord reads the receiver's position member when a varyings
+//!   struct exists — a second position builtin would be invalid WGSL).
+//!   Every construct the SPIR-V walker rejects — a method call, a `while`
+//!   loop, an unknown intrinsic, an `if`-expression without `else`, an
+//!   out-of-range swizzle, indexing a non-slice, a wrong-stage builtin — the
+//!   WGSL walker `Reject`s with the same error substring MSL uses. So each
+//!   fixture is `Translates` (with substrings the walker genuinely emits,
+//!   all validated by `naga` in `wgsl_validates`) or `Reject` — no
+//!   `KnownBroken` and no documented gaps remain.
 
 use quanta_ir::{ShaderDef, ShaderParam, ShaderStage, ShaderType, ShaderVaryings, VaryingField};
 
@@ -1050,13 +1058,14 @@ fn fixtures() -> Vec<Fixture> {
         // The fragment window-space position: SPIR-V declares an Input vec4
         // decorated `BuiltIn FragCoord` (enum 15) and loads it per call; MSL
         // declares a `float4 _frag_coord [[position]]` parameter the walker
-        // lowers the call to. x,y are pixel coordinates (origin upper-left on
-        // both backends — OriginUpperLeft is the fragment execution mode),
-        // z is depth, w is 1/w. The `/ 64.0` witnesses via OpFDiv — a
-        // passthrough never divides. WGSL: the walker does not know the
-        // builtin yet and rejects it as an unknown function (documented gap;
-        // reading the Varyings POSITION FIELD `s.<position>` is the
-        // supported WGSL spelling — see `varyings_position_read_frag`).
+        // lowers the call to; WGSL declares a `@builtin(position) _frag_coord`
+        // entry-point param the same way (only when the shader has no varyings
+        // struct — with one, the call reads the receiver's position member,
+        // since a second position builtin on the entry point is invalid WGSL).
+        // x,y are pixel coordinates (origin upper-left on all backends —
+        // OriginUpperLeft is the fragment execution mode), z is depth, w is
+        // 1/w. The `/ 64.0` witnesses via OpFDiv — a passthrough never
+        // divides.
         Fixture {
             name: "frag_coord_scaled",
             stage: Fragment,
@@ -1074,15 +1083,19 @@ fn fixtures() -> Vec<Fixture> {
                     "_frag_coord.y / 64.0",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "frag_coord",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@builtin(position) _frag_coord: vec4<f32>",
+                    "_frag_coord.x / 64.0f",
+                    "_frag_coord.y / 64.0f",
+                ],
             },
         },
         // frag_coord() in a VERTEX body is a stage error: MSL rejects
         // structurally (the walker would otherwise emit an undeclared
         // `_frag_coord` identifier); SPIR-V errors in the body parser and
-        // falls to the passthrough. Both agree on not-accepted, like the
-        // other rejection rows.
+        // falls to the passthrough; the WGSL walker rejects with the stage
+        // message. All agree on not-accepted, like the other rejection rows.
         Fixture {
             name: "rej_frag_coord_in_vertex",
             stage: Vertex,
@@ -1097,8 +1110,6 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Reject {
                 err_contains: "frag_coord",
             },
-            // The WGSL walker rejects the call as an unknown function — the
-            // same verdict, via the unknown-intrinsic path.
             wgsl: WgslExpect::Reject {
                 err_contains: "frag_coord",
             },
@@ -1109,17 +1120,18 @@ fn fixtures() -> Vec<Fixture> {
         // InstanceIndex` (43) — the Vulkan pair, NOT OpenGL's
         // VertexId(5)/InstanceId(6) — and loads them per call; MSL declares
         // `uint _vertex_id [[vertex_id]]` / `uint _instance_id
-        // [[instance_id]]` parameters the walker lowers the calls to. The
-        // body is the buffer-free fullscreen triangle (vid 0/1/2 →
-        // (-1,-1)/(3,-1)/(-1,3)) — the shape that deletes dija's 6-vertex
-        // unit-quad buffer — plus an instance-scaled z so `instance_id()`
-        // flows into the result. OpIEqual witnesses the unsigned compare;
-        // `instance_id ( ) * 0.25` rides the u32→f32 widening. WGSL: the
-        // walker does not know either builtin and rejects them as unknown
-        // functions (documented gap; `@builtin(vertex_index)` /
-        // `@builtin(instance_index)` are the analogues when they land). The
-        // `vertex_index_spirv_builtin_wiring` test below pins the exact
-        // decoration contract by decoding the module.
+        // [[instance_id]]` parameters the walker lowers the calls to; WGSL
+        // declares `@builtin(vertex_index)` / `@builtin(instance_index)`
+        // entry-point params the same way (and, with no attributes, no input
+        // struct at all — the buffer-free shape). The body is the fullscreen
+        // triangle (vid 0/1/2 → (-1,-1)/(3,-1)/(-1,3)) — the shape that
+        // deletes dija's 6-vertex unit-quad buffer — plus an instance-scaled
+        // z so `instance_id()` flows into the result. OpIEqual witnesses the
+        // unsigned compare; `instance_id ( ) * 0.25` rides the u32→f32
+        // widening (WGSL spells the widening `f32(_instance_id)` — no
+        // implicit conversions). The `vertex_index_spirv_builtin_wiring`
+        // test below pins the exact decoration contract by decoding the
+        // module.
         Fixture {
             name: "vertex_index_fullscreen_tri",
             stage: Vertex,
@@ -1142,8 +1154,14 @@ fn fixtures() -> Vec<Fixture> {
                     "_instance_id * 0.25",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "vertex_id",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@builtin(vertex_index) _vertex_id: u32",
+                    "@builtin(instance_index) _instance_id: u32",
+                    "_vertex_id == 1u",
+                    "_vertex_id == 2u",
+                    "f32(_instance_id) * 0.25f",
+                ],
             },
         },
         // vertex_id() in a FRAGMENT body is a stage error — the polarity
@@ -1189,12 +1207,10 @@ fn fixtures() -> Vec<Fixture> {
         // `kind`), written by the vertex through the tail struct literal and
         // consumed by the fragment through the receiver param. Locations are
         // field-declaration order (uv→0, kind→1) on every backend; `kind` is
-        // Flat/[[flat]] on BOTH interface ends. The
+        // Flat/[[flat]]/@interpolate(flat) on BOTH interface ends (the WGSL
+        // struct is shared, so one emission covers both). The
         // `varyings_interface_wiring_spirv` test below decodes both modules
         // and pins Location numbers, Flat decorations, and BuiltIn Position.
-        // WGSL: u32 varyings are a documented gap (same as u32 params), so
-        // this pair Rejects there; the float-only pair below covers the WGSL
-        // face of the model.
         Fixture {
             name: "varyings_struct_vert",
             stage: Vertex,
@@ -1226,8 +1242,16 @@ fn fixtures() -> Vec<Fixture> {
                     "out.kind = in_kind;",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "u32 shader params are not yet supported",
+            // A u32 vertex ATTRIBUTE is a plain `@location` u32 input member
+            // (fetched, never interpolated — no `@interpolate` there); the
+            // u32 VARYING carries `@interpolate(flat)`.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@location(2) in_kind: u32,",
+                    "@location(1) @interpolate(flat) kind: u32,",
+                    "_vout.uv = in_uv;",
+                    "_vout.kind = in_kind;",
+                ],
             },
         },
         Fixture {
@@ -1254,8 +1278,13 @@ fn fixtures() -> Vec<Fixture> {
                     "s.uv.x",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "u32 shader params are not yet supported",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@location(1) @interpolate(flat) kind: u32,",
+                    "fn main(s: Surface) -> @location(0) vec4<f32> {",
+                    "s.kind == 1u",
+                    "let c = _wif0;",
+                ],
             },
         },
         // The float-only pair: proves the WGSL face of the shared-struct
@@ -1436,8 +1465,8 @@ fn fixtures() -> Vec<Fixture> {
         // and comparisons use the UNSIGNED opcode family (OpIEqual /
         // OpULessThan), never the FOrd float ops. MSL: `uint` members carry
         // `[[flat]]` in the shared struct, and literals spell as `Nu`. WGSL:
-        // documented gap — u32 fields reject with a named error (flat
-        // interpolation + u32 literals not wired in the walker). The
+        // `@interpolate(flat)` on the shared-struct member (both ends at
+        // once), `Nu` literals, natively-typed comparisons. The
         // `u32_flat_wiring_spirv` test below pins the decorations by
         // decoding the modules.
         Fixture {
@@ -1464,8 +1493,12 @@ fn fixtures() -> Vec<Fixture> {
                     "out.shape_type = in_shape;",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "u32 shader params are not yet supported",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@location(2) in_shape: u32,",
+                    "@location(1) @interpolate(flat) shape_type: u32,",
+                    "_vout.shape_type = in_shape;",
+                ],
             },
         },
         // Fragment consuming the flat u32 varying with `== 3u32` — the
@@ -1488,14 +1521,19 @@ fn fixtures() -> Vec<Fixture> {
                     "s.shape_type == 3u",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "u32 shader params are not yet supported",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@location(1) @interpolate(flat) shape_type: u32,",
+                    "s.shape_type == 3u",
+                ],
             },
         },
         // The BARE-integer-literal twin (`kind < 2`): the tokenizer types a
         // bare `2` as f32, so the comparison coerces it with OpConvertFToU
         // and still compares UNSIGNED (OpULessThan). MSL spells the literal
-        // `2u` so its comparison is integer too.
+        // `2u` so its comparison is integer too; WGSL spells the coercion
+        // explicitly — `u32(2.0f)` is a const-expression, the text twin of
+        // the SPIR-V constant conversion.
         Fixture {
             name: "u32_cmp_bare_literal_frag",
             stage: Fragment,
@@ -1510,8 +1548,8 @@ fn fixtures() -> Vec<Fixture> {
             msl: MslExpect::Accept {
                 contains: &["uint kind [[user(loc1)]] [[flat]];", "s.kind < 2u"],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "u32 shader params are not yet supported",
+            wgsl: WgslExpect::Translates {
+                contains: &["s.kind < u32(2.0f)"],
             },
         },
         // ── SLICE PARAMS (`&[T]` storage-buffer arrays) ───────────────────
@@ -1829,6 +1867,118 @@ fn fixtures() -> Vec<Fixture> {
                 ],
             },
         },
+        // The dija R7 vertex shape shared by EVERY instanced family
+        // (rect/gradient/glyph/image/shadow): `vertex_id()` bound to a u32
+        // local, the two-triangle unit-quad corner synthesized from six
+        // `vid == Nu32` statement-`if`s with empty elses, a u32 attribute
+        // forwarded into a flat u32 varying by the tail literal's field-init
+        // shorthand. This is the exact body idiom dija ships (shaders.rs
+        // `rect_vertex`, trimmed to one representative attribute set).
+        Fixture {
+            name: "dija_quad_synth_vert",
+            stage: Vertex,
+            params: &[
+                ("pos", Vec2, ParamKind::Attr),
+                ("size", Vec2, ParamKind::Attr),
+                ("shape_type", U32, ParamKind::Attr),
+                ("viewport", Vec2, ParamKind::Uniform),
+            ],
+            varyings: vv(&[("local", Vec2), ("shape_type", U32)]),
+            body: "{ let vid = vertex_id ( ) ; \
+                   let mut cx = 0.0 ; \
+                   if vid == 1u32 { cx = 1.0 ; } else { } \
+                   if vid == 3u32 { cx = 1.0 ; } else { } \
+                   if vid == 4u32 { cx = 1.0 ; } else { } \
+                   let mut cy = 0.0 ; \
+                   if vid == 2u32 { cy = 1.0 ; } else { } \
+                   if vid == 4u32 { cy = 1.0 ; } else { } \
+                   if vid == 5u32 { cy = 1.0 ; } else { } \
+                   let lx = cx * size . x ; \
+                   let ly = cy * size . y ; \
+                   let px = pos . x + lx ; \
+                   let py = pos . y + ly ; \
+                   let ndc_x = px / viewport . x * 2.0 - 1.0 ; \
+                   let ndc_y = 1.0 - py / viewport . y * 2.0 ; \
+                   V { clip : Vec4 :: new ( ndc_x , ndc_y , 0.0 , 1.0 ) , \
+                   local : Vec2 :: new ( lx , ly ) , shape_type } }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_IEQUAL],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "uint _vertex_id [[vertex_id]]",
+                    "vid == 1u",
+                    "out.shape_type = shape_type;",
+                ],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@builtin(vertex_index) _vertex_id: u32",
+                    "let vid = _vertex_id;",
+                    "if (vid == 1u) {",
+                    "@location(1) @interpolate(flat) shape_type: u32,",
+                    "_vout.shape_type = shape_type;",
+                ],
+            },
+        },
+        // The dija R7 gradient stop-search shape (gradients.rs
+        // `gradient_fragment`, trimmed): a u32 local from a flat varying
+        // (`let b = s.stop_base`), u32 arithmetic INSIDE slice indices
+        // (`stops[b + 2u32 * seg]`), the bounded `for` over the 7 possible
+        // segments gated on the `num_stops` varying (`seg + 1u32 <
+        // s.num_stops` — all-unsigned compare), and a loop-carried Vec4
+        // reassigned in a nested if. The `viewport` uniform is dija's real
+        // binding-0 pad (unused in the body) keeping `stops` at shared
+        // slot 1 for both stages.
+        Fixture {
+            name: "dija_gradient_stop_walk_frag",
+            stage: Fragment,
+            params: &[
+                ("viewport", Vec2, ParamKind::Uniform),
+                ("stops", Vec4, ParamKind::Slice),
+            ],
+            varyings: sv(&[("t", F32), ("num_stops", U32), ("stop_base", U32)]),
+            body: "{ let b = s . stop_base ; \
+                   let c0v = stops [ b ] ; \
+                   let a0v = stops [ b + 1u32 ] ; \
+                   let mut gcolor = Vec4 :: new ( c0v . y , c0v . z , c0v . w , a0v . x ) ; \
+                   for seg in 0..7 { \
+                   if seg + 1u32 < s . num_stops { \
+                   let lo = stops [ b + 2u32 * seg ] ; \
+                   let hi = stops [ b + 2u32 * seg + 2u32 ] ; \
+                   if s . t >= lo . x { \
+                   let span = hi . x - lo . x ; \
+                   let f = clamp ( ( s . t - lo . x ) / max ( span , 0.00001 ) , 0.0 , 1.0 ) ; \
+                   gcolor = Vec4 :: new ( mix ( lo . y , hi . y , f ) , mix ( lo . z , hi . z , f ) , \
+                   mix ( lo . w , hi . w , f ) , 1.0 ) ; \
+                   } else { } } else { } } \
+                   gcolor }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_ULESS_THAN],
+            },
+            msl: MslExpect::Accept {
+                contains: &[
+                    "for (uint seg = 0u; seg < 7u; ++seg) {",
+                    "seg + 1u < s.num_stops",
+                ],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "@group(0) @binding(0) var<uniform> viewport: vec2<f32>;",
+                    "@group(0) @binding(1) var<storage, read> stops: array<vec4<f32>>;",
+                    "@location(1) @interpolate(flat) num_stops: u32,",
+                    "let b = s.stop_base;",
+                    "let a0v = stops[b + 1u];",
+                    "for (var seg: u32 = 0u; seg < 7u; seg = seg + 1u) {",
+                    "if (seg + 1u < s.num_stops) {",
+                    "let lo = stops[b + 2u * seg];",
+                    "let hi = stops[b + 2u * seg + 2u];",
+                    "return gcolor;",
+                ],
+            },
+        },
         // ── EXPRESSION-IF OUTER ASSIGNMENT (A3 phi-merge) ─────────────────
         // Assignment to an OUTER local inside an if-expression branch. The
         // expression-`if` merge phis mutated outer locals exactly like the
@@ -1877,10 +2027,12 @@ fn fixtures() -> Vec<Fixture> {
         // OP_ULESS_THAN (nothing else in this float body compares unsigned);
         // `for_loop_spirv_structured_wiring` below pins the block shape by
         // decoding the module. MSL emits a native `for` over a `uint`
-        // counter. The clean-source twin pins MSL spacing-blindness; on
-        // SPIR-V the clean form still falls to a passthrough (at the
-        // unspaced `Vec4::new`, as everywhere). WGSL: documented gap — the
-        // walker has no loops and rejects the `for` construct.
+        // counter; WGSL likewise (`for (var i: u32 = 0u; …)`) — the carried
+        // `let mut` needs no phi construction, WGSL mutation persists, and
+        // the counter joins float arithmetic through an explicit `f32(i)`.
+        // The clean-source twin pins MSL spacing-blindness; on SPIR-V the
+        // clean form still falls to a passthrough (at the unspaced
+        // `Vec4::new`, as everywhere).
         Fixture {
             name: "for_loop_accum",
             stage: Fragment,
@@ -1901,8 +2053,11 @@ fn fixtures() -> Vec<Fixture> {
                     "a = a + s.uv.x + i * 0.5;",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "for",
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "for (var i: u32 = 0u; i < 4u; i = i + 1u) {",
+                    "a = a + s.uv.x + f32(i) * 0.5f;",
+                ],
             },
         },
         // The dija gradient stop-search shape this feature exists for: a
@@ -1933,8 +2088,16 @@ fn fixtures() -> Vec<Fixture> {
                     "c = stops[(uint)(i)];",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "for",
+            // The u32 counter indexes the slice DIRECTLY (`stops[i]`, no
+            // `u32(...)` wrap); the literal `stops[0]` still truncates via
+            // the explicit `u32(0.0f)` const-expression.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "var c = stops[u32(0.0f)];",
+                    "for (var i: u32 = 0u; i < 8u; i = i + 1u) {",
+                    "if (s.uv.x > stops[i].w) {",
+                    "c = stops[i];",
+                ],
             },
         },
         // NESTED loops — the 13-tap-blur-in-two-axes shape, and the stress
@@ -1966,15 +2129,23 @@ fn fixtures() -> Vec<Fixture> {
                     "a = a + b;",
                 ],
             },
-            wgsl: WgslExpect::Reject {
-                err_contains: "for",
+            // The inner `var b` re-declares per outer iteration (WGSL block
+            // scoping does the re-initialization the SPIR-V preheader-phi
+            // edge encodes); both counters widen through `f32(...)`.
+            wgsl: WgslExpect::Translates {
+                contains: &[
+                    "for (var i: u32 = 0u; i < 3u; i = i + 1u) {",
+                    "for (var j: u32 = 0u; j < 2u; j = j + 1u) {",
+                    "b = b + f32(i) * 1.0f + f32(j) * 0.5f;",
+                    "a = a + b;",
+                ],
             },
         },
         // A RUNTIME loop bound (`0 .. s . t`, `t` a varying) must be refused
         // everywhere: an unbounded shader loop is invalid. SPIR-V's body
         // parser errors ("compile-time constant") and falls to the
-        // passthrough — the loop is never emitted; MSL rejects the build
-        // outright with the same wording.
+        // passthrough — the loop is never emitted; MSL and WGSL reject the
+        // build outright with the same wording.
         Fixture {
             name: "rej_for_nonconst_bound",
             stage: Fragment,
@@ -1987,7 +2158,7 @@ fn fixtures() -> Vec<Fixture> {
                 err_contains: "compile-time constant",
             },
             wgsl: WgslExpect::Reject {
-                err_contains: "for",
+                err_contains: "compile-time constant",
             },
         },
         // The inclusive range `0 ..= 4` is rejected (only half-open ascending
@@ -2005,7 +2176,7 @@ fn fixtures() -> Vec<Fixture> {
                 err_contains: "inclusive",
             },
             wgsl: WgslExpect::Reject {
-                err_contains: "for",
+                err_contains: "inclusive",
             },
         },
         Fixture {

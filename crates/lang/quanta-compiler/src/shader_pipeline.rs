@@ -75,8 +75,10 @@ pub fn compile_shader(stage: &str) {
         }
     }
 
-    // Emit WGSL — soft failure: WebGPU is not a supported render
-    // target yet, so a WGSL gap must not block Metal/Vulkan shaders.
+    // Emit WGSL — soft failure by design: the WGSL emitter is at construct
+    // parity with MSL/SPIR-V, so this warning should never fire for the
+    // documented grammar; if a gap ever reappears it must not block the
+    // Metal/Vulkan binaries of the same shader.
     let wgsl_result = match stage {
         "vertex" => emit_wgsl::emit_vertex_shader(&shader),
         "fragment" => emit_wgsl::emit_fragment_shader(&shader),

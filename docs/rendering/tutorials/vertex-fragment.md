@@ -567,11 +567,10 @@ language reference](../../reference/shader-language.md):
   constant integer literal and the counter `i` is `u32`. A non-constant bound
   is a hard error (a shader loop must always terminate).
 
-> The WebGPU/WGSL backend does not yet emit these four (`frag_coord`, `u32`
-> varyings, `vertex_id`/`instance_id`, shader `for` loops): a shader using them
-> ships with `wgsl: None` and a build-time note, matching Quanta's "WebGPU is
-> largely `NotSupported`" posture. Metal and Vulkan are the supported render
-> backends.
+> All four emit on every render backend — Metal, Vulkan, and WebGPU/WGSL
+> (`vertex_id()` becomes `@builtin(vertex_index)`, a `u32` varying carries
+> `@interpolate(flat)`, a bounded `for` becomes a native WGSL `for`). The
+> same shader source drives a browser canvas unchanged.
 
 ## Other shader stages
 

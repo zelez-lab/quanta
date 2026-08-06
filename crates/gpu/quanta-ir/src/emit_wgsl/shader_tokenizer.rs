@@ -42,6 +42,11 @@ impl ShaderCmpOp {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ShaderToken {
     Float(f32),
+    /// A `u32`-suffixed integer literal (`3u32`). The suffix is the DSL's
+    /// explicit unsigned spelling; a BARE integer (`3`) stays [`Float`] for
+    /// backward compatibility and is coerced by type context (a comparison
+    /// against a u32 value converts it with a `u32(...)` wrap).
+    UInt(u32),
     Ident(String),
     Op(char),         // + - * /
     Cmp(ShaderCmpOp), // < > <= >= == !=
@@ -112,6 +117,27 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
                 if rest.len() > 1 {
                     tokenize_word(&rest[1..], tokens);
                 }
+            } else if let Some(idx) = w.find("..") {
+                // A range word (`0..8u32`, `0..=4`): rustc's token printer
+                // keeps `..`/`..=` attached to its operands, so the split must
+                // happen here — a digit-leading word would otherwise fall
+                // through the float parse into one garbage `Ident`. The `..=`
+                // tail becomes `Dot Dot Eq` so the for-loop parser can reject
+                // inclusive ranges by name.
+                let (before, after) = (&w[..idx], &w[idx + 2..]);
+                if !before.is_empty() {
+                    tokenize_word(before, tokens);
+                }
+                tokens.push(ShaderToken::Dot);
+                tokens.push(ShaderToken::Dot);
+                if let Some(rest) = after.strip_prefix('=') {
+                    tokens.push(ShaderToken::Eq);
+                    if !rest.is_empty() {
+                        tokenize_word(rest, tokens);
+                    }
+                } else if !after.is_empty() {
+                    tokenize_word(after, tokens);
+                }
             } else if w.contains('.') && !w.starts_with(|c: char| c.is_ascii_digit()) {
                 // `uv.x` → `uv` `.` `x`. A leading digit means a float literal
                 // (`1.0`), which is NOT split — the parse below handles it.
@@ -125,6 +151,8 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
                         tokenize_word(&rest[1..], tokens);
                     }
                 }
+            } else if let Some(v) = parse_u32_suffixed(w) {
+                tokens.push(ShaderToken::UInt(v));
             } else if let Ok(f) = w.parse::<f32>() {
                 tokens.push(ShaderToken::Float(f));
             } else {
@@ -132,4 +160,17 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
             }
         }
     }
+}
+
+/// Parse a `u32`-suffixed integer literal word (`3u32`, `12u32`). Rust's
+/// token printer keeps a suffixed literal contiguous, so the whole word
+/// arrives as one token. A bare `u32` (the type ident in `as u32`) has no
+/// digits and falls through to `Ident`; digits with underscores (`1_000u32`)
+/// are accepted the way Rust spells them.
+fn parse_u32_suffixed(w: &str) -> Option<u32> {
+    let digits = w.strip_suffix("u32")?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit() || c == '_') {
+        return None;
+    }
+    digits.replace('_', "").parse::<u32>().ok()
 }

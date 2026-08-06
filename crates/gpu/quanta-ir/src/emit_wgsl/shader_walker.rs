@@ -2,19 +2,27 @@
 //!
 //! The SPIR-V shader walker (`quanta-compiler/src/emit_spirv/{expr,expr_atom}`)
 //! emits SSA instructions; this one emits WGSL *text*, because WGSL is a
-//! friendlier target than SPIR-V or MSL — statement-`if`/`else` and the value
-//! form `let x = if a { b } else { c }` are native (no `OpPhi` construction),
-//! and almost every intrinsic keeps its Rust name. The construct surface is a
-//! mirror of the SPIR-V walker: what SPIR-V accepts, this accepts; what SPIR-V
-//! rejects (a method call, a `for`/`while` loop, an unknown intrinsic, an
-//! `if` without `else` as an expression, an out-of-range swizzle, indexing a
-//! non-slice), this rejects with a clear `Err`.
+//! friendlier target than SPIR-V or MSL — statement-`if`/`else`, the value
+//! form `let x = if a { b } else { c }`, and bounded `for` loops are native
+//! (no `OpPhi` construction), and almost every intrinsic keeps its Rust name.
+//! The construct surface is a mirror of the SPIR-V walker: what SPIR-V accepts
+//! (u32 params/locals with unsigned comparisons, `vertex_id()` /
+//! `instance_id()` / `frag_coord()` stage builtins, `for i in A .. N` with
+//! compile-time bounds), this accepts; what SPIR-V rejects (a method call, a
+//! `while` loop, an unknown intrinsic, an `if` without `else` as an
+//! expression, an out-of-range swizzle, indexing a non-slice, a non-constant
+//! or inclusive loop range, a stage builtin in the wrong stage), this rejects
+//! with a clear `Err`.
 //!
-//! The walker threads a `Ctx` of param/slice/local type info. Statements are
-//! written into `out`; the final result expression is RETURNED as a string so
-//! the caller (`shader.rs`) can place it into a vertex `pos_result` or a
-//! fragment `return`. Types (`WType`) are tracked only where the grammar needs
-//! them: swizzle arity validation and choosing the result type of a value-`if`.
+//! The walker threads a `Ctx` of param/slice/local type info plus the stage
+//! (for the stage-polarized builtins). Statements are written into `out`; the
+//! final result expression is RETURNED as a string so the caller (`shader.rs`)
+//! can place it into a vertex `pos_result` or a fragment `return`. Types
+//! (`WType`) are tracked where the grammar acts on them: swizzle arity
+//! validation, the result type of a value-`if`, and the u32/f32 scalar
+//! discipline — WGSL has no implicit conversions, so every point where the
+//! SPIR-V walker emits `OpConvertFToU`/`OpConvertUToF` this walker wraps the
+//! text in `u32(...)`/`f32(...)`.
 
 use super::shader_tokenizer::{ShaderToken, tokenize_shader_expr};
 use crate::ShaderType;
@@ -25,6 +33,7 @@ use crate::ShaderType;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WType {
     F32,
+    U32,
     Vec2,
     Vec3,
     Vec4,
@@ -36,15 +45,12 @@ impl WType {
     fn from_shader(ty: ShaderType) -> WType {
         match ty {
             ShaderType::F32 => WType::F32,
+            ShaderType::U32 => WType::U32,
             ShaderType::Vec2 => WType::Vec2,
             ShaderType::Vec3 => WType::Vec3,
             ShaderType::Vec4 => WType::Vec4,
             ShaderType::Mat4 => WType::Mat4,
             ShaderType::Mat3 => WType::Mat3,
-            // Unreachable: both WGSL shader emitters reject u32 params before
-            // building param infos (`reject_u32_params` in `shader.rs`). The
-            // scalar mapping keeps this total until the walker learns u32.
-            ShaderType::U32 => WType::F32,
         }
     }
 
@@ -73,9 +79,18 @@ impl WType {
 /// fragment body reads varyings through the receiver param
 /// (`s.<field>` — resolved against the struct's fields), and the vertex body
 /// ends in the struct literal (handled by [`walk_body_varyings`]).
+///
+/// `stage` polarizes the argument-free builtins: `vertex_id()` /
+/// `instance_id()` lower to the `_vertex_id` / `_instance_id` entry-point
+/// params (declared by `shader.rs` when the body calls them) in a vertex body
+/// and error in a fragment; `frag_coord()` is the mirror image, lowering to
+/// the varyings receiver's position member (the struct already carries
+/// `@builtin(position)`) or the `_frag_coord` param when there is no varyings
+/// struct.
 struct Ctx<'a> {
     params: &'a [ParamInfo],
     varyings: Option<&'a crate::ShaderVaryings>,
+    stage: crate::ShaderStage,
     locals: Vec<(String, WType)>,
     next_tmp: &'a core::cell::Cell<u32>,
 }
@@ -127,6 +142,7 @@ pub(super) fn walk_body(
     body_source: &str,
     params: &[ParamInfo],
     varyings: Option<&crate::ShaderVaryings>,
+    stage: crate::ShaderStage,
     pad: &str,
     out: &mut String,
 ) -> Result<(String, WType), String> {
@@ -136,6 +152,7 @@ pub(super) fn walk_body(
     let mut ctx = Ctx {
         params,
         varyings,
+        stage,
         locals: Vec::new(),
         next_tmp: &next_tmp,
     };
@@ -186,6 +203,7 @@ pub(super) fn walk_body_varyings(
     let mut ctx = Ctx {
         params,
         varyings: Some(varyings),
+        stage: crate::ShaderStage::Vertex,
         locals: Vec::new(),
         next_tmp: &next_tmp,
     };
@@ -280,7 +298,11 @@ pub(super) fn walk_body_varyings(
         } else {
             WType::from_shader(varyings.field_type(name).expect("validated above"))
         };
-        if *ty != declared {
+        // Scalar fields tolerate the f32/u32 pair (a bare literal arrives
+        // f32-typed); anything else must match the declared type exactly —
+        // the same rule as the SPIR-V literal walk.
+        let (expr, ty) = coerce_scalar(expr.clone(), *ty, declared);
+        if ty != declared {
             return Err(format!(
                 "field `{name}` of `{}` expects {} but the literal provides {:?}",
                 varyings.struct_name,
@@ -384,6 +406,16 @@ fn walk_statements(
             }
             continue;
         }
+        // `for i in A .. N { … }` — a bounded counted loop (yields no value;
+        // a trailing `;` is tolerated but unnecessary).
+        if tokens.get(*pos) == Some(&ShaderToken::Ident("for".to_string())) {
+            walk_for_statement(tokens, pos, ctx, pad, out)?;
+            if tokens.get(*pos) == Some(&ShaderToken::Semi) {
+                *pos += 1;
+            }
+            last = None;
+            continue;
+        }
         // A trailing expression: the result. If a `;` follows it is discarded.
         let v = walk_conditional(tokens, pos, ctx, pad, out)?;
         if tokens.get(*pos) == Some(&ShaderToken::Semi) {
@@ -460,6 +492,7 @@ fn walk_if_statement(
     let mut then_ctx = Ctx {
         params: ctx.params,
         varyings: ctx.varyings,
+        stage: ctx.stage,
         locals: ctx.locals.clone(),
         next_tmp: ctx.next_tmp,
     };
@@ -477,6 +510,7 @@ fn walk_if_statement(
         let mut else_ctx = Ctx {
             params: ctx.params,
             varyings: ctx.varyings,
+            stage: ctx.stage,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -519,6 +553,141 @@ fn walk_if_statement(
         out.push('\n');
     }
     Ok(None)
+}
+
+/// A compile-time u32 loop bound: an integer literal (`8`, a bare `8`
+/// arrives f32-tokenized, or the suffixed `8u32`). Anything else — a
+/// param, a local, an expression — is rejected: the trip count must be
+/// known at compile time so an unbounded shader loop can never be
+/// emitted. (Const-expression bounds like `2 * 4` are deferred.) Same
+/// contract and wording as the SPIR-V walker's `parse_const_loop_bound`.
+fn parse_const_loop_bound(tokens: &[ShaderToken], pos: &mut usize) -> Result<u32, String> {
+    match tokens.get(*pos) {
+        Some(ShaderToken::UInt(v)) => {
+            *pos += 1;
+            Ok(*v)
+        }
+        Some(ShaderToken::Float(f)) if *f >= 0.0 && f.fract() == 0.0 && *f <= u32::MAX as f32 => {
+            *pos += 1;
+            Ok(*f as u32)
+        }
+        _ => Err(
+            "for-loop bound must be a compile-time constant integer literal (`A .. N`)".to_string(),
+        ),
+    }
+}
+
+/// Reject an assignment to the for-loop counter anywhere in the body (the
+/// Rust loop binding is immutable; the WGSL counter is a `var`, so without
+/// this check the assignment would silently compile and change the trip
+/// count). Assignment (`name = expr ;`) is the statement grammar's ONLY
+/// mutation primitive, so a flat token scan for `Ident Eq` is complete;
+/// `let`/`let mut` bindings and `.field =` shapes are skipped — the same
+/// scan discipline as the SPIR-V walker's `loop_carried_locals`.
+fn reject_counter_assignment(body: &[ShaderToken], counter: &str) -> Result<(), String> {
+    for j in 0..body.len() {
+        let ShaderToken::Ident(name) = &body[j] else {
+            continue;
+        };
+        if body.get(j + 1) != Some(&ShaderToken::Eq) {
+            continue;
+        }
+        if j > 0 {
+            match &body[j - 1] {
+                ShaderToken::Ident(prev) if prev == "let" || prev == "mut" => continue,
+                ShaderToken::Dot => continue,
+                _ => {}
+            }
+        }
+        if name == counter {
+            return Err(format!("cannot assign to the for-loop counter `{counter}`"));
+        }
+    }
+    Ok(())
+}
+
+/// `for i in A .. N { … }` — a BOUNDED counted loop. `A`/`N` must be
+/// compile-time integer literals (see [`parse_const_loop_bound`]); the
+/// counter is a u32 local scoped to the body. WGSL has a native `for`, so
+/// the lowering is direct:
+///
+/// ```text
+///   for (var i: u32 = Au; i < Nu; i = i + 1u) { … }
+/// ```
+///
+/// Assignments to OUTER `let mut` locals persist through WGSL mutation (no
+/// phi construction needed); body-local `let`s stay scoped to the body
+/// (cloned-locals walk, like the `if` branches). The counter must be a fresh
+/// name (lookups find the first match, so a shadowed outer binding would win
+/// over the counter) and cannot be assigned — both rejections mirror the
+/// SPIR-V walker.
+fn walk_for_statement(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(), String> {
+    *pos += 1; // `for`
+    let counter = match tokens.get(*pos) {
+        Some(ShaderToken::Ident(n)) => n.clone(),
+        _ => return Err("expected an identifier after `for`".to_string()),
+    };
+    *pos += 1;
+    if tokens.get(*pos) != Some(&ShaderToken::Ident("in".to_string())) {
+        return Err("expected `in` after the for-loop counter".to_string());
+    }
+    *pos += 1;
+    let start = parse_const_loop_bound(tokens, pos)?;
+    if tokens.get(*pos) != Some(&ShaderToken::Dot)
+        || tokens.get(*pos + 1) != Some(&ShaderToken::Dot)
+    {
+        return Err("expected `..` in the for-loop range".to_string());
+    }
+    *pos += 2;
+    if tokens.get(*pos) == Some(&ShaderToken::Eq) {
+        return Err(
+            "inclusive `..=` ranges are not supported in shader for-loops (use `A .. N`)"
+                .to_string(),
+        );
+    }
+    let end = parse_const_loop_bound(tokens, pos)?;
+    let body_tokens = take_braced(tokens, pos)?;
+
+    // The counter must be a fresh name: local/param lookups find the FIRST
+    // match, so a shadowed outer binding would win over the counter.
+    if ctx.locals.iter().any(|(n, _)| *n == counter) || ctx.params.iter().any(|p| p.name == counter)
+    {
+        return Err(format!(
+            "for-loop counter `{counter}` shadows an existing binding"
+        ));
+    }
+    reject_counter_assignment(&body_tokens, &counter)?;
+
+    out.push_str(&format!(
+        "{pad}for (var {counter}: u32 = {start}u; {counter} < {end}u; \
+         {counter} = {counter} + 1u) {{\n"
+    ));
+
+    // The body walks over CLONED locals plus the u32 counter, so body-local
+    // `let`s stay scoped to the loop; assignments to outer `let mut` locals
+    // emit WGSL assignments that persist. `for` yields no value, so a
+    // trailing expression (a Rust type error in the source) is discarded —
+    // parity with the SPIR-V walker.
+    let inner_pad = format!("{pad}    ");
+    let mut body_ctx = Ctx {
+        params: ctx.params,
+        varyings: ctx.varyings,
+        stage: ctx.stage,
+        locals: ctx.locals.clone(),
+        next_tmp: ctx.next_tmp,
+    };
+    body_ctx.locals.push((counter, WType::U32));
+    let mut bp = 0;
+    walk_statements(&body_tokens, &mut bp, &mut body_ctx, &inner_pad, out)?;
+
+    out.push_str(&format!("{pad}}}\n"));
+    Ok(())
 }
 
 /// A conditional: either a value-form `if a { b } else { c }` (native WGSL,
@@ -571,6 +740,7 @@ fn walk_conditional(
         let mut then_ctx = Ctx {
             params: ctx.params,
             varyings: ctx.varyings,
+            stage: ctx.stage,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -590,6 +760,7 @@ fn walk_conditional(
         let mut else_ctx = Ctx {
             params: ctx.params,
             varyings: ctx.varyings,
+            stage: ctx.stage,
             locals: ctx.locals.clone(),
             next_tmp: ctx.next_tmp,
         };
@@ -643,9 +814,13 @@ fn skip_conditional(tokens: &[ShaderToken], pos: &mut usize) -> Result<(), Strin
 }
 
 /// A comparison: `a <cmp> b`, or just `a` when no comparison operator follows.
-/// The result of a comparison is a WGSL `bool`; the shader grammar only uses it
-/// as an `if` condition, so its type is reported as `F32` (it never feeds
-/// arithmetic — same simplification the SPIR-V walker makes).
+/// A comparison with a u32 on EITHER side is an integer comparison: the other
+/// side coerces to u32 (a bare literal RHS arrives f32-typed) — WGSL's
+/// comparison operators are natively typed, so the coercion is all the
+/// unsigned-opcode selection the SPIR-V walker does. The result of a
+/// comparison is a WGSL `bool`; the shader grammar only uses it as an `if`
+/// condition, so its type is reported as `F32` (it never feeds arithmetic —
+/// same simplification the SPIR-V walker makes).
 fn walk_comparison(
     tokens: &[ShaderToken],
     pos: &mut usize,
@@ -657,13 +832,21 @@ fn walk_comparison(
     if let Some(ShaderToken::Cmp(op)) = tokens.get(*pos) {
         let op = *op;
         *pos += 1;
-        let (right, _) = walk_additive(tokens, pos, ctx, pad, out)?;
+        let (right, right_ty) = walk_additive(tokens, pos, ctx, pad, out)?;
+        let (left, right) = if ty == WType::U32 || right_ty == WType::U32 {
+            let (l, _) = coerce_scalar(left, ty, WType::U32);
+            let (r, _) = coerce_scalar(right, right_ty, WType::U32);
+            (l, r)
+        } else {
+            (left, right)
+        };
         return Ok((format!("{left} {} {right}", op.wgsl()), WType::F32));
     }
     Ok((left, ty))
 }
 
-/// Additive precedence: `a + b - c`. WGSL `+`/`-` map straight through.
+/// Additive precedence: `a + b - c`. WGSL `+`/`-` map straight through; the
+/// scalar typing routes through [`emit_arith`].
 fn walk_additive(
     tokens: &[ShaderToken],
     pos: &mut usize,
@@ -679,11 +862,8 @@ fn walk_additive(
             _ => break,
         };
         *pos += 1;
-        let (right, rty) = walk_multiplicative(tokens, pos, ctx, pad, out)?;
-        // A vector±scalar or scalar±vector keeps the vector type; otherwise the
-        // left type wins (both sides agree in practice).
-        ty = join_arith_ty(ty, rty);
-        left = format!("{left} {op} {right}");
+        let right = walk_multiplicative(tokens, pos, ctx, pad, out)?;
+        (left, ty) = emit_arith((left, ty), right, op);
     }
     Ok((left, ty))
 }
@@ -713,13 +893,29 @@ fn walk_multiplicative(
             let is_right_vec = matches!(rty, WType::Vec4 | WType::Vec3);
             if is_left_mat && is_right_vec {
                 ty = rty;
-            } else {
-                ty = join_arith_ty(ty, rty);
+                left = format!("{left} * {right}");
+                continue;
             }
         }
-        left = format!("{left} {op} {right}");
+        (left, ty) = emit_arith((left, ty), (right, rty), op);
     }
     Ok((left, ty))
+}
+
+/// One scalar-aware arithmetic join. Two u32 operands stay u32 (WGSL's
+/// operators are natively integer there — `/` is the unsigned division); a
+/// MIXED u32/f32 pair widens the u32 side to f32 (float wins — silently
+/// truncating `x * 0.5` through u32 would be worse) — the text twin of the
+/// SPIR-V walker's `emit_arith_op`. Everything else keeps the pre-existing
+/// float rule via [`join_arith_ty`].
+fn emit_arith(left: (String, WType), right: (String, WType), op: char) -> (String, WType) {
+    if left.1 == WType::U32 && right.1 == WType::U32 {
+        return (format!("{} {op} {}", left.0, right.0), WType::U32);
+    }
+    let (l, lty) = coerce_scalar(left.0, left.1, WType::F32);
+    let (r, rty) = coerce_scalar(right.0, right.1, WType::F32);
+    let ty = join_arith_ty(lty, rty);
+    (format!("{l} {op} {r}"), ty)
 }
 
 /// A `vec op scalar` (or vice-versa) keeps the vector type; two equal types
@@ -730,6 +926,21 @@ fn join_arith_ty(a: WType, b: WType) -> WType {
         (true, _) => a,
         (false, true) => b,
         _ => a,
+    }
+}
+
+/// Convert a scalar expression to the target scalar family when exactly one
+/// of {`F32`, `U32`} meets the other; every other (type, target) pair passes
+/// through untouched. WGSL has no implicit conversions, so the wrap is
+/// explicit text — `u32(x)` truncates toward zero (the `OpConvertFToU`
+/// analogue, how a bare integer literal participates in u32 comparisons),
+/// `f32(x)` widens (the `OpConvertUToF` analogue, how a u32 value joins
+/// float arithmetic).
+fn coerce_scalar(expr: String, ty: WType, target: WType) -> (String, WType) {
+    match (ty, target) {
+        (WType::F32, WType::U32) => (format!("u32({expr})"), WType::U32),
+        (WType::U32, WType::F32) => (format!("f32({expr})"), WType::F32),
+        _ => (expr, ty),
     }
 }
 
@@ -747,6 +958,12 @@ fn walk_unary(
     if tokens.get(*pos) == Some(&ShaderToken::Op('-')) {
         *pos += 1;
         let (val, ty) = walk_unary(tokens, pos, ctx, pad, out)?;
+        // WGSL's unary `-` is not defined for u32; `0u - x` is the wrapping
+        // two's-complement negate (unsigned overflow is modular by spec) —
+        // the same value the SPIR-V walker's OpSNegate produces.
+        if ty == WType::U32 {
+            return Ok((format!("(0u - {val})"), ty));
+        }
         return Ok((format!("-{val}"), ty));
     }
     if tokens.get(*pos) == Some(&ShaderToken::Op('*')) {
@@ -804,6 +1021,12 @@ fn walk_atom_inner(
             *pos += 1;
             Ok((fmt_float(*v), WType::F32))
         }
+        // `3u32` — an explicit unsigned literal (the u32-comparison RHS, or a
+        // plain u32 local's initializer). WGSL spells it `3u`.
+        ShaderToken::UInt(v) => {
+            *pos += 1;
+            Ok((format!("{v}u"), WType::U32))
+        }
         ShaderToken::Open => {
             *pos += 1;
             let (inner, ty) = walk_conditional(tokens, pos, ctx, pad, out)?;
@@ -859,6 +1082,55 @@ fn walk_atom_inner(
             // Texture sampling: sample(slot, uv) → textureSample(tex_N, smp_N, uv)
             if name == "sample" && tokens.get(*pos) == Some(&ShaderToken::Open) {
                 return walk_texture_sample(tokens, pos, ctx, pad, out);
+            }
+
+            // Vertex-stage indices: vertex_id() / instance_id() → u32. Lower
+            // to the `_vertex_id` / `_instance_id` entry-point params
+            // (`@builtin(vertex_index)` / `@builtin(instance_index)`) that
+            // `shader.rs` declares when the body calls them; in a fragment
+            // body the param is absent and the call is a stage error — the
+            // polarity flip of `frag_coord()`, same verdict as MSL/SPIR-V.
+            if (name == "vertex_id" || name == "instance_id")
+                && tokens.get(*pos) == Some(&ShaderToken::Open)
+            {
+                *pos += 1; // `(`
+                consume_call_close(tokens, pos);
+                if ctx.stage != crate::ShaderStage::Vertex {
+                    return Err(format!(
+                        "{name}() is only available in vertex shader bodies"
+                    ));
+                }
+                let ident = if name == "vertex_id" {
+                    "_vertex_id"
+                } else {
+                    "_instance_id"
+                };
+                return Ok((ident.to_string(), WType::U32));
+            }
+
+            // Window-space position: frag_coord() → vec4 (x,y = pixel coords,
+            // z = depth, w = 1/w). Under the varyings model the interface
+            // struct already carries `@builtin(position)`, so the call reads
+            // the receiver's position member (a second position builtin on
+            // the entry point would be invalid WGSL); without varyings it
+            // lowers to the `_frag_coord` param `shader.rs` declares. Vertex
+            // bodies reject — mirroring the MSL/SPIR-V stage guard.
+            if name == "frag_coord" && tokens.get(*pos) == Some(&ShaderToken::Open) {
+                *pos += 1; // `(`
+                consume_call_close(tokens, pos);
+                if ctx.stage != crate::ShaderStage::Fragment {
+                    return Err(
+                        "frag_coord() is only available in fragment shader bodies".to_string()
+                    );
+                }
+                let expr = match ctx
+                    .varyings
+                    .and_then(|v| v.binding.as_deref().map(|r| (r, v)))
+                {
+                    Some((recv, v)) => format!("{recv}.{}", v.position),
+                    None => "_frag_coord".to_string(),
+                };
+                return Ok((expr, WType::Vec4));
             }
 
             // Screen-space derivatives — keep their WGSL names.
@@ -935,7 +1207,11 @@ fn walk_vec_ctor(
         if i > 0 && tokens.get(*pos) == Some(&ShaderToken::Comma) {
             *pos += 1;
         }
-        let (a, _) = walk_conditional(tokens, pos, ctx, pad, out)?;
+        let (a, a_ty) = walk_conditional(tokens, pos, ctx, pad, out)?;
+        // Vec constructors are float vectors: a u32 component (a u32
+        // param/varying used as a numeric value) widens to f32 — WGSL's
+        // `vecN<f32>(...)` would otherwise reject the uint member.
+        let (a, _) = coerce_scalar(a, a_ty, WType::F32);
         args.push(a);
     }
     consume_call_close(tokens, pos);
@@ -999,6 +1275,9 @@ fn walk_intrinsic_call(
             }
         }
         let (a, t) = walk_conditional(tokens, pos, ctx, pad, out)?;
+        // The math builtin set here is float-only: a u32 argument widens to
+        // f32 so the call stays float-typed (the GLSL.std.450 analogue).
+        let (a, t) = coerce_scalar(a, t, WType::F32);
         if args.is_empty() {
             first_ty = t;
         }
@@ -1014,8 +1293,9 @@ fn walk_intrinsic_call(
 
 /// `name[index]` on a `&[T]` slice param → `name[u32(index)]` (WGSL array
 /// indices are integral; a computed `f32` index truncates, exactly as the MSL
-/// `(uint)(index)` and the SPIR-V `OpConvertFToU`). Indexing a non-slice value
-/// is a rejection.
+/// `(uint)(index)` and the SPIR-V `OpConvertFToU`). An already-u32 index (a
+/// u32 param/varying, a for-loop counter, a `Nu32` literal) is used directly.
+/// Indexing a non-slice value is a rejection.
 fn walk_slice_index(
     name: &str,
     tokens: &[ShaderToken],
@@ -1031,13 +1311,14 @@ fn walk_slice_index(
     };
     let elem_ty = slice.ty;
     *pos += 1; // `[`
-    let (index, _) = walk_conditional(tokens, pos, ctx, pad, out)?;
+    let (index, index_ty) = walk_conditional(tokens, pos, ctx, pad, out)?;
     if tokens.get(*pos) == Some(&ShaderToken::BracketClose) {
         *pos += 1;
     } else {
         return Err(format!("expected `]` after index into `{name}`"));
     }
-    Ok((format!("{name}[u32({index})]"), elem_ty))
+    let (index, _) = coerce_scalar(index, index_ty, WType::U32);
+    Ok((format!("{name}[{index}]"), elem_ty))
 }
 
 /// Apply a component/swizzle (`.x`, `.zw`, `.rgba`, …) to a vector value,
@@ -1153,6 +1434,7 @@ fn fresh_tmp(ctx: &Ctx) -> String {
 fn wgsl_type_name(ty: WType) -> &'static str {
     match ty {
         WType::F32 => "f32",
+        WType::U32 => "u32",
         WType::Vec2 => "vec2<f32>",
         WType::Vec3 => "vec3<f32>",
         WType::Vec4 => "vec4<f32>",

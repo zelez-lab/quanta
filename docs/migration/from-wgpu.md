@@ -256,11 +256,11 @@ attribute annotations (Quanta assigns `@location` from field order):
 | `@builtin(instance_index)` | `instance_id()` |
 | `textureSample(t, s, uv)` | `sample(t, in.uv)` (`t: &Sampled2D` param) |
 
-> The Quanta **WebGPU/WGSL backend does not yet emit** `frag_coord`, `u32`
-> varyings, `vertex_id`/`instance_id`, or shader `for` loops -- a shader using
-> them ships with `wgsl: None` and a build-time note (Metal and Vulkan still
-> emit natively). This matches the `NotSupported` posture in [v0.1 advanced
-> features](#v01-advanced-features) below.
+> Every row in this table emits on the WebGPU/WGSL backend too — the WGSL
+> emitter is at construct parity with Metal and Vulkan, including
+> `frag_coord`, `u32` varyings (`@interpolate(flat)` applied on both
+> interface ends), `vertex_id`/`instance_id`, and bounded shader `for`
+> loops.
 
 **Coordinate convention — nothing to change.** Quanta uses WebGPU's
 convention on every backend: NDC **+Y up**, framebuffer origin **top-left**,
