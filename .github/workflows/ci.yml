@@ -609,6 +609,13 @@ jobs:
       - name: Differential tests (vulkan lane via lavapipe)
         run: cargo test --test differential --no-default-features --features vulkan,jit,compute
 
+      # The measurement the wave/pipeline-cache follow-up is gated on
+      # (roadmap design record deferred_dispatch.md): per-op pipeline
+      # creation cost on lavapipe, which exists nowhere but CI. Grep the
+      # log for "wave-cache probe:". Informational — never fails on timing.
+      - name: Wave-creation cost probe (lavapipe)
+        run: cargo run --release --example probe_wave_creation --no-default-features --features vulkan,jit,compute
+
       # The swapchain path: VK_EXT_headless_surface gives lavapipe a real
       # VkSurfaceKHR + VkSwapchainKHR without a window system, so the
       # whole acquire→render→present suite (incl. the demand-driven
