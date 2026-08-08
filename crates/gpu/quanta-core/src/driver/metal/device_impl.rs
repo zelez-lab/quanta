@@ -218,6 +218,18 @@ impl GpuDevice for MetalDevice {
         // ordering the public Batch documents.
         let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
         let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
+        // Both factory returns are AUTORELEASED — owned by the creating
+        // thread's autorelease pool, drained at that thread's exit. This
+        // batch lives in the shared deferred lane and must outlive the
+        // creating thread (a test/worker thread can exit with the batch
+        // still open), so take a real reference; Drop releases exactly
+        // once. Without this, the pool drain released the still-open
+        // encoder (Metal asserts in `_MTLCommandEncoder dealloc`) and
+        // left the lane encoding into freed driver objects.
+        unsafe {
+            ffi::msg_id(cmd, b"retain\0");
+            ffi::msg_id(encoder, b"retain\0");
+        }
         Ok(Box::new(MetalBatch {
             device: self as *const MetalDevice,
             cmd,
@@ -243,6 +255,11 @@ impl GpuDevice for MetalDevice {
                 ffi::MTL_DISPATCH_TYPE_CONCURRENT,
             )
         };
+        // Autoreleased returns — take ownership; see `batch_begin`.
+        unsafe {
+            ffi::msg_id(cmd, b"retain\0");
+            ffi::msg_id(encoder, b"retain\0");
+        }
         Ok(Box::new(MetalBatch {
             device: self as *const MetalDevice,
             cmd,
@@ -1778,10 +1795,14 @@ struct MetalBatch {
 // `Mutex`). Metal command buffers and encoders require *external
 // synchronization*, not thread affinity — and every access here is
 // exclusive: `&mut self` on encode, by-value on submit, and the lane's
-// lock around both. The raw device pointer is valid for the batch's
-// whole life, Drop included: the api `Batch` wrapper — the only way
-// this type leaves the driver — owns a device `Arc` declared to drop
-// AFTER the inner batch (see `api::batch::Batch`).
+// lock around both. LIFETIME is the other half of the argument:
+// `batch_begin` retains `cmd` and `encoder` (the factory returns are
+// autoreleased — pool-owned by the CREATING thread, drained at its
+// exit), so the batch owns them independent of any thread's pool and
+// Drop releases exactly once. The raw device pointer is valid for the
+// batch's whole life, Drop included: the api `Batch` wrapper — the
+// only way this type leaves the driver — owns a device `Arc` declared
+// to drop AFTER the inner batch (see `api::batch::Batch`).
 #[cfg(feature = "compute")]
 unsafe impl Send for MetalBatch {}
 
@@ -1830,10 +1851,17 @@ impl crate::batch::BatchInner for MetalBatch {
 #[cfg(feature = "compute")]
 impl Drop for MetalBatch {
     fn drop(&mut self) {
-        if !self.ended {
-            unsafe {
+        unsafe {
+            if !self.ended {
                 ffi::msg_void(self.encoder, b"endEncoding\0");
             }
+            // Balance the `batch_begin` retains. Runs on every path —
+            // after submit (commit took its own reference via the
+            // queue) and on abandon alike — so the release is exactly
+            // once and the objects no longer depend on the creating
+            // thread's autorelease pool.
+            ffi::msg_void(self.encoder, b"release\0");
+            ffi::msg_void(self.cmd, b"release\0");
         }
     }
 }
