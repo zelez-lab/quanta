@@ -9,19 +9,95 @@ use super::Gpu;
 impl Gpu {
     // === Compute ===
 
+    /// Create a wave from a pre-compiled kernel binary.
+    ///
+    /// Repeat creations of the same bytes on one device return fresh
+    /// `Wave` handles over ONE cached driver pipeline (see
+    /// [`crate::api::wave_cache`]) — creation cost is paid once per
+    /// distinct kernel, and bindings/push state stay per-`Wave`.
     pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
-        let mut wave = self.ctx.device.wave(kernel)?;
-        wave.device = Some(self.ctx.device.clone());
-        Ok(wave)
+        #[cfg(feature = "std")]
+        {
+            self.cached_wave(crate::api::wave_cache::WaveKind::Aot, kernel, |d| {
+                d.wave(kernel)
+            })
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let mut wave = self.ctx.device.wave(kernel)?;
+            wave.device = Some(self.ctx.device.clone());
+            Ok(wave)
+        }
     }
 
     /// JIT-compile a kernel from its serialized KernelDef at runtime.
     ///
     /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the
     /// binary and compiled to the appropriate GPU shader format at first use.
+    /// Cached per device by the kernel bytes, like [`Gpu::wave`] — the
+    /// sci/ml layers rebuild identical bytes once per op, and only the
+    /// first build pays deserialize + emit + pipeline construction.
     pub fn wave_jit(&self, kernel_def_bytes: &[u8]) -> Result<Wave, QuantaError> {
-        let mut wave = self.ctx.device.wave_jit(kernel_def_bytes)?;
+        #[cfg(feature = "std")]
+        {
+            self.cached_wave(
+                crate::api::wave_cache::WaveKind::Jit,
+                kernel_def_bytes,
+                |d| d.wave_jit(kernel_def_bytes),
+            )
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let mut wave = self.ctx.device.wave_jit(kernel_def_bytes)?;
+            wave.device = Some(self.ctx.device.clone());
+            Ok(wave)
+        }
+    }
+
+    /// The shared create path behind [`Gpu::wave`] / [`Gpu::wave_jit`]:
+    /// hand out a fresh `Wave` over the cached pipeline, or compile
+    /// through `create` and adopt the result into the cache. The
+    /// compile runs OUTSIDE the cache lock (concurrent first-compiles
+    /// of different kernels must not serialize); a lost same-kernel
+    /// race keeps the incumbent entry and the loser's wave releases
+    /// its own solo pipeline on drop.
+    #[cfg(feature = "std")]
+    fn cached_wave(
+        &self,
+        kind: crate::api::wave_cache::WaveKind,
+        bytes: &[u8],
+        create: impl FnOnce(&alloc::sync::Arc<dyn crate::GpuDevice>) -> Result<Wave, QuantaError>,
+    ) -> Result<Wave, QuantaError> {
+        use crate::api::types::{MAX_BINDINGS, MAX_TEXTURES, PUSH_DATA_CAP};
+        use crate::api::wave_cache::SharedPipeline;
+
+        if let Some((shared, workgroup_size, write_mask)) = self.ctx.wave_cache.get(kind, bytes) {
+            return Ok(Wave {
+                handle: shared.handle,
+                bindings: [0u64; MAX_BINDINGS],
+                binding_count: 0,
+                texture_bindings: [0u64; MAX_TEXTURES],
+                texture_count: 0,
+                storage_texture_kinds: [0; 16],
+                write_mask,
+                push_data: [0u8; PUSH_DATA_CAP],
+                push_len: 0,
+                push_mask: 0,
+                workgroup_size,
+                device: Some(self.ctx.device.clone()),
+                live: false,
+                shared: Some(shared),
+            });
+        }
+        let mut wave = create(&self.ctx.device)?;
         wave.device = Some(self.ctx.device.clone());
+        let shared =
+            alloc::sync::Arc::new(SharedPipeline::new(wave.handle, self.ctx.device.clone()));
+        wave.live = false;
+        wave.shared = Some(shared.clone());
+        self.ctx
+            .wave_cache
+            .insert(kind, bytes, shared, wave.workgroup_size, wave.write_mask);
         Ok(wave)
     }
 
@@ -194,6 +270,8 @@ impl Gpu {
     /// Compiles `kernel` into a new wave, transfers all bindings and push constants
     /// from `wave` to the new wave, then replaces `wave`'s handle.
     pub fn reload_wave(&self, wave: &mut Wave, kernel: &[u8]) -> Result<(), QuantaError> {
+        // Deliberately bypasses the wave cache: hot reload feeds
+        // freshly edited bytes, the one shape where dedup buys nothing.
         let mut new_wave = self.ctx.device.wave(kernel)?;
         new_wave.device = Some(self.ctx.device.clone());
         new_wave.bindings = wave.bindings;

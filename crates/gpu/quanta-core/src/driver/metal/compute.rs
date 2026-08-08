@@ -261,6 +261,7 @@ impl MetalDevice {
             workgroup_size: kernel.workgroup_size,
             device: None,
             live: true,
+            shared: None,
         })
     }
 
@@ -345,6 +346,7 @@ impl MetalDevice {
             workgroup_size: [64, 1, 1],
             device: None,
             live: true,
+            shared: None,
         })
     }
 

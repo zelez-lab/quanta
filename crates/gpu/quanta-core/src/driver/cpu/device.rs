@@ -601,6 +601,7 @@ impl GpuDevice for CpuDevice {
             workgroup_size,
             device: None,
             live: true,
+            shared: None,
         })
     }
 
@@ -1504,6 +1505,7 @@ impl GpuDevice for CpuDevice {
                         workgroup_size: *workgroup_size,
                         device: None,
                         live: false,
+                        shared: None,
                     };
                     let mut pulse = self.wave_dispatch(&wave, *groups)?;
                     pulse.wait()?;

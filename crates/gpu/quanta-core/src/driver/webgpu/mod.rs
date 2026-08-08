@@ -931,6 +931,7 @@ impl QGpuDevice for WebgpuDevice {
                         workgroup_size: *workgroup_size,
                         device: None,
                         live: false,
+                        shared: None,
                     };
                     self.wave_dispatch(&wave, *groups)?;
                 }
@@ -1120,6 +1121,7 @@ fn make_wave(handle: u64, workgroup_size: [u32; 3]) -> Wave {
         workgroup_size,
         device: None,
         live: true,
+        shared: None,
     }
 }
 

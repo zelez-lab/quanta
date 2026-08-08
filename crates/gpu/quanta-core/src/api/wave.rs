@@ -47,9 +47,17 @@ pub struct Wave {
     /// Drivers construct waves with `device: None`; the `Gpu`
     /// wrapper attaches the device Arc so Drop can release the handle.
     pub(crate) device: Option<Arc<dyn GpuDevice>>,
-    /// True while this wrapper owns the driver-side resource. Cleared
-    /// on destroy so Drop is idempotent-safe (no double-free).
+    /// True while this wrapper owns the driver-side resource ALONE.
+    /// Cleared on destroy so Drop is idempotent-safe (no double-free);
+    /// always false on cache-shared waves, whose release rides
+    /// `shared` instead.
     pub(crate) live: bool,
+    /// Cache co-ownership of the driver-side pipeline. `Some` on waves
+    /// handed out by the per-device wave cache (`live` is false — the
+    /// direct destroy path is disarmed) and the LAST Arc owner, cache
+    /// slot or `Wave`, releases the registry entry. `None` on uncached
+    /// waves: driver-internal transients, no_std builds.
+    pub(crate) shared: Option<Arc<crate::api::wave_cache::SharedPipeline>>,
 }
 
 impl Wave {
@@ -157,6 +165,9 @@ impl Drop for Wave {
         // Real release: remove the registry entry and free the native
         // object. The `live` flag guarantees at-most-once destruction;
         // driver-internal transients (device: None) drop silently.
+        // Cache-shared waves (live: false, shared: Some) release
+        // through the `shared` Arc's own drop instead — the last
+        // owner, cache slot or wave, calls the same `wave_destroy`.
         if self.live {
             self.live = false;
             if let Some(ref dev) = self.device {

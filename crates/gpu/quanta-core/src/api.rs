@@ -30,6 +30,12 @@ pub mod multi_queue;
 pub(crate) mod registry;
 #[cfg(feature = "compute")]
 pub mod wave;
+// The per-device compiled-wave cache (`Gpu::wave` / `Gpu::wave_jit`
+// dedup by kernel bytes). The map needs `std` for its lock like the
+// lane; the `SharedPipeline` co-ownership type is alloc-only because
+// `Wave` carries it in every configuration.
+#[cfg(feature = "compute")]
+pub(crate) mod wave_cache;
 
 // Kernel-language types named by `#[quanta::kernel]`-generated code:
 // the `GpuType` marker trait, the `KernelBinary` a compiled kernel

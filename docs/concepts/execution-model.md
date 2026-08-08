@@ -209,6 +209,15 @@ per op — where define-by-run training gets its throughput. Exception:
 `MappedField` views are raw memory the lane cannot intercept — flush
 explicitly before reading one.
 
+Wave creation is cached the same way dispatch is deferred — as the model,
+not a mode: `gpu.wave()` / `gpu.wave_jit()` key the compiled driver
+pipeline by the exact kernel bytes, per device, so only the first
+creation of a kernel pays JIT + pipeline construction and every repeat
+hands out a fresh `Wave` (its own bindings and push constants) over the
+shared pipeline. Creating a wave per op is therefore free after first
+contact — there is no need to hoist wave creation out of loops for
+performance.
+
 ## Queues
 
 Most desktop GPUs expose three hardware queue families that can run in

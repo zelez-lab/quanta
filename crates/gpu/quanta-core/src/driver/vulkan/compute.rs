@@ -297,6 +297,7 @@ impl VulkanDevice {
             workgroup_size,
             device: None,
             live: true,
+            shared: None,
         })
     }
 

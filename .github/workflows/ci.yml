@@ -154,6 +154,12 @@ jobs:
       - name: Deferred-dispatch tests (software lane)
         run: cargo test --test gpu_deferred --features software --no-default-features
 
+      # Wave-cache + lifecycle semantics: dedup by kernel bytes, LRU
+      # bounds, drain, destroy-behind-encoded-work. Isolated devices —
+      # parallel-safe.
+      - name: Wave lifecycle tests (software lane)
+        run: cargo test --test wave_lifecycle --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
@@ -212,7 +218,7 @@ jobs:
         run: cargo test --test gpu_barriers --test gpu_mapped --test gpu_timestamps -- --test-threads=1
 
       - name: GPU lifecycle tests
-        run: cargo test --test gpu_caps --test gpu_field_lifecycle --test gpu_pulse --test gpu_deferred --test gpu_sampler --test gpu_format_caps -- --test-threads=1
+        run: cargo test --test gpu_caps --test gpu_field_lifecycle --test wave_lifecycle --test gpu_pulse --test gpu_deferred --test gpu_sampler --test gpu_format_caps -- --test-threads=1
 
       - name: GPU advanced tests
         run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
@@ -608,6 +614,12 @@ jobs:
 
       - name: Differential tests (vulkan lane via lavapipe)
         run: cargo test --test differential --no-default-features --features vulkan,jit,compute
+
+      # Wave-cache + lifecycle semantics on the Vulkan retire path:
+      # cached-pipeline destroys park behind the submission serial /
+      # batch pins. Isolated devices — parallel-safe.
+      - name: Wave lifecycle tests (vulkan lane via lavapipe)
+        run: cargo test --test wave_lifecycle --no-default-features --features vulkan,jit,compute
 
       # The measurement the wave/pipeline-cache follow-up is gated on
       # (roadmap design record deferred_dispatch.md): per-op pipeline

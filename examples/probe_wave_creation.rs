@@ -1,19 +1,22 @@
 //! Wave-creation cost probe — the measurement the wave/pipeline-cache
 //! follow-up is gated on (`roadmap/_design/deferred_dispatch.md`).
 //!
-//! Each `wave_jit` call builds a shader module and a compute pipeline
-//! from the same kernel bytes; a cache keyed by those bytes would pay
-//! that cost once. Whether the cache is worth building depends on the
-//! per-creation cost on each backend — Metal was measured cheap, and
-//! lavapipe (the CI vulkan lane, where this probe exists to run) was
-//! never measured. Three numbers, printed per-op:
+//! Each `wave_jit` call resolves through the per-device wave cache
+//! (`api::wave_cache`): the first creation of a kernel builds the
+//! shader module + compute pipeline, repeats hand out a fresh `Wave`
+//! over the cached pipeline. The probe measured the pre-cache cost
+//! that justified the cache (lavapipe release: ~80% of the sync
+//! per-op cost was construction) and now guards both sides of it.
+//! Four numbers, printed per-op:
 //!
-//! - `creation only` — `wave_jit` + drop in a loop: the cost a cache
-//!   would remove.
-//! - `creation+dispatch+wait` — the per-op cost of today's
-//!   create-per-dispatch shape.
-//! - `dispatch+wait (reused wave)` — the floor a perfect cache would
-//!   approach.
+//! - `creation only` — same-bytes `wave_jit` + drop in a loop: the
+//!   cache-hit cost (pre-cache, this was the full construction cost).
+//! - `creation only (cold)` — distinct kernel bytes per iteration
+//!   defeat the cache: the driver-side construction cost the cache
+//!   removes.
+//! - `creation+dispatch+wait` — the per-op cost of the sci/ml
+//!   create-per-dispatch shape (cache-hit + dispatch).
+//! - `dispatch+wait (reused wave)` — the floor: no creation at all.
 //!
 //! Informational: the probe asserts correctness of one dispatch but
 //! never fails on timing. Grep CI logs for `wave-cache probe:`.
@@ -58,7 +61,8 @@ fn main() {
         out[0]
     );
 
-    // Creation only: the cost a wave/pipeline cache would remove.
+    // Creation only, same bytes: all cache hits after the warmup —
+    // the per-op creation cost the sci/ml layers actually pay now.
     mark("create loop");
     const CREATES: u32 = 32;
     let t = std::time::Instant::now();
@@ -70,6 +74,25 @@ fn main() {
     println!("wave-cache probe: creation only: {per_create:.1} us/op ({CREATES} creates)");
 
     mark("create loop done");
+
+    // Cold creation: a distinct kernel per iteration defeats the
+    // cache, measuring the driver-side construction cost it removes
+    // (comparable to the pre-cache `creation only` history).
+    mark("cold create loop");
+    let t = std::time::Instant::now();
+    for i in 0..CREATES {
+        let mut def = build_def();
+        def.name = format!("probe_add_one_{i}");
+        let cold_bytes = quanta_ir::serialize_kernel(&def);
+        let w = gpu.wave_jit(&cold_bytes).unwrap();
+        drop(w);
+    }
+    let per_cold = t.elapsed().as_secs_f64() * 1e6 / CREATES as f64;
+    println!(
+        "wave-cache probe: creation only (cold): {per_cold:.1} us/op ({CREATES} distinct kernels)"
+    );
+
+    mark("cold create loop done");
 
     // Creation + dispatch + wait: today's create-per-dispatch shape.
     mark("full loop");

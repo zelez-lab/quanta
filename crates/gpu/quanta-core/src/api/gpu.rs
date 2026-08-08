@@ -50,6 +50,13 @@ pub(crate) struct DeviceContext {
     /// encodes here and the lane submits at the sync points.
     #[cfg(all(feature = "compute", feature = "std"))]
     pub(crate) pending: Arc<crate::api::deferred::PendingLane>,
+    /// Compiled-wave cache — one per device, so `Gpu::wave` /
+    /// `Gpu::wave_jit` dedup pipeline construction by kernel bytes
+    /// (see [`crate::api::wave_cache`]). Isolated devices get their
+    /// own by construction. No external seam clones it, so unlike the
+    /// lane and the MSAA pool it needs no `Arc` of its own.
+    #[cfg(all(feature = "compute", feature = "std"))]
+    pub(crate) wave_cache: crate::api::wave_cache::WaveCache,
     /// Pool of builder-managed MSAA intermediates (`RenderBuilder::
     /// msaa`) — one per device, dropped (destroying every pooled
     /// texture) with the last `Gpu` clone. See [`crate::msaa_pool`]
@@ -66,6 +73,8 @@ impl Gpu {
             ctx: Arc::new(DeviceContext {
                 #[cfg(all(feature = "compute", feature = "std"))]
                 pending: Arc::new(crate::api::deferred::PendingLane::default()),
+                #[cfg(all(feature = "compute", feature = "std"))]
+                wave_cache: crate::api::wave_cache::WaveCache::default(),
                 #[cfg(all(feature = "render", feature = "std"))]
                 msaa_pool: Arc::new(crate::MsaaPool::default()),
                 device: inner,
@@ -98,6 +107,23 @@ impl Gpu {
     #[doc(hidden)]
     pub fn debug_registry_counts(&self) -> crate::RegistryCounts {
         self.ctx.device.debug_registry_counts()
+    }
+
+    /// Test-support: drop every cache-held compiled pipeline,
+    /// returning how many entries the cache released. Cached
+    /// pipelines are real registry entries that linger by design, so
+    /// absolute-count tests drain before asserting. Entries still
+    /// referenced by outstanding `Wave`s free when those drop.
+    #[doc(hidden)]
+    pub fn __wave_cache_drain(&self) -> usize {
+        #[cfg(all(feature = "compute", feature = "std"))]
+        {
+            self.ctx.wave_cache.drain()
+        }
+        #[cfg(not(all(feature = "compute", feature = "std")))]
+        {
+            0
+        }
     }
 
     // === Device info ===

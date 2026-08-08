@@ -122,8 +122,8 @@ trait below.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel |
-| `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile KernelDef and create wave |
+| `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel (pipeline cached per device by kernel bytes — repeats skip construction) |
+| `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile KernelDef and create wave (same per-device cache — only the first creation compiles) |
 | `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count), **deferred**: encodes into the per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-dispatch)) |
 | `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts (commits, ordered after pending deferred work) |
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch (commits, ordered after pending deferred work) |
