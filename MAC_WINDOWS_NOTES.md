@@ -59,8 +59,8 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 3 | `just clippy-vulkan` fails on `main` (Windows-only visibility) | Windows | `fix/vulkan-clippy` | **MERGED** as `e518274` (see the Mac log for why SHAs changed); branch deleted |
 | 4 | `vkCreateInstance` `-9` under parallel-test load | **Mac** | _(direct on `main`)_ | **FIXED structurally** — 3 commits: `8926960` (VkInstance refcounted, destroyed exactly once — this also killed a latent multi-GPU double-destroy: every device's Drop destroyed the SHARED instance), `9b23095` (`DeviceContext`: lane+pool+device in one Arc), `527cd69` (process-wide Weak registry — repeated `init()` returns clones of ONE device+lane; the storm can't happen: one instance+device per process no matter how many threads init). `tests/gpu_registry.rs` incl. an 8-thread storm. See item 10 |
 | 5 | `VulkanBatch` holds a bare `*const VulkanDevice` | Mac | _(direct on `main`)_ | **FIXED structurally** — `a3c832f`: drivers return the raw `BatchInner`; only the api layer, holding the device `Arc`, can zip them into a `Batch`, so a batch owns its device by construction (all three backends had the bare pointer). Field order in `Gpu` demoted to defense-in-depth. See item 10 |
-| 6 | CAS emitter stamps ONE order into BOTH semantics operands | _tbd_ | _none_ | Latent (Mac review): invalid if a kernel ever asks Release/AcqRel CAS; IR already documents `failure ∉ {Release, AcqRel}` but the emitters don't split. Unreachable today (strict-val rebuild green) |
-| 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | _tbd_ | _none_ | Latent (Mac review): mapping exists in both emitters, unreachable today |
+| 6 | CAS emitter stamps ONE order into BOTH semantics operands | Mac | _none_ | **SHIPPED** in `7177b8e` — the emitters split CAS Equal/Unequal semantics (failure operand strips Release/AcqRel) |
+| 7 | `SeqCst` (0x10) semantics forbidden in the Vulkan environment | Mac | _none_ | **SHIPPED** in `7177b8e` — SeqCst mapping DELETED from both emitters (was reachable-invalid under VUID-04732; validator now armed with `--target-env=vulkan1.3`) |
 | 8 | `fix/*` pushes trigger no CI — protocol has no pipeline step | Mac | _(direct on `main`)_ | **FIXED** — `8160b04`: `workflow_dispatch` on `ci.yml`. Windows: after pushing a fix branch, run `gh workflow run ci.yml --ref fix/<topic>` — that IS the protocol's "pipeline green on the branch" step now |
 | 9 | `barrier_texture_transition` red on real Metal since `a128a23` | Mac | _(direct on `main`)_ | **FIXED** — `68b5157`; test CPU-seeds and never renders, so it drops RENDER_TARGET (same trim as the mipmap test). Hid because the suite self-skips on GPU-less CI |
 | 10 | Re-validate teardown + storm on Iris Xe at `527cd69` | **Windows** | _none_ | **DONE, with findings** — (c) registry 5/5 incl. the 8-thread storm: the `-9` is structurally dead on real hardware; (b) nn 108/108 full-parallel, zero `-9`, zero incompatible-driver; (a) **VVL FAILED** — not the old 482-object catastrophe (still fixed), but two NEW race classes the one-device-per-process model made reachable: 4–7 validation errors per parallel run, zero single-threaded. → item 11 |
@@ -68,7 +68,7 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 12 | `gpu_surface` deadlocks on lavapipe — was MAIN'S RED | Windows | _(commit taken from the lab branches)_ | **MERGED** as `7d2ba67` — the standalone `fix/vulkan-surface-lock-order` branch was never pushed; the Mac landed `d796230` from `debug/surface-hang`. Main un-reds with this push |
 | 13 | The dispatch CI lanes were broken by construction | Windows | `fix/ci-metal-lane-compiler` | **MERGED** as `6834818` + `6ba340a` + `e8dc60d`; branch deleted |
 | 14 | `gpu_advanced` ABORTS on the GH macos-14 runner's paravirtual Metal | Mac | _(direct on `main`)_ | **RULED + FIXED** — probe-and-self-skip, suite-level (`1ccdc59`): `try_gpu` declines a device whose name contains "Paravirtual"; real hardware runs everything. Per-test narrowing waits on a runner log naming the offenders |
-| 15 | Absolute `debug_registry_counts` asserts vs the shared device | **Mac** | _none yet_ | **RULED** — leak tests get an isolated-device constructor (#[doc(hidden)] registry-bypassing init; `Gpu::new` already exists), restoring the private device their absolute asserts always assumed; the `--test-threads=1` serializations then come back out. Queued as Mac follow-up work |
+| 15 | Absolute `debug_registry_counts` asserts vs the shared device | **Mac** | _none yet_ | **SHIPPED** in `bbf4367` — `quanta::init_isolated()` / `init_cpu_isolated()` landed, every absolute-count test converted, the two `--test-threads=1` serializations removed from `ci.yml` |
 
 ## Delegation notes
 
@@ -394,8 +394,8 @@ Notes for the rig:
 - CORRECTION to the previous entry: the Mac CAN dispatch — the 403 was
   a stale work-account `GITHUB_TOKEN` env var shadowing the keyring
   login. `env -u GITHUB_TOKEN gh workflow run ci.yml --ref <ref>`.
-- Open follow-up stays item 15 (isolated-device init), then the
-  `--test-threads=1` serializations come back out.
+- Items 6, 7 and 15 all shipped (`7177b8e`, `bbf4367`) — the board has
+  no open Mac items.
 
 ### The big handover lands `[mac]` — `main` now `1ccdc59`, all four branches merged
 
