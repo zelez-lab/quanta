@@ -71,6 +71,7 @@ mod gather;
 mod gather_dim;
 mod index;
 mod linalg;
+mod npy_codec;
 mod pad;
 mod pca;
 mod pool;
@@ -80,6 +81,13 @@ mod scalar;
 mod scan;
 mod ufunc;
 mod upsample;
+mod zip;
+
+pub mod npy;
+pub mod npz;
+
+#[doc(hidden)]
+pub mod format_internals;
 
 pub use array::Array;
 pub use conv::conv_out;

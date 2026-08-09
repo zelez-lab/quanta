@@ -76,6 +76,29 @@ gathered to contiguous on the device before the call.
 All four view operations are zero-copy — they rewrite the layout over the same
 GPU buffer.
 
+## Saving and loading (npy / npz)
+
+The interop API is bytes-level (`&[u8]` in, `Vec<u8>` out) — pair it with
+`std::fs`; there are no file-path wrappers by design:
+
+| NumPy | quanta::sci |
+|-------|--------------|
+| `np.save("a.npy", a)` | `std::fs::write("a.npy", npy::save(&a)?)?` |
+| `a = np.load("a.npy")` (dtype known) | `npy::load::<f32>(&gpu, &std::fs::read("a.npy")?)?` |
+| `a = np.load("a.npy")` (dtype unknown) | `npy::load_dyn(&gpu, &bytes)?` → match the `NpyArray` variant |
+| `np.savez("d.npz", x=a, y=b)` | `npz::save_named(&[("x".into(), a.into()), ("y".into(), b.into())])?` |
+| `d = np.load("d.npz"); d["x"]` | `npz::load_named(&gpu, &bytes)?` → `Vec<(String, NpyArray)>`, archive order |
+| `np.savez_compressed(…)` | read: supported (hand-rolled inflate). write: not provided — stored output is what `np.savez` itself writes and everything reads |
+
+What loads: all ten dtypes exact-width, `<f2` widened to `f32` exactly
+(the one widening), `|b1` as validated `u8`, big-endian files
+(byteswapped), Fortran-order files (host-permuted — you always receive
+row-major of the file's logical shape), rank-0 scalars, v1.0/v2.0/v3.0
+headers. Object/pickle, string, structured, and complex dtypes are loud
+errors with the reason named; bf16 interchange is `safetensors` in
+`quanta::nn`. The full matrix lives in `NPY_INTEROP.md` at the
+quanta-array crate root.
+
 ## Side-by-side: min-max normalize
 
 ### NumPy

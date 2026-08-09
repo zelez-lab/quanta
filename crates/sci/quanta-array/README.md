@@ -40,6 +40,7 @@ quanta-array = { version = "0.1", features = ["metal"] } # or vulkan / software
 | **Convolution** | `im2col`, `col2im` (the substrate for `conv2d` in autograd) |
 | **Pooling** | `avgpool2d`, `maxpool2d` (+ their backwards) |
 | **Interop** | `to_vec`, `shallow_clone`, `gpu` |
+| **numpy files** | `npy::save` / `load` / `load_dyn` / `header`, `npz::save_named` / `load_named` — `.npy`/`.npz` interchange, dependency-free (declared surface + deferrals: [`NPY_INTEROP.md`](NPY_INTEROP.md)) |
 
 ## How it works
 

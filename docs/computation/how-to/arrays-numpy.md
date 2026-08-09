@@ -102,6 +102,55 @@ let t = m.transpose(0, 1)?;          // [3,2] strided view
 let back = t.to_vec()?;              // gathers logical order: [0,3,1,4,2,5]
 ```
 
+## Load real data (npy / npz files)
+
+Arrays travel to and from Python as ordinary numpy files. The API is
+bytes-level — read the file yourself, hand over the bytes:
+
+```rust,ignore
+use quanta::sci::npy;
+
+// np.load("weights.npy") — you saved it, you know it's f32
+let bytes = std::fs::read("weights.npy")?;
+let w = npy::load::<f32>(&gpu, &bytes)?;      // row-major, whatever the
+                                              // file's order/endianness
+println!("{:?}", w.shape());
+```
+
+Don't know the dtype? Load it dtype-preserving and match:
+
+```rust,ignore
+use quanta::sci::npy::NpyArray;
+
+match npy::load_dyn(&gpu, &bytes)? {
+    NpyArray::F32(w) => train(&w),
+    NpyArray::U64(labels) => index(&labels),
+    other => eprintln!("unexpected {} array {:?}", other.dtype(), other.shape()),
+}
+```
+
+(f16 files arrive as `F32` — the exact upconversion; bool files as
+validated `U8`.) A whole dataset ships as one npz — `np.savez` and
+`np.savez_compressed` files both load:
+
+```rust,ignore
+use quanta::sci::npz;
+
+for (name, array) in npz::load_named(&gpu, &std::fs::read("dataset.npz")?)? {
+    println!("{name}: {} {:?}", array.dtype(), array.shape());
+}
+```
+
+And back out — anything Python reads with `np.load`:
+
+```rust,ignore
+std::fs::write("out.npy", npy::save(&w)?)?;
+std::fs::write("out.npz", npz::save_named(&[
+    ("weights".into(), w.into()),
+    ("labels".into(), labels.into()),
+])?)?;
+```
+
 ## A small end-to-end: normalize a vector
 
 ```rust,ignore

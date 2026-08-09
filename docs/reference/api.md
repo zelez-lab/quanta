@@ -1079,6 +1079,36 @@ Prefix sum utilities (requires `software` feature).
 
 ---
 
+## `quanta::sci` — npy / npz interop
+
+numpy file interchange for the `sci` array (`np.save` / `np.load` /
+`np.savez`), dependency-free and bytes-level — pair with `std::fs`
+one-liners; there are no file-path wrappers by design. Pure host
+parsing plus `from_slice`/`to_vec`: identical on every backend.
+Completeness contract (the dtype matrix, the container scope, every
+deferral): `NPY_INTEROP.md` at the quanta-array crate root.
+
+| Item | Description |
+|------|-------------|
+| `sci::npy::save(&Array<T>) -> Result<Vec<u8>>` | One array → npy v1.0 bytes (auto v2.0 on u16 header overflow — numpy's rule). Any view serializes its logical row-major content; always `<`-endian, always `fortran_order: False` |
+| `sci::npy::load::<T>(gpu, &[u8]) -> Result<Array<T>>` | Typed load, exact-width, with ONE widening: `load::<f32>` also accepts `<f2` (f16 upconverts exactly). Big-endian (`>`) descrs byteswap on load; Fortran-order files are host-permuted — the caller always gets row-major contiguous of the file's logical shape |
+| `sci::npy::load_dyn(gpu, &[u8]) -> Result<NpyArray>` | Dtype-preserving load ("inspect what Python wrote"): the enum variant matches the file's descr; `<f2` → `F32`, `\|b1` → `U8` with every byte validated 0/1 |
+| `sci::npy::NpyArray` | Ten variants (`F32`…`I16`), one per element type; `dtype()` (canonical descr) / `shape()` accessors, `From<Array<T>>` in, `TryFrom` out with a loud dtype error. The vocabulary for mixed-dtype npz archives |
+| `sci::npy::header(&[u8]) -> Result<NpyHeader>` | Header introspection without touching the data section: descr / fortran_order / shape / version / data_offset |
+| `sci::npz::save_named(&[(String, NpyArray)]) -> Result<Vec<u8>>` | Multi-array archive, ZIP stored — the container `np.savez` writes. `.npy` appended to names, caller order kept, deterministic bytes (fixed timestamps), duplicate names loud |
+| `sci::npz::load_named(gpu, &[u8]) -> Result<Vec<(String, NpyArray)>>` | Reads stored AND deflate entries (`np.savez` and `np.savez_compressed`), CRC-verified, archive order, `.npy` suffix stripped. Non-`.npy` entries and ZIP64 markers are loud errors naming the entry |
+| `ArrayError::Npy(NpyError)` | The interop error taxonomy — every message names the offending entry / byte offset / descr and states the workaround where one exists (see [errors](errors.md)) |
+
+Supported descrs: the ten element dtypes (`<f4 <f8 <i4 <u4 <i8 <u8 <i2
+<u2 \|i1 \|u1`) exact both ways, plus load-only `<f2` (→ f32) and
+`\|b1` (→ u8, validated) — each also in `>` big-endian form. Excluded
+with loud, reasoned errors: object/pickle (permanent, security), strings
+and structured dtypes, complex (no stack-wide complex type), bf16 (no
+npy descr exists — safetensors is the bf16 interchange), zero-extent
+shapes (the array model rejects them), ZIP64-scale archives.
+
+---
+
 ## `quanta::nn` module
 
 The neural stack (feature `nn`), built over the `autograd` tape and the

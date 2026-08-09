@@ -15,6 +15,8 @@ pub enum ArrayError {
     Gpu(quanta_core::QuantaError),
     /// An operation requires a contiguous array; call `.contiguous()` first.
     NotContiguous,
+    /// An npy / npz interop fault (header, container, or dtype).
+    Npy(crate::npy::NpyError),
 }
 
 impl fmt::Display for ArrayError {
@@ -32,6 +34,10 @@ impl fmt::Display for ArrayError {
                     "operation requires a contiguous array (call .contiguous())"
                 )
             }
+            // NpyError messages are self-contained per the interop message
+            // contract (entry / offset / workaround always present) — no
+            // wrapper prefix on top.
+            ArrayError::Npy(e) => write!(f, "{e}"),
         }
     }
 }
@@ -51,5 +57,10 @@ impl From<quanta_tensor::ShapeError> for ArrayError {
 impl From<quanta_core::QuantaError> for ArrayError {
     fn from(e: quanta_core::QuantaError) -> Self {
         ArrayError::Gpu(e)
+    }
+}
+impl From<crate::npy::NpyError> for ArrayError {
+    fn from(e: crate::npy::NpyError) -> Self {
+        ArrayError::Npy(e)
     }
 }
