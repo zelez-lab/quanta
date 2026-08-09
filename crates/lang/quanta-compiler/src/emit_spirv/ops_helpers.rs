@@ -290,6 +290,74 @@ impl SpvEmitter {
             return Ok(());
         }
 
+        // Integer division/remainder by zero yields ZERO on every
+        // lane — the CPU reference contract (`eval_binop`:
+        // checked_div/checked_rem style). SPIR-V UDiv/SDiv/UMod/
+        // SRem with a zero divisor is undefined BEHAVIOR (not
+        // merely an undefined value), and SIMD hardware may
+        // evaluate both sides of a select — so the DIVISOR is
+        // substituted before dividing, then the result selected:
+        //   is_zero = (b == 0);  safe_b = is_zero ? 1 : b
+        //   result  = is_zero ? 0 : (a op safe_b)
+        // The compare runs in the CANONICAL register type
+        // (OpIEqual is a bit-pattern compare — signedness-
+        // agnostic); the divide itself rides the existing
+        // signed-bitcast path. Floats keep the raw FDiv/FRem
+        // below (inf/NaN is their IEEE contract). Signed MIN/−1
+        // stays as-is (excluded in the op-matrix). Mirrors the
+        // JIT emitter (`quanta-ir/src/emit_spirv/ops.rs`).
+        // bf16/fp8 are float-register types (f32 body) even though
+        // this emitter's `is_float` flag doesn't count them — they
+        // must not enter the integer guard.
+        let is_float_reg = is_float
+            || matches!(
+                ty,
+                ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3
+            );
+        if !is_float_reg && matches!(op, BinOp::Div | BinOp::Rem) {
+            let bool_ty = self.ensure_type_bool();
+            let zero = self.emit_constant_typed_zero(ty);
+            let one = self.emit_constant_typed_one(ty);
+            let b_canon = self.coerce_to(b_val, b_ty, result_ty);
+            let is_zero = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_IEQUAL,
+                &[bool_ty, is_zero, b_canon, zero],
+            );
+            let safe_b = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SELECT,
+                &[result_ty, safe_b, is_zero, one, b_canon],
+            );
+            let op_ty = if is_signed {
+                self.ensure_type_i32_for(ty)
+            } else {
+                result_ty
+            };
+            let opcode = match (op, is_signed) {
+                (BinOp::Div, true) => OP_SDIV,
+                (BinOp::Div, false) => OP_UDIV,
+                (BinOp::Rem, true) => OP_SREM,
+                (BinOp::Rem, false) => OP_UMOD,
+                _ => unreachable!(),
+            };
+            let a_op = self.coerce_to(a_val, a_ty, op_ty);
+            let b_op = self.coerce_to(safe_b, result_ty, op_ty);
+            let raw = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, opcode, &[op_ty, raw, a_op, b_op]);
+            let quotient = self.coerce_to(raw, op_ty, result_ty);
+            let result = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SELECT,
+                &[result_ty, result, is_zero, zero, quotient],
+            );
+            self.set_reg(dst, result, result_ty);
+            return Ok(());
+        }
+
         let opcode = match (op, is_float, is_signed) {
             (BinOp::Add, true, _) => OP_FADD,
             (BinOp::Add, false, _) => OP_IADD,
@@ -684,3 +752,7 @@ impl SpvEmitter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "div_guard_tests.rs"]
+mod div_guard_tests;

@@ -677,3 +677,121 @@ fn cross_emitter_smoke() {
     assert!(wgsl.len() > 100);
     assert!(msl.len() > 100);
 }
+
+// ─── Integer division/remainder-by-zero guard ───────────────────────────
+//
+// The CPU reference defines x/0 = 0 and x%0 = 0 for every int width;
+// WGSL's own spec rule differs (x/0 == x, x%0 == 0), so the emitter
+// carries an explicit guard. The divisor is substituted BEFORE the
+// divide (SIMD may evaluate both select sides), then the result
+// selected: `select(a op select(b, 1, bz), 0, bz)` with `bz = b == 0`.
+
+/// `out[i] = a[i] op b[i]` over `ty` — a=r1, b=r2, result r3.
+fn div_kernel(ty: ScalarType, op: BinOp, name: &str) -> KernelDef {
+    k(
+        name,
+        vec![
+            KernelParam::FieldRead {
+                name: "a".into(),
+                slot: 0,
+                scalar_type: ty,
+            },
+            KernelParam::FieldRead {
+                name: "b".into(),
+                slot: 1,
+                scalar_type: ty,
+            },
+            KernelParam::FieldWrite {
+                name: "out".into(),
+                slot: 2,
+                scalar_type: ty,
+            },
+        ],
+        vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::Load {
+                dst: Reg(1),
+                field: 0,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::Load {
+                dst: Reg(2),
+                field: 1,
+                index: Reg(0),
+                ty,
+            },
+            KernelOp::BinOp {
+                dst: Reg(3),
+                a: Reg(1),
+                b: Reg(2),
+                op,
+                ty,
+            },
+            KernelOp::Store {
+                field: 2,
+                index: Reg(0),
+                src: Reg(3),
+                ty,
+            },
+        ],
+        4,
+    )
+}
+
+/// Run `naga <file>` when the validator is on PATH; skip silently when
+/// it isn't installed (same soft-gate contract as spirv-val elsewhere).
+fn naga_validate(name: &str, wgsl: &str) {
+    let dir = std::env::temp_dir().join("quanta_ir_wgsl_div_guard_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.wgsl"));
+    std::fs::write(&path, wgsl).unwrap();
+    match std::process::Command::new("naga")
+        .arg(path.to_str().unwrap())
+        .output()
+    {
+        Ok(out) => assert!(
+            out.status.success(),
+            "{name}: naga rejected the module:\n{}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            wgsl
+        ),
+        Err(_) => eprintln!("naga not on PATH — skipping WGSL validation"),
+    }
+}
+
+#[test]
+fn int_div_and_rem_emit_the_divisor_substituting_select() {
+    for (ty, op, o, t, tag) in [
+        (ScalarType::U32, BinOp::Div, "/", "u32", "u32_div"),
+        (ScalarType::U32, BinOp::Rem, "%", "u32", "u32_rem"),
+        (ScalarType::I32, BinOp::Div, "/", "i32", "i32_div"),
+        (ScalarType::I32, BinOp::Rem, "%", "i32", "i32_rem"),
+    ] {
+        let wgsl = emit_wgsl_jit(&div_kernel(ty, op, tag)).expect("emit");
+        let want = format!(
+            "let r3_bz: bool = r2 == {t}(0); \
+             let r3: {t} = select(r1 {o} select(r2, {t}(1), r3_bz), {t}(0), r3_bz);"
+        );
+        assert!(
+            wgsl.contains(&want),
+            "{tag}: guarded select missing.\nwant: {want}\ngot:\n{wgsl}"
+        );
+        naga_validate(tag, &wgsl);
+    }
+}
+
+#[test]
+fn float_div_stays_bare_ieee() {
+    // Floats keep the raw `/` — inf/NaN is their contract; no guard.
+    let wgsl = emit_wgsl_jit(&div_kernel(ScalarType::F32, BinOp::Div, "f32_div")).expect("emit");
+    assert!(
+        wgsl.contains("let r3: f32 = r1 / r2;"),
+        "f32_div: expected the bare IEEE divide, got:\n{wgsl}"
+    );
+    assert!(
+        !wgsl.contains("select("),
+        "f32_div: float division must not grow a select guard, got:\n{wgsl}"
+    );
+    naga_validate("f32_div", &wgsl);
+}

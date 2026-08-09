@@ -52,6 +52,31 @@ pub(super) fn binop_wgsl(
         BinOp::Add => "+",
         BinOp::Sub => "-",
         BinOp::Mul => "*",
+        BinOp::Div | BinOp::Rem
+            if !matches!(
+                ty,
+                ScalarType::F32
+                    | ScalarType::F64
+                    | ScalarType::F16
+                    | ScalarType::BF16
+                    | ScalarType::FP8E5M2
+                    | ScalarType::FP8E4M3
+            ) =>
+        {
+            // Integer x/0 = 0 and x%0 = 0 — the CPU reference contract.
+            // WGSL's own rule differs (x/0 == x, x%0 == 0), so the
+            // guard is explicit. The divisor is substituted BEFORE the
+            // divide (SIMD may evaluate both select sides), then the
+            // result selected. Floats keep IEEE `/` below (inf/NaN
+            // contract).
+            let o = if matches!(op, BinOp::Div) { "/" } else { "%" };
+            out.push_str(&format!(
+                "{pad}let r{dst}_bz: bool = r{b} == {ty_w}(0); \
+                 let r{dst}: {ty_w} = select(r{a} {o} select(r{b}, {ty_w}(1), r{dst}_bz), \
+                 {ty_w}(0), r{dst}_bz);\n",
+            ));
+            return;
+        }
         BinOp::Div => "/",
         BinOp::Rem => "%",
         BinOp::BitAnd => "&",

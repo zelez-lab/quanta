@@ -2648,9 +2648,11 @@ impl<'a> LowerCtx<'a> {
                         // helpers (panic family, alloc shims, etc.) at
                         // function indices the lowering pass cannot
                         // inline. We special-case the panic family —
-                        // the GPU contract is UB on division by zero,
-                        // so the eqz-guarded panic-then-unreachable
-                        // tail rustc emits for `%`/`/` is dead code.
+                        // the GPU contract is x/0 = 0 and x%0 = 0 on
+                        // every lane (the emitters substitute the
+                        // divisor before dividing), so the eqz-guarded
+                        // panic-then-unreachable tail rustc emits for
+                        // `%`/`/` is dead code — a kernel never panics.
                         // Pop the call's args and emit nothing; the
                         // surrounding control flow already routes the
                         // safe path past this region.

@@ -289,6 +289,35 @@ pub(super) fn emit_op(
                         b.0,
                     ));
                 }
+                BinOp::Div | BinOp::Rem
+                    if !matches!(
+                        ty,
+                        ScalarType::F32
+                            | ScalarType::F64
+                            | ScalarType::F16
+                            | ScalarType::BF16
+                            | ScalarType::FP8E5M2
+                            | ScalarType::FP8E4M3
+                    ) =>
+                {
+                    // Integer x/0 = 0 and x%0 = 0 — the CPU reference
+                    // contract (Metal hardware returns ~0 for u32 x/0).
+                    // The divisor is substituted BEFORE the divide (SIMD
+                    // may evaluate both ternary sides), then the result
+                    // selected. Operands cast to the op's `ty` like the
+                    // Shr/Shl arm (signedness robustness). Floats keep
+                    // IEEE `/` in the catch-all (inf/NaN contract).
+                    let o = binop_str(op);
+                    let t = ty.msl_name();
+                    out.push_str(&format!(
+                        "{pad}{lv} = (({t})r{b} == ({t})0) ? ({t})0 : \
+                         (({t})r{a} {o} ((({t})r{b} == ({t})0) ? ({t})1 : ({t})r{b}));\n",
+                        pad = pad,
+                        lv = dst_lv(mutable, t, dst.0),
+                        a = a.0,
+                        b = b.0,
+                    ));
+                }
                 _ => {
                     let o = binop_str(op);
                     out.push_str(&format!(

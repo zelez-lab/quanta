@@ -206,7 +206,7 @@ jobs:
         run: cargo build
 
       - name: GPU compute tests
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero -- --test-threads=1
 
       - name: GPU texture tests
         run: cargo test --test gpu_texture -- --test-threads=1
@@ -679,6 +679,7 @@ jobs:
           cargo test --test render_midflight_destroy --no-default-features --features vulkan,render
           cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
           cargo test --test gpu_deferred --no-default-features --features vulkan,jit,compute
+          cargo test --test gpu_int_div_zero --no-default-features --features vulkan,jit,compute
 
       # Memory surface on a real Vulkan implementation: topology
       # (lavapipe = CPU type → Unified), zero-copy host import (native
