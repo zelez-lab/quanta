@@ -162,14 +162,16 @@ pub fn huber_loss<T: DiffScalar + ToF64>(
         &az,
         delta * delta / 2.0,
     )?)?;
-    // Detached {1, 0} mask over |z| ≤ δ.
-    let az_host = az.value().to_vec().map_err(AutogradError::from)?;
-    let mask_host: Vec<T> = az_host
-        .iter()
-        .map(|v| T::from_f64(if v.to_f64() <= delta { 1.0 } else { 0.0 }))
-        .collect();
-    let mask = Array::from_slice(d.value().gpu(), &mask_host, d.value().shape())
+    // Detached {1, 0} mask over |z| ≤ δ, computed on the device (`le`
+    // keeps the host spelling's boundary; the branches meet in value
+    // AND gradient at the knee, so the boundary side is unobservable
+    // anyway). The mask is data — locally constant in z — so it never
+    // enters the tape, and nothing here reads host memory.
+    let delta_arr = Array::full(d.value().gpu(), T::from_f64(delta), &[1])
+        .and_then(|a| a.broadcast_to(az.value().shape()))
+        .and_then(|a| a.contiguous())
         .map_err(AutogradError::from)?;
+    let mask = az.value().le(&delta_arr).map_err(AutogradError::from)?;
     reduce_all(tape, &quad.where_mask(&mask, &lin)?, reduction)
 }
 

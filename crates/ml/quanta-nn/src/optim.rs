@@ -21,7 +21,7 @@
 //! rebuilding, `Sgd { lr: sched.lr(t), ..opt }` — no callbacks, no
 //! registration, nothing ambient (decision D4).
 
-use crate::functional::{adopt_f32_field, f32_input, lift, to_f32_host};
+use crate::functional::{adopt_f32_field, f32_input, lift};
 use crate::layer::ParamTree;
 use quanta_array::{Array, ArrayError, ToF64};
 use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
@@ -528,47 +528,79 @@ impl Schedule {
 
 // ── Gradient clipping ────────────────────────────────────────────────────
 
+/// A host scalar broadcast to `leaf`'s shape as a contiguous device
+/// array — the constant operand for elementwise device ops.
+fn scalar_like<T: DiffScalar + ToF64>(
+    leaf: &Array<T>,
+    value: f64,
+) -> Result<Array<T>, AutogradError> {
+    Array::full(leaf.gpu(), T::from_f64(value), &[1])
+        .and_then(|a| a.broadcast_to(leaf.shape()))
+        .and_then(|a| a.contiguous())
+        .map_err(AutogradError::from)
+}
+
 /// Clamp every gradient element into `[−max_abs, max_abs]`.
+///
+/// Fully device-side. NaN elements: the old host spelling propagated
+/// NaN through `clamp`; device `minimum`/`maximum` may select the
+/// finite bound instead (hardware-defined NaN handling) — NaN
+/// DETECTION belongs to [`LossScale::unscale`]'s probe, not the
+/// clipper.
 pub fn clip_grad_value<T: DiffScalar + ToF64, P: ParamTree<T>>(
     grads: &P,
     max_abs: f32,
 ) -> Result<P, AutogradError> {
     grads.map(&mut |leaf: &Array<T>| {
-        let host = to_f32_host(leaf)?;
-        let clipped: Vec<T> = host
-            .iter()
-            .map(|&v| T::from_f64(v.clamp(-max_abs, max_abs) as f64))
-            .collect();
-        Array::from_slice(leaf.gpu(), &clipped, leaf.shape()).map_err(AutogradError::from)
+        let lo = scalar_like(leaf, -(max_abs as f64))?;
+        let hi = scalar_like(leaf, max_abs as f64)?;
+        leaf.maximum(&lo)
+            .and_then(|a| a.minimum(&hi))
+            .map_err(AutogradError::from)
     })
 }
 
 /// Scale the WHOLE gradient tree so its global L2 norm (over all leaves
 /// concatenated) is at most `max_norm`. Returns the scaled tree and the
 /// pre-clip norm; under the threshold the tree passes through unscaled.
+///
+/// The squared norm accumulates ON DEVICE (`Σ leaf²` per leaf via
+/// `sum_device`, folded across leaves into one resident scalar) — one
+/// host read per call, for the norm the signature returns and the clip
+/// decision branches on. Reduction runs in `T` (tree order), not the
+/// old host f64 fold: a few ULP of drift, and elements above ~1.8e19
+/// square to `inf` in f32 (norm `inf` → scale 0 — the dtype-native
+/// behavior torch has too) where the f64 fold stayed finite.
 pub fn clip_grad_norm<T: DiffScalar + ToF64, P: ParamTree<T>>(
     grads: &P,
     max_norm: f32,
 ) -> Result<(P, f32), AutogradError> {
-    let mut sq_sum = 0.0f64;
+    let mut sq: Option<Array<T>> = None;
     for leaf in grads.flatten() {
-        for v in to_f32_host(&leaf)? {
-            sq_sum += (v as f64) * (v as f64);
-        }
+        let term = leaf
+            .mul(&leaf)
+            .and_then(|a| a.sum_device())
+            .map_err(AutogradError::from)?;
+        sq = Some(match sq {
+            None => term,
+            Some(acc) => acc.add(&term).map_err(AutogradError::from)?,
+        });
     }
-    let norm = sq_sum.sqrt() as f32;
+    let norm = match sq {
+        None => 0.0f32,
+        Some(acc) => {
+            let v = acc.to_vec().map_err(AutogradError::from)?;
+            (v[0].to_f64().sqrt()) as f32
+        }
+    };
     if norm <= max_norm {
         let identity = grads.map(&mut |leaf: &Array<T>| Ok(leaf.shallow_clone()))?;
         return Ok((identity, norm));
     }
-    let scale = max_norm / norm;
+    let scale = (max_norm / norm) as f64;
     let scaled = grads.map(&mut |leaf: &Array<T>| {
-        let host = to_f32_host(leaf)?;
-        let s: Vec<T> = host
-            .iter()
-            .map(|&v| T::from_f64((v * scale) as f64))
-            .collect();
-        Array::from_slice(leaf.gpu(), &s, leaf.shape()).map_err(AutogradError::from)
+        let s = scalar_like(leaf, scale)?;
+        leaf.mul(&s).map_err(AutogradError::from)
     })?;
     Ok((scaled, norm))
 }
@@ -650,19 +682,34 @@ impl LossScale {
     /// The finiteness probe is `Σ(g·0)` per leaf: `0·x` is `0` for
     /// every finite `x` and `NaN` for `±Inf`/`NaN`, and `NaN`
     /// propagates through the add reduction — unlike a `max` reduce,
-    /// which hardware may define to DROP NaNs.
+    /// which hardware may define to DROP NaNs. The per-leaf sums stay
+    /// DEVICE-RESIDENT and fold into one scalar across the tree (`NaN`
+    /// survives the cross-leaf adds too), so the whole probe costs ONE
+    /// host read per step — the skip/step decision is host control
+    /// flow by nature — where the per-leaf spelling paid one sync per
+    /// leaf.
     pub fn unscale<T: DiffScalar + ToF64, P: ParamTree<T>>(
         &self,
         grads: P,
         state: ScaleState,
     ) -> Result<(Option<P>, ScaleState), AutogradError> {
+        let mut total: Option<Array<T>> = None;
         for leaf in grads.flatten() {
             let zero = Array::full(leaf.gpu(), T::from_f64(0.0), &[1])
                 .and_then(|a| a.broadcast_to(leaf.shape()))
                 .map_err(AutogradError::from)?;
-            let probe = leaf.mul(&zero).map_err(AutogradError::from)?;
-            let total = probe.sum().map_err(AutogradError::from)?;
-            if !total.to_f64().is_finite() {
+            let probe = leaf
+                .mul(&zero)
+                .and_then(|p| p.sum_device())
+                .map_err(AutogradError::from)?;
+            total = Some(match total {
+                None => probe,
+                Some(acc) => acc.add(&probe).map_err(AutogradError::from)?,
+            });
+        }
+        if let Some(acc) = total {
+            let v = acc.to_vec().map_err(AutogradError::from)?;
+            if !v[0].to_f64().is_finite() {
                 return Ok((
                     None,
                     ScaleState {
