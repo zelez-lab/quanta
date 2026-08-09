@@ -24,6 +24,12 @@ pub enum RawValues {
     U64(Vec<u64>),
     I32(Vec<i32>),
     I64(Vec<i64>),
+    /// Narrow ints, carried at their native width (tight 1-/2-byte
+    /// storage on every lane that runs them; WGSL rejects them).
+    U8(Vec<u8>),
+    I8(Vec<i8>),
+    U16(Vec<u16>),
+    I16(Vec<i16>),
     /// bfloat16 values carried as their raw 16-bit storage patterns.
     BF16(Vec<u16>),
     /// fp8 values carried as their raw 8-bit storage patterns.
@@ -43,6 +49,10 @@ impl RawValues {
             RawValues::U64(_) => "u64",
             RawValues::I32(_) => "i32",
             RawValues::I64(_) => "i64",
+            RawValues::U8(_) => "u8",
+            RawValues::I8(_) => "i8",
+            RawValues::U16(_) => "u16",
+            RawValues::I16(_) => "i16",
             RawValues::BF16(_) => "bf16",
             RawValues::FP8E5M2(_) => "fp8e5m2",
             RawValues::FP8E4M3(_) => "fp8e4m3",
@@ -916,6 +926,288 @@ fn cases_i64() -> Vec<OpCase> {
     out
 }
 
+// ── Narrow-int cases (u8 / i8 / u16 / i16) ───────────────────────────
+//
+// Narrow ints inherit the wide-int wrapping contract at their own
+// width. The backends hold different register models — the CPU
+// reference (and the SPIR-V unified-u32 SSA) widens narrow loads to
+// 32-bit, computes at 32-bit, and truncates at the store; MSL types
+// registers narrow and truncates per-op via C assignment — but for
+// single-op kernels over in-range loads the models agree: mod 2^w is
+// a quotient-ring homomorphism of mod 2^32 for add/sub/mul/neg, and
+// div/rem/compare/shift operands loaded from narrow memory are always
+// in-range. The host oracles below reuse the 32-bit wide oracles and
+// truncate to the storage width, which mirrors the CPU reference
+// (`eval.rs` + `write_scalar`) by construction.
+//
+// Edge-input families per type: width boundaries (0, 1, MAX, MAX−1,
+// MIN), the sign-boundary byte/halfword (0x7F/0x80, 0x7FFF/0x8000),
+// wrap witnesses (MAX+1 via add, 0−5 via sub, 200·3 / 50000·3 via
+// mul), sign-extension probes (0xAA / 0xAAAA), MIN/−1 (defined at
+// narrow width — computed at 32-bit, truncated on store, unlike the
+// i32 case which stays excluded as C UB), ÷0 / %0 (filtered at
+// generation like the wide rows), and shift counts at width−1 /
+// width / beyond width. Shift counts stay ≤ 31: every native backend
+// shifts at ≥ int width after C integer promotion, so counts ≥ 32
+// are UB there — the wide rows observe the same cap.
+//
+// Excluded op families (narrow-specific; the divergences below were
+// measured on real Metal during this matrix's first differential
+// exercise of the narrow emitters, and independently confirmed on
+// the SPIR-V lane). Rows for them would pin one backend's behavior
+// as wrong — skipped-with-witness beats pinned-wrong:
+//
+//   - Rotl / Rotr: width-dependent, not ring ops. The CPU reference
+//     rotates the widened value at 32-bit width and truncates on
+//     store, while MSL and SPIR-V rotate at the native width —
+//     measured: u8 rotl(0x81, 1) = 0x02 under the reference, 0x03 on
+//     Metal (u16 likewise); SPIR-V witness u8 rotl(0x80, 1) = 0x01
+//     vs the reference's 0x00. Narrow Rotr on MSL is worse: the
+//     emitted `rotate(r, (8) - (r2 % 8))` doesn't compile — the
+//     count expression promotes to `int` and the MSL `rotate`
+//     overload set (uchar,uchar)/(int,int) is ambiguous. The IR has
+//     no pinned narrow-rotate width contract and no array-surface
+//     consumer emits narrow rotates; rows land when the contract
+//     decision + interpreter alignment ship as a follow-up.
+//   - SatAdd / SatSub: same width mismatch, three-way. The reference
+//     and SPIR-V saturate in the u32 domain then truncate (u8
+//     satadd(200, 200) = 400 → stored 144) while MSL clamps at the
+//     narrow bounds (measured: 255). SatSub happens to agree (32-bit
+//     saturating_sub of in-range narrow operands clamps to 0 exactly
+//     like the narrow clamp), but the family ships together or not
+//     at all. Saturating ops are not part of any dtype's array
+//     surface; the wide rows keep them for the u32/u64 emitter
+//     paths only.
+//
+// Narrow atomics: not excluded here because they cannot arise — the
+// op-matrix generates no atomic cases for any type, and the
+// differential atomic kernels (counter / race) are u32-only. Nothing
+// emits narrow atomics, and they would be invalid SPIR-V.
+
+/// u8 edge-input pairs `(a, b)`; `b` doubles as the shift count.
+fn u8_inputs() -> &'static [(u8, u8)] {
+    &[
+        (0x80, 8), // sign-bit byte; shift == width
+        (0xFF, 1), // MAX; add wraps to 0
+        (0xFE, 2), // MAX−1
+        (0x12, 4),
+        (1, 1),
+        (0, 5),    // 0−5 wraps (sub); ÷ and % defined
+        (5, 0),    // ÷0 / %0 filtered at generation
+        (0x7F, 7), // sign-boundary byte; shift == width−1
+        (200, 3),  // 200·3 = 600 wraps to 88
+        (0xAA, 9), // sign-extension probe; shift beyond width
+    ]
+}
+
+fn i8_inputs() -> &'static [(i8, i8)] {
+    &[
+        (i8::MIN, 1),
+        (i8::MAX, 1),
+        (-1, 1),
+        (1, 1),
+        (0, 5),
+        (5, 0),
+        (i8::MIN, -1), // MIN/−1: defined at narrow width (see block comment)
+        (i8::MIN, 7),
+        (i8::MAX, 8), // shift == width
+        (-1, 8),
+        (100, 3), // 100·3 = 300 wraps to 44
+        (-86, 2), // 0xAA sign-extension probe
+    ]
+}
+
+fn u16_inputs() -> &'static [(u16, u16)] {
+    &[
+        (0x8000, 16), // sign-bit halfword; shift == width
+        (0xFFFF, 1),  // MAX; add wraps to 0
+        (0xFFFE, 2),  // MAX−1
+        (0x1234, 4),
+        (1, 1),
+        (0, 5),
+        (5, 0),
+        (0x7FFF, 15), // sign-boundary halfword; shift == width−1
+        (50_000, 3),  // 50000·3 = 150000 wraps to 18928
+        (0x00FF, 8),  // shl crosses the byte boundary
+        (0xAAAA, 17), // sign-extension probe; shift beyond width
+    ]
+}
+
+fn i16_inputs() -> &'static [(i16, i16)] {
+    &[
+        (i16::MIN, 1),
+        (i16::MAX, 1),
+        (-1, 1),
+        (1, 1),
+        (0, 5),
+        (5, 0),
+        (i16::MIN, -1),
+        (i16::MIN, 15),
+        (i16::MAX, 16), // shift == width
+        (-1, 16),
+        (20_000, 3),  // 20000·3 = 60000 wraps to −5536
+        (-21_846, 2), // 0xAAAA sign-extension probe
+    ]
+}
+
+/// Narrow-unsigned oracle: zero-extend to 32-bit, apply the wide
+/// wrapping op, truncate to the storage width — exactly the CPU
+/// reference's load / eval / store pipeline. Callers never pass
+/// shift counts ≥ 32 (the input lists cap them at width + 1).
+fn host_apply_u8(op: BinOp, a: u8, b: u8) -> Option<u8> {
+    host_apply_u32(op, a as u32, b as u32).map(|v| v as u8)
+}
+
+fn host_apply_u16(op: BinOp, a: u16, b: u16) -> Option<u16> {
+    host_apply_u32(op, a as u32, b as u32).map(|v| v as u16)
+}
+
+/// Narrow-signed oracle: sign-extend to 32-bit, apply the wide
+/// wrapping op, truncate. Shifts by a negative count are filtered
+/// like ÷0: after C integer promotion the native backends would
+/// shift by a huge/negative int count, which is UB. Note MIN/−1
+/// passes through: sign-extended narrow operands never reach
+/// i32::MIN, so the wide oracle's UB filter stays dormant and the
+/// 32-bit quotient truncates back to MIN — the defined narrow
+/// result every backend produces.
+fn host_apply_i8(op: BinOp, a: i8, b: i8) -> Option<i8> {
+    if matches!(op, BinOp::Shl | BinOp::Shr) && b < 0 {
+        return None;
+    }
+    host_apply_i32(op, a as i32, b as i32).map(|v| v as i8)
+}
+
+fn host_apply_i16(op: BinOp, a: i16, b: i16) -> Option<i16> {
+    if matches!(op, BinOp::Shl | BinOp::Shr) && b < 0 {
+        return None;
+    }
+    host_apply_i32(op, a as i32, b as i32).map(|v| v as i16)
+}
+
+fn case_u8(op: BinOp, a: u8, b: u8, expected: u8) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:#04x}_b{:#04x}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::U8),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::U8, op),
+        input_a: RawValues::U8(vec![a]),
+        input_b: RawValues::U8(vec![b]),
+        expected: RawValues::U8(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_i8(op: BinOp, a: i8, b: i8, expected: i8) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{}_b{}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::I8),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::I8, op),
+        input_a: RawValues::I8(vec![a]),
+        input_b: RawValues::I8(vec![b]),
+        expected: RawValues::I8(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_u16(op: BinOp, a: u16, b: u16, expected: u16) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{:#06x}_b{:#06x}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::U16),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::U16, op),
+        input_a: RawValues::U16(vec![a]),
+        input_b: RawValues::U16(vec![b]),
+        expected: RawValues::U16(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn case_i16(op: BinOp, a: i16, b: i16, expected: i16) -> OpCase {
+    OpCase {
+        name: format!(
+            "{}_{}_{}_a{}_b{}",
+            NAME_PREFIX,
+            binop_tag(op),
+            scalar_tag(ScalarType::I16),
+            a,
+            b
+        ),
+        def: build_binop_def(binop_tag(op), ScalarType::I16, op),
+        input_a: RawValues::I16(vec![a]),
+        input_b: RawValues::I16(vec![b]),
+        expected: RawValues::I16(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_u8() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in INT_BINOPS {
+        for &(a, b) in u8_inputs() {
+            if let Some(e) = host_apply_u8(op, a, b) {
+                out.push(case_u8(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
+fn cases_i8() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in INT_BINOPS {
+        for &(a, b) in i8_inputs() {
+            if let Some(e) = host_apply_i8(op, a, b) {
+                out.push(case_i8(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
+fn cases_u16() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in INT_BINOPS {
+        for &(a, b) in u16_inputs() {
+            if let Some(e) = host_apply_u16(op, a, b) {
+                out.push(case_u16(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
+fn cases_i16() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    for &op in INT_BINOPS {
+        for &(a, b) in i16_inputs() {
+            if let Some(e) = host_apply_i16(op, a, b) {
+                out.push(case_i16(op, a, b, e));
+            }
+        }
+    }
+    out
+}
+
 // ── Float cases ──────────────────────────────────────────────────────
 //
 // The four float BinOps are Add, Sub, Mul, Div. Edge inputs target
@@ -1527,6 +1819,101 @@ fn cases_unary() -> Vec<OpCase> {
     out
 }
 
+/// Narrow-int Neg + BitNot. Both are width-local (wrapping negation
+/// and complement commute with truncation), so the direct narrow
+/// Rust op is the oracle. Neg on unsigned wraps: −1 ≡ 255 on u8 —
+/// the §3 contract the array surface documents.
+fn case_unary_narrow(op: UnaryOp, ty: ScalarType, a_val: RawValues, expected: RawValues) -> OpCase {
+    let name_val = match &a_val {
+        RawValues::U8(v) => format!("a{:#04x}", v[0]),
+        RawValues::I8(v) => format!("a{}", v[0]),
+        RawValues::U16(v) => format!("a{:#06x}", v[0]),
+        RawValues::I16(v) => format!("a{}", v[0]),
+        _ => unreachable!("narrow unary builder fed a wide variant"),
+    };
+    OpCase {
+        name: format!(
+            "{}_{}_{}_{}",
+            NAME_PREFIX,
+            unaryop_tag(op),
+            scalar_tag(ty),
+            name_val
+        ),
+        def: build_unary_def(unaryop_tag(op), ty, op),
+        input_a: a_val.clone(),
+        input_b: a_val,
+        expected,
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_unary_narrow() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    for &a in &[0u8, 1, 0x7F, 0x80, 0xAA, 0xFF] {
+        out.push(case_unary_narrow(
+            UnaryOp::Neg,
+            ScalarType::U8,
+            RawValues::U8(vec![a]),
+            RawValues::U8(vec![a.wrapping_neg()]),
+        ));
+        out.push(case_unary_narrow(
+            UnaryOp::BitNot,
+            ScalarType::U8,
+            RawValues::U8(vec![a]),
+            RawValues::U8(vec![!a]),
+        ));
+    }
+    // i8 Neg includes i8::MIN, its own negation under two's-complement
+    // wrap (the §3 contract; the reference computes −(−128) = 128 at
+    // 32-bit and the store truncates back to −128).
+    for &a in &[0i8, 1, -1, i8::MIN, i8::MAX, -86] {
+        out.push(case_unary_narrow(
+            UnaryOp::Neg,
+            ScalarType::I8,
+            RawValues::I8(vec![a]),
+            RawValues::I8(vec![a.wrapping_neg()]),
+        ));
+        out.push(case_unary_narrow(
+            UnaryOp::BitNot,
+            ScalarType::I8,
+            RawValues::I8(vec![a]),
+            RawValues::I8(vec![!a]),
+        ));
+    }
+    for &a in &[0u16, 1, 0x7FFF, 0x8000, 0xAAAA, 0xFFFF] {
+        out.push(case_unary_narrow(
+            UnaryOp::Neg,
+            ScalarType::U16,
+            RawValues::U16(vec![a]),
+            RawValues::U16(vec![a.wrapping_neg()]),
+        ));
+        out.push(case_unary_narrow(
+            UnaryOp::BitNot,
+            ScalarType::U16,
+            RawValues::U16(vec![a]),
+            RawValues::U16(vec![!a]),
+        ));
+    }
+    for &a in &[0i16, 1, -1, i16::MIN, i16::MAX, -21_846] {
+        out.push(case_unary_narrow(
+            UnaryOp::Neg,
+            ScalarType::I16,
+            RawValues::I16(vec![a]),
+            RawValues::I16(vec![a.wrapping_neg()]),
+        ));
+        out.push(case_unary_narrow(
+            UnaryOp::BitNot,
+            ScalarType::I16,
+            RawValues::I16(vec![a]),
+            RawValues::I16(vec![!a]),
+        ));
+    }
+
+    out
+}
+
 // ── Cmp cases ────────────────────────────────────────────────────────
 //
 // Every CmpOp on every scalar type we natively dispatch (U32, I32,
@@ -1691,6 +2078,122 @@ fn cases_cmp() -> Vec<OpCase> {
     out
 }
 
+/// Narrow-int comparisons. The sign-boundary operands (0x80 / 0x8000
+/// bit patterns) pin the signedness split: as u8, 0x80 > 0x7F; as
+/// i8, the same bits order −128 < 127. A backend that compares at
+/// the wrong signedness — or compares sign-extended registers as
+/// unsigned — inverts these rows. Output is the shared u32 0/1 lane.
+fn case_cmp_narrow(op: CmpOp, ty: ScalarType, a: RawValues, b: RawValues, expected: u32) -> OpCase {
+    let pair = match (&a, &b) {
+        (RawValues::U8(x), RawValues::U8(y)) => format!("a{:#04x}_b{:#04x}", x[0], y[0]),
+        (RawValues::I8(x), RawValues::I8(y)) => format!("a{}_b{}", x[0], y[0]),
+        (RawValues::U16(x), RawValues::U16(y)) => format!("a{:#06x}_b{:#06x}", x[0], y[0]),
+        (RawValues::I16(x), RawValues::I16(y)) => format!("a{}_b{}", x[0], y[0]),
+        _ => unreachable!("narrow cmp builder fed a wide variant"),
+    };
+    OpCase {
+        name: format!(
+            "{}_{}_{}_{}",
+            NAME_PREFIX,
+            cmpop_tag(op),
+            scalar_tag(ty),
+            pair
+        ),
+        def: build_cmp_def(cmpop_tag(op), ty, op),
+        input_a: a,
+        input_b: b,
+        expected: RawValues::U32(vec![expected]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    }
+}
+
+fn cases_cmp_narrow() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    let u8_pairs: &[(u8, u8)] = &[
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (0x80, 0x7F), // unsigned: 128 > 127
+        (0xFF, 0),
+        (0x12, 0x12),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in u8_pairs {
+            out.push(case_cmp_narrow(
+                op,
+                ScalarType::U8,
+                RawValues::U8(vec![a]),
+                RawValues::U8(vec![b]),
+                host_apply_cmp_u32(op, a as u32, b as u32),
+            ));
+        }
+    }
+
+    let i8_pairs: &[(i8, i8)] = &[
+        (0, 0),
+        (1, -1),
+        (i8::MIN, i8::MAX), // same bits as the u8 row, opposite order
+        (i8::MIN, 0),
+        (-1, 1),
+        (42, 42),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in i8_pairs {
+            out.push(case_cmp_narrow(
+                op,
+                ScalarType::I8,
+                RawValues::I8(vec![a]),
+                RawValues::I8(vec![b]),
+                host_apply_cmp_i32(op, a as i32, b as i32),
+            ));
+        }
+    }
+
+    let u16_pairs: &[(u16, u16)] = &[
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (0x8000, 0x7FFF),
+        (0xFFFF, 0),
+        (0x1234, 0x1234),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in u16_pairs {
+            out.push(case_cmp_narrow(
+                op,
+                ScalarType::U16,
+                RawValues::U16(vec![a]),
+                RawValues::U16(vec![b]),
+                host_apply_cmp_u32(op, a as u32, b as u32),
+            ));
+        }
+    }
+
+    let i16_pairs: &[(i16, i16)] = &[
+        (0, 0),
+        (1, -1),
+        (i16::MIN, i16::MAX),
+        (i16::MIN, 0),
+        (-1, 1),
+        (42, 42),
+    ];
+    for &op in CMP_OPS {
+        for &(a, b) in i16_pairs {
+            out.push(case_cmp_narrow(
+                op,
+                ScalarType::I16,
+                RawValues::I16(vec![a]),
+                RawValues::I16(vec![b]),
+                host_apply_cmp_i32(op, a as i32, b as i32),
+            ));
+        }
+    }
+
+    out
+}
+
 // ── Cast cases ───────────────────────────────────────────────────────
 //
 // The cast matrix grows quickly with type permutations. We cover
@@ -1808,6 +2311,229 @@ fn cases_cast() -> Vec<OpCase> {
     out
 }
 
+// ── Narrow-int cast lane ─────────────────────────────────────────────
+//
+// The astype matrix rows involving a narrow type: narrow → wide
+// (zero-extend unsigned sources, sign-extend signed sources), wide →
+// narrow (truncate mod 2^w), narrow ↔ narrow (same-width bit-pattern
+// reinterpret; cross-width extend-then-truncate), and float ↔ narrow
+// (exact widening; in-range truncate-toward-zero the other way).
+// Host oracle = the Rust `as` conversion, which matches the CPU
+// reference's mask-then-extend + truncate-at-store pipeline on every
+// pair generated here.
+//
+// Deliberately absent, inherited from the wide rows' conventions:
+//
+//   - Out-of-range / NaN float → int: non-portable per the existing
+//     f32 → u32/i32 contract (the reference saturates, the native
+//     backends do their native conversion). In-range inputs only.
+//   - Negative signed-narrow → u64: the reference zero-extends from
+//     the *source* width (i8 −1 → 255), while MSL's C conversion
+//     sign-extends to the full 64 bits (measured: i8 −1 → 2^64 − 1)
+//     — numpy and the scope contract side with MSL. The reference's
+//     `eval_cast` u64 arm masks to the source width for narrow *and*
+//     i32 sources alike, so this is a pre-existing wide-int gap
+//     surfacing at narrow width, not a narrow regression; rows land
+//     when the u64-extension contract is settled. Non-negative
+//     signed sources agree on every backend and are pinned below.
+//     Signed-narrow → i64 sign-extends identically everywhere and
+//     is pinned with negative values.
+
+fn cases_cast_narrow() -> Vec<OpCase> {
+    let mut out = Vec::new();
+
+    // u8 → everything.
+    for &a in &[0u8, 1, 0x7F, 0x80, 0xFF] {
+        let v =
+            |x: RawValues, to: ScalarType| case_cast(RawValues::U8(vec![a]), x, ScalarType::U8, to);
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+        out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
+        out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
+        out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
+        out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
+        out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
+    }
+
+    // i8 → everything (u64 targets: non-negative sources only — see
+    // the block comment).
+    for &a in &[0i8, 1, -1, i8::MIN, i8::MAX] {
+        let v =
+            |x: RawValues, to: ScalarType| case_cast(RawValues::I8(vec![a]), x, ScalarType::I8, to);
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+        out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
+        out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
+        out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
+        out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
+        if a >= 0 {
+            out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
+        }
+    }
+
+    // u16 → everything.
+    for &a in &[0u16, 1, 0x7FFF, 0x8000, 0xFFFF] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::U16(vec![a]), x, ScalarType::U16, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+        out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
+        out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
+        out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
+        out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
+        out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
+    }
+
+    // i16 → everything (u64 targets: non-negative sources only).
+    for &a in &[0i16, 1, -1, i16::MIN, i16::MAX] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::I16(vec![a]), x, ScalarType::I16, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
+        out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
+        out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
+        out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
+        if a >= 0 {
+            out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
+        }
+    }
+
+    // Wide ints → narrow: truncate mod 2^w. The value list crosses
+    // every narrow boundary (sign bytes, full bytes, both halves of
+    // the halfword) so a backend extending instead of truncating —
+    // or truncating at the wrong width — diverges.
+    for &a in &[0u32, 1, 0x80, 0xFF, 0xABCD, 0x8000, 0x12345678, 0xFFFFFFFF] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::U32(vec![a]), x, ScalarType::U32, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+    }
+    for &a in &[
+        0i32,
+        1,
+        -1,
+        255,
+        -128,
+        32_767,
+        -32_768,
+        65_535,
+        i32::MIN,
+        i32::MAX,
+    ] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::I32(vec![a]), x, ScalarType::I32, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+    }
+    for &a in &[0u64, 1, 0xFF, 0xFFFF, 0x1234_5678_9ABC_DEF0, u64::MAX] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::U64(vec![a]), x, ScalarType::U64, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+    }
+    for &a in &[0i64, 1, -1, 255, -32_768, i64::MIN, i64::MAX] {
+        let v = |x: RawValues, to: ScalarType| {
+            case_cast(RawValues::I64(vec![a]), x, ScalarType::I64, to)
+        };
+        out.push(v(RawValues::U8(vec![a as u8]), ScalarType::U8));
+        out.push(v(RawValues::I8(vec![a as i8]), ScalarType::I8));
+        out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
+        out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
+    }
+
+    // Float → narrow: truncate toward zero, in-range inputs only
+    // (the inherited non-contract excludes out-of-range/NaN). The
+    // negative fractional values pin trunc-toward-zero on signed
+    // targets; the type MAX/MIN values pin the range endpoints (all
+    // exactly representable in f32 at these widths).
+    for &a in &[0.0f32, 1.0, 42.5, 200.9, 255.0] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::U8(vec![a as u8]),
+            ScalarType::F32,
+            ScalarType::U8,
+        ));
+    }
+    for &a in &[0.0f32, 1.5, -1.5, -42.7, 127.0, -128.0] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::I8(vec![a as i8]),
+            ScalarType::F32,
+            ScalarType::I8,
+        ));
+    }
+    for &a in &[0.0f32, 1.0, 42.5, 60_000.9, 65_535.0] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::U16(vec![a as u16]),
+            ScalarType::F32,
+            ScalarType::U16,
+        ));
+    }
+    for &a in &[0.0f32, 1.5, -1.5, -3000.7, 32_767.0, -32_768.0] {
+        out.push(case_cast(
+            RawValues::F32(vec![a]),
+            RawValues::I16(vec![a as i16]),
+            ScalarType::F32,
+            ScalarType::I16,
+        ));
+    }
+    for &a in &[0.0f64, 1.5, 200.9, 255.0] {
+        out.push(case_cast(
+            RawValues::F64(vec![a]),
+            RawValues::U8(vec![a as u8]),
+            ScalarType::F64,
+            ScalarType::U8,
+        ));
+    }
+    for &a in &[0.0f64, 1.5, -42.7, -128.0, 127.0] {
+        out.push(case_cast(
+            RawValues::F64(vec![a]),
+            RawValues::I8(vec![a as i8]),
+            ScalarType::F64,
+            ScalarType::I8,
+        ));
+    }
+    for &a in &[0.0f64, 1.5, 60_000.9, 65_535.0] {
+        out.push(case_cast(
+            RawValues::F64(vec![a]),
+            RawValues::U16(vec![a as u16]),
+            ScalarType::F64,
+            ScalarType::U16,
+        ));
+    }
+    for &a in &[0.0f64, 1.5, -3000.7, -32_768.0, 32_767.0] {
+        out.push(case_cast(
+            RawValues::F64(vec![a]),
+            RawValues::I16(vec![a as i16]),
+            ScalarType::F64,
+            ScalarType::I16,
+        ));
+    }
+
+    out
+}
+
 // ── Const cases ──────────────────────────────────────────────────────
 //
 // Exercises the `KernelOp::Const` emit path, which the BinOp cases
@@ -1879,6 +2605,48 @@ fn cases_const() -> Vec<OpCase> {
         0x12345678u32.wrapping_add(42),
     ));
 
+    // Narrow-typed BinOp fed by a wide Const register: narrow kernel
+    // constants ride ConstValue::U32/I32 (there are no narrow const
+    // variants by design — the array kernels' zero/one constants use
+    // exactly this shape). The wrap-at-MAX inputs pin that the const
+    // operand participates at the narrow op's width.
+    out.push(OpCase {
+        name: format!("{}_add_u8_const_wrap", NAME_PREFIX),
+        def: build_const_binop_def("wrap", ScalarType::U8, BinOp::Add, ConstValue::U32(1)),
+        input_a: RawValues::U8(vec![0xFF]),
+        input_b: RawValues::U8(vec![0]),
+        expected: RawValues::U8(vec![0]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    out.push(OpCase {
+        name: format!("{}_add_i8_const_wrap", NAME_PREFIX),
+        def: build_const_binop_def("wrap", ScalarType::I8, BinOp::Add, ConstValue::I32(-1)),
+        input_a: RawValues::I8(vec![i8::MIN]),
+        input_b: RawValues::I8(vec![0]),
+        expected: RawValues::I8(vec![i8::MAX]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    out.push(OpCase {
+        name: format!("{}_add_u16_const_wrap", NAME_PREFIX),
+        def: build_const_binop_def("wrap", ScalarType::U16, BinOp::Add, ConstValue::U32(1)),
+        input_a: RawValues::U16(vec![0xFFFF]),
+        input_b: RawValues::U16(vec![0]),
+        expected: RawValues::U16(vec![0]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    out.push(OpCase {
+        name: format!("{}_add_i16_const_wrap", NAME_PREFIX),
+        def: build_const_binop_def("wrap", ScalarType::I16, BinOp::Add, ConstValue::I32(-1)),
+        input_a: RawValues::I16(vec![i16::MIN]),
+        input_b: RawValues::I16(vec![0]),
+        expected: RawValues::I16(vec![i16::MAX]),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+
     // Composed-op case: unsigned shift of an int-typed register.
     // Exercises the `06e764c` shift sign-extension path. Without
     // the operand-cast fix in the MSL emitter, `(i32)0x80000000 >>
@@ -1900,22 +2668,155 @@ fn cases_const() -> Vec<OpCase> {
     out
 }
 
-/// All BinOp + UnaryOp + Cmp + Cast + Const cases. Order: int BinOp,
-/// float BinOp, unary, cmp, cast, const.
+// ── Narrow stride guard ──────────────────────────────────────────────
+//
+// The recorded trap: a backend binding a narrow field at the wrong
+// element width still reads element 0 correctly — only index > 0
+// can expose it, and only a long ramp makes every misread visible.
+// Each narrow type gets a 256-element elementwise case (every quark
+// loads and stores at its own index) and a 256-element cast case
+// whose input and output strides differ, the sharpest version of
+// the guard. The u8 ramps cover the full byte space; the 16-bit
+// ramps step by 257 so both bytes of every element vary.
+
+fn cases_stride_narrow() -> Vec<OpCase> {
+    let mut out = Vec::new();
+    let n = 256u32;
+
+    let a8: Vec<u8> = (0..n).map(|i| i as u8).collect();
+    let b8: Vec<u8> = (0..n)
+        .map(|i| (i.wrapping_mul(3).wrapping_add(7)) as u8)
+        .collect();
+    let e8: Vec<u8> = a8
+        .iter()
+        .zip(&b8)
+        .map(|(&x, &y)| x.wrapping_add(y))
+        .collect();
+    out.push(OpCase {
+        name: format!("{}_add_u8_ramp256", NAME_PREFIX),
+        def: build_binop_def(binop_tag(BinOp::Add), ScalarType::U8, BinOp::Add),
+        input_a: RawValues::U8(a8.clone()),
+        input_b: RawValues::U8(b8),
+        expected: RawValues::U8(e8),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    // u8 → u16 sign-extension-free widening ramp: 1-byte input
+    // stride against 2-byte output stride.
+    out.push(case_cast(
+        RawValues::U8(a8.clone()),
+        RawValues::U16(a8.iter().map(|&x| x as u16).collect()),
+        ScalarType::U8,
+        ScalarType::U16,
+    ));
+
+    let ai8: Vec<i8> = (0..n).map(|i| (i as u8) as i8).collect();
+    let bi8: Vec<i8> = (0..n)
+        .map(|i| ((i.wrapping_mul(5).wrapping_add(3)) as u8) as i8)
+        .collect();
+    let ei8: Vec<i8> = ai8
+        .iter()
+        .zip(&bi8)
+        .map(|(&x, &y)| x.wrapping_add(y))
+        .collect();
+    out.push(OpCase {
+        name: format!("{}_add_i8_ramp256", NAME_PREFIX),
+        def: build_binop_def(binop_tag(BinOp::Add), ScalarType::I8, BinOp::Add),
+        input_a: RawValues::I8(ai8.clone()),
+        input_b: RawValues::I8(bi8),
+        expected: RawValues::I8(ei8),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    // i8 → i16 ramp doubles as an exhaustive sign-extension sweep of
+    // the whole byte space.
+    out.push(case_cast(
+        RawValues::I8(ai8.clone()),
+        RawValues::I16(ai8.iter().map(|&x| x as i16).collect()),
+        ScalarType::I8,
+        ScalarType::I16,
+    ));
+
+    let a16: Vec<u16> = (0..n).map(|i| (i * 257) as u16).collect();
+    let b16: Vec<u16> = (0..n)
+        .map(|i| (i.wrapping_mul(101).wrapping_add(3)) as u16)
+        .collect();
+    let e16: Vec<u16> = a16
+        .iter()
+        .zip(&b16)
+        .map(|(&x, &y)| x.wrapping_add(y))
+        .collect();
+    out.push(OpCase {
+        name: format!("{}_add_u16_ramp256", NAME_PREFIX),
+        def: build_binop_def(binop_tag(BinOp::Add), ScalarType::U16, BinOp::Add),
+        input_a: RawValues::U16(a16.clone()),
+        input_b: RawValues::U16(b16),
+        expected: RawValues::U16(e16),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    // u16 → u8 narrowing ramp: 2-byte input stride against 1-byte
+    // output stride.
+    out.push(case_cast(
+        RawValues::U16(a16.clone()),
+        RawValues::U8(a16.iter().map(|&x| x as u8).collect()),
+        ScalarType::U16,
+        ScalarType::U8,
+    ));
+
+    let ai16: Vec<i16> = (0..n).map(|i| ((i * 257) as u16) as i16).collect();
+    let bi16: Vec<i16> = (0..n)
+        .map(|i| ((i.wrapping_mul(89).wrapping_add(11)) as u16) as i16)
+        .collect();
+    let ei16: Vec<i16> = ai16
+        .iter()
+        .zip(&bi16)
+        .map(|(&x, &y)| x.wrapping_add(y))
+        .collect();
+    out.push(OpCase {
+        name: format!("{}_add_i16_ramp256", NAME_PREFIX),
+        def: build_binop_def(binop_tag(BinOp::Add), ScalarType::I16, BinOp::Add),
+        input_a: RawValues::I16(ai16.clone()),
+        input_b: RawValues::I16(bi16),
+        expected: RawValues::I16(ei16),
+        max_ulps: 0,
+        skip_on_metal: false,
+    });
+    out.push(case_cast(
+        RawValues::I16(ai16.clone()),
+        RawValues::I8(ai16.iter().map(|&x| x as i8).collect()),
+        ScalarType::I16,
+        ScalarType::I8,
+    ));
+
+    out
+}
+
+/// All BinOp + UnaryOp + Cmp + Cast + Const cases. Order: int BinOp
+/// (wide then narrow), float BinOp, unary, cmp, cast, const, then
+/// the narrow stride ramps.
 pub fn cases() -> Vec<OpCase> {
     let mut all = Vec::new();
     all.extend(cases_u32());
     all.extend(cases_u64());
     all.extend(cases_i32());
     all.extend(cases_i64());
+    all.extend(cases_u8());
+    all.extend(cases_i8());
+    all.extend(cases_u16());
+    all.extend(cases_i16());
     all.extend(cases_f32());
     all.extend(cases_f64());
     all.extend(cases_bf16());
     all.extend(cases_fp8());
     all.extend(cases_quant());
     all.extend(cases_unary());
+    all.extend(cases_unary_narrow());
     all.extend(cases_cmp());
+    all.extend(cases_cmp_narrow());
     all.extend(cases_cast());
+    all.extend(cases_cast_narrow());
     all.extend(cases_const());
+    all.extend(cases_stride_narrow());
     all
 }

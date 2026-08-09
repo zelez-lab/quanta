@@ -593,6 +593,20 @@ fn raw_to_bytes(v: &RawValues) -> Vec<u8> {
         RawValues::Q8(xs) | RawValues::Q4(xs) => xs
             .iter()
             .for_each(|x| out.extend_from_slice(&(*x as i32).to_le_bytes())),
+        // Narrow ints carry their native tight layout. WGSL has no
+        // 8-/16-bit storage scalars, so these cases are skipped in the
+        // run loop (see `case_is_narrow_int`); the byte image stays
+        // well-defined.
+        RawValues::U8(xs) => out.extend_from_slice(xs),
+        RawValues::I8(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::U16(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
+        RawValues::I16(xs) => xs
+            .iter()
+            .for_each(|x| out.extend_from_slice(&x.to_le_bytes())),
     }
     out
 }
@@ -604,6 +618,9 @@ fn raw_elem_size(v: &RawValues) -> usize {
         // u32-slot storage for the narrow floats / quantized codes.
         RawValues::BF16(_) | RawValues::FP8E5M2(_) | RawValues::FP8E4M3(_) => 4,
         RawValues::Q8(_) | RawValues::Q4(_) => 4,
+        // Native tight stride for the narrow ints (skipped lane).
+        RawValues::U8(_) | RawValues::I8(_) => 1,
+        RawValues::U16(_) | RawValues::I16(_) => 2,
     }
 }
 
@@ -632,6 +649,20 @@ fn case_is_64bit(c: &OpCase) -> bool {
     let is64 =
         |v: &RawValues| matches!(v, RawValues::F64(_) | RawValues::U64(_) | RawValues::I64(_));
     is64(&c.input_a) || is64(&c.input_b) || is64(&c.expected)
+}
+
+/// WGSL 1.0 has no 8-/16-bit storage scalars, so the narrow-int rows
+/// are gated out of the browser lane — skipped with this reason and
+/// counted, not silently absent. This mirrors the WebGPU caps-table
+/// rejection (`NotSupported`) the native driver enforces at wave_jit.
+fn case_is_narrow_int(c: &OpCase) -> bool {
+    let narrow = |v: &RawValues| {
+        matches!(
+            v,
+            RawValues::U8(_) | RawValues::I8(_) | RawValues::U16(_) | RawValues::I16(_)
+        )
+    };
+    narrow(&c.input_a) || narrow(&c.input_b) || narrow(&c.expected)
 }
 
 /// f32 ULP distance (sign-magnitude ordering), mirroring the host
@@ -729,7 +760,7 @@ async fn run_op_matrix() -> Result<Vec<u8>, String> {
     let mut first_fail = String::new();
 
     for case in cases() {
-        if case_is_64bit(&case) || case_is_narrow_float(&case) {
+        if case_is_64bit(&case) || case_is_narrow_float(&case) || case_is_narrow_int(&case) {
             skipped += 1;
             continue;
         }

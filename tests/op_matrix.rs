@@ -5,12 +5,17 @@
 //! every available backend lane and asserts bit-exact (integer) or
 //! ULP-bounded (float) agreement with the CPU reference.
 //!
-//! Coverage: all 10 integer BinOps × {U32, U64, I32, I64} ×
-//! handpicked edge inputs, plus all 4 float BinOps × F32 × float
+//! Coverage: all 10 integer BinOps × {U32, U64, I32, I64} and the
+//! narrow ints {U8, I8, U16, I16} × handpicked edge inputs (width
+//! boundaries, wrap witnesses, sign-extension probes, MIN/−1, shift
+//! counts at/beyond width), plus all 4 float BinOps × F32 × float
 //! edge inputs (zeros, denormals, infinities, the small-magnitude
-//! constants that exposed the `85551fa` const-format bug). F64
-//! cases run on the software lane only — Metal has no `double`
-//! type and the structural fix is queued for step 082 Layer 4.
+//! constants that exposed the `85551fa` const-format bug), the
+//! narrow cmp/cast lanes, and the 256-element narrow stride ramps
+//! (a wrong native element stride reads the wrong element — only
+//! index > 0 cases can catch it). F64 cases run on the software
+//! lane only — Metal has no `double` type and the structural fix
+//! is queued for step 082 Layer 4.
 //!
 //! Run locally:
 //!   cargo test --test op_matrix --features software --no-default-features

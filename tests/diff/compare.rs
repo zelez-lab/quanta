@@ -240,6 +240,12 @@ pub fn compare_bit_exact(oracle: &RawOutput, candidate: &RawOutput) -> Result<()
         (RawValues::U64(a), RawValues::U64(b)) => slice_bit_exact(oracle, candidate, a, b),
         (RawValues::I32(a), RawValues::I32(b)) => slice_bit_exact(oracle, candidate, a, b),
         (RawValues::I64(a), RawValues::I64(b)) => slice_bit_exact(oracle, candidate, a, b),
+        // Narrow ints are bit-exact at their native width like every
+        // other integer lane.
+        (RawValues::U8(a), RawValues::U8(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::I8(a), RawValues::I8(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::U16(a), RawValues::U16(b)) => slice_bit_exact(oracle, candidate, a, b),
+        (RawValues::I16(a), RawValues::I16(b)) => slice_bit_exact(oracle, candidate, a, b),
         // f32 falls back to compare_f32 with max_ulps = 0 for bit-exact
         // operations (Add/Sub/Mul/Div on f32 are deterministic on every
         // emitter we ship; only transcendentals need >0 ULP).

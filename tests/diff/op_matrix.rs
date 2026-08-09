@@ -112,6 +112,206 @@ fn dispatch_pair_typed(
         (RawValues::I32(a), RawValues::I32(b), RawValues::F32(_)) => {
             dispatch_pair::<i32, f32>(gpu, wave, a, b, RawValues::F32)
         }
+        // Narrow ints ride native-width typed fields (`Field<u8>` etc.
+        // — 1-/2-byte stride, the §5 storage contract). Symmetric
+        // BinOp/UnaryOp arms first.
+        (RawValues::U8(a), RawValues::U8(b), RawValues::U8(_)) => {
+            dispatch_pair::<u8, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::I8(_)) => {
+            dispatch_pair::<i8, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::U16(_)) => {
+            dispatch_pair::<u16, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::I16(_)) => {
+            dispatch_pair::<i16, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        // Narrow Cmp (u32 0/1 lane) and narrow → u32 casts share arms.
+        (RawValues::U8(a), RawValues::U8(b), RawValues::U32(_)) => {
+            dispatch_pair::<u8, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::U32(_)) => {
+            dispatch_pair::<i8, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::U32(_)) => {
+            dispatch_pair::<u16, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::U32(_)) => {
+            dispatch_pair::<i16, u32>(gpu, wave, a, b, RawValues::U32)
+        }
+        // Narrow → wide / float casts.
+        (RawValues::U8(a), RawValues::U8(b), RawValues::I32(_)) => {
+            dispatch_pair::<u8, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::U64(_)) => {
+            dispatch_pair::<u8, u64>(gpu, wave, a, b, RawValues::U64)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::I64(_)) => {
+            dispatch_pair::<u8, i64>(gpu, wave, a, b, RawValues::I64)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::F32(_)) => {
+            dispatch_pair::<u8, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::F64(_)) => {
+            dispatch_pair::<u8, f64>(gpu, wave, a, b, RawValues::F64)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::I32(_)) => {
+            dispatch_pair::<i8, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::U64(_)) => {
+            dispatch_pair::<i8, u64>(gpu, wave, a, b, RawValues::U64)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::I64(_)) => {
+            dispatch_pair::<i8, i64>(gpu, wave, a, b, RawValues::I64)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::F32(_)) => {
+            dispatch_pair::<i8, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::F64(_)) => {
+            dispatch_pair::<i8, f64>(gpu, wave, a, b, RawValues::F64)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::I32(_)) => {
+            dispatch_pair::<u16, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::U64(_)) => {
+            dispatch_pair::<u16, u64>(gpu, wave, a, b, RawValues::U64)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::I64(_)) => {
+            dispatch_pair::<u16, i64>(gpu, wave, a, b, RawValues::I64)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::F32(_)) => {
+            dispatch_pair::<u16, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::F64(_)) => {
+            dispatch_pair::<u16, f64>(gpu, wave, a, b, RawValues::F64)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::I32(_)) => {
+            dispatch_pair::<i16, i32>(gpu, wave, a, b, RawValues::I32)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::U64(_)) => {
+            dispatch_pair::<i16, u64>(gpu, wave, a, b, RawValues::U64)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::I64(_)) => {
+            dispatch_pair::<i16, i64>(gpu, wave, a, b, RawValues::I64)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::F32(_)) => {
+            dispatch_pair::<i16, f32>(gpu, wave, a, b, RawValues::F32)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::F64(_)) => {
+            dispatch_pair::<i16, f64>(gpu, wave, a, b, RawValues::F64)
+        }
+        // Narrow ↔ narrow casts (same-width reinterpret and
+        // cross-width extend/truncate).
+        (RawValues::U8(a), RawValues::U8(b), RawValues::I8(_)) => {
+            dispatch_pair::<u8, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::U16(_)) => {
+            dispatch_pair::<u8, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::U8(a), RawValues::U8(b), RawValues::I16(_)) => {
+            dispatch_pair::<u8, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::U8(_)) => {
+            dispatch_pair::<i8, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::U16(_)) => {
+            dispatch_pair::<i8, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::I8(a), RawValues::I8(b), RawValues::I16(_)) => {
+            dispatch_pair::<i8, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::U8(_)) => {
+            dispatch_pair::<u16, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::I8(_)) => {
+            dispatch_pair::<u16, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::U16(a), RawValues::U16(b), RawValues::I16(_)) => {
+            dispatch_pair::<u16, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::U8(_)) => {
+            dispatch_pair::<i16, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::I8(_)) => {
+            dispatch_pair::<i16, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::I16(a), RawValues::I16(b), RawValues::U16(_)) => {
+            dispatch_pair::<i16, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        // Wide / float → narrow casts.
+        (RawValues::U32(a), RawValues::U32(b), RawValues::U8(_)) => {
+            dispatch_pair::<u32, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::U32(a), RawValues::U32(b), RawValues::I8(_)) => {
+            dispatch_pair::<u32, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::U32(a), RawValues::U32(b), RawValues::U16(_)) => {
+            dispatch_pair::<u32, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::U32(a), RawValues::U32(b), RawValues::I16(_)) => {
+            dispatch_pair::<u32, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::U8(_)) => {
+            dispatch_pair::<i32, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::I8(_)) => {
+            dispatch_pair::<i32, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::U16(_)) => {
+            dispatch_pair::<i32, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::I32(a), RawValues::I32(b), RawValues::I16(_)) => {
+            dispatch_pair::<i32, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::U64(a), RawValues::U64(b), RawValues::U8(_)) => {
+            dispatch_pair::<u64, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::U64(a), RawValues::U64(b), RawValues::I8(_)) => {
+            dispatch_pair::<u64, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::U64(a), RawValues::U64(b), RawValues::U16(_)) => {
+            dispatch_pair::<u64, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::U64(a), RawValues::U64(b), RawValues::I16(_)) => {
+            dispatch_pair::<u64, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::I64(a), RawValues::I64(b), RawValues::U8(_)) => {
+            dispatch_pair::<i64, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::I64(a), RawValues::I64(b), RawValues::I8(_)) => {
+            dispatch_pair::<i64, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::I64(a), RawValues::I64(b), RawValues::U16(_)) => {
+            dispatch_pair::<i64, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::I64(a), RawValues::I64(b), RawValues::I16(_)) => {
+            dispatch_pair::<i64, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::U8(_)) => {
+            dispatch_pair::<f32, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::I8(_)) => {
+            dispatch_pair::<f32, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::U16(_)) => {
+            dispatch_pair::<f32, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::F32(a), RawValues::F32(b), RawValues::I16(_)) => {
+            dispatch_pair::<f32, i16>(gpu, wave, a, b, RawValues::I16)
+        }
+        (RawValues::F64(a), RawValues::F64(b), RawValues::U8(_)) => {
+            dispatch_pair::<f64, u8>(gpu, wave, a, b, RawValues::U8)
+        }
+        (RawValues::F64(a), RawValues::F64(b), RawValues::I8(_)) => {
+            dispatch_pair::<f64, i8>(gpu, wave, a, b, RawValues::I8)
+        }
+        (RawValues::F64(a), RawValues::F64(b), RawValues::U16(_)) => {
+            dispatch_pair::<f64, u16>(gpu, wave, a, b, RawValues::U16)
+        }
+        (RawValues::F64(a), RawValues::F64(b), RawValues::I16(_)) => {
+            dispatch_pair::<f64, i16>(gpu, wave, a, b, RawValues::I16)
+        }
         // bf16: single-element fields uploaded as `Field<u32>` with the
         // bits zero-extended. Layout-agnostic for element 0: the native
         // 16-bit stride (Metal/Vulkan/CPU) reads the word's low half and
@@ -153,8 +353,11 @@ fn dispatch_pair_typed(
 }
 
 /// Allocate `Field<TIn>` × 2 + `Field<TOut>` × 1, upload, bind,
-/// dispatch one quark, read back as `Vec<TOut>`. Caller picks the
-/// `RawValues` wrapper for the output variant.
+/// dispatch one quark per element, read back as `Vec<TOut>`. Caller
+/// picks the `RawValues` wrapper for the output variant. Almost every
+/// case is length 1; the narrow stride-guard ramps carry 256 elements
+/// so that index > 0 loads/stores exercise the native element width
+/// (a wrong stride reads the wrong element — invisible at index 0).
 #[cfg(any(feature = "software", feature = "metal", feature = "vulkan"))]
 fn dispatch_pair<TIn: Copy + 'static, TOut: Copy + 'static>(
     gpu: &quanta::Gpu,
@@ -163,15 +366,16 @@ fn dispatch_pair<TIn: Copy + 'static, TOut: Copy + 'static>(
     b: &[TIn],
     wrap: fn(Vec<TOut>) -> RawValues,
 ) -> RawValues {
-    let fa = gpu.field::<TIn>(1).unwrap();
-    let fb = gpu.field::<TIn>(1).unwrap();
-    let fout = gpu.field::<TOut>(1).unwrap();
+    let n = a.len();
+    let fa = gpu.field::<TIn>(n).unwrap();
+    let fb = gpu.field::<TIn>(n).unwrap();
+    let fout = gpu.field::<TOut>(n).unwrap();
     fa.write(a).unwrap();
     fb.write(b).unwrap();
     wave.bind(0, &fa);
     wave.bind(1, &fb);
     wave.bind(2, &fout);
-    let mut pulse = gpu.dispatch(wave, 1).unwrap();
+    let mut pulse = gpu.dispatch(wave, n as u32).unwrap();
     pulse.wait().unwrap();
     wrap(fout.read().unwrap())
 }

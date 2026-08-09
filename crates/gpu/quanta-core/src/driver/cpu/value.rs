@@ -149,7 +149,8 @@ pub(super) fn read_scalar_at_offset(buf: &[u8], offset: usize, ty: &ScalarType) 
         ScalarType::U16 => Value::U32(u16::from_le_bytes(bytes.try_into().unwrap()) as u32),
         ScalarType::I16 => Value::I32(i16::from_le_bytes(bytes.try_into().unwrap()) as i32),
         ScalarType::U8 => Value::U32(bytes[0] as u32),
-        ScalarType::I8 => Value::I32(bytes[0] as i32),
+        // Sign-extend through i8 — a bare `bytes[0] as i32` zero-extends.
+        ScalarType::I8 => Value::I32(bytes[0] as i8 as i32),
         ScalarType::F16 => {
             let bits = u16::from_le_bytes(bytes.try_into().unwrap());
             Value::F32(f16_to_f32(bits))
@@ -195,7 +196,8 @@ pub(super) fn read_scalar(buf: &[u8], index: u32, ty: &ScalarType) -> Value {
         ScalarType::U16 => Value::U32(u16::from_le_bytes(bytes.try_into().unwrap()) as u32),
         ScalarType::I16 => Value::I32(i16::from_le_bytes(bytes.try_into().unwrap()) as i32),
         ScalarType::U8 => Value::U32(bytes[0] as u32),
-        ScalarType::I8 => Value::I32(bytes[0] as i32),
+        // Sign-extend through i8 — a bare `bytes[0] as i32` zero-extends.
+        ScalarType::I8 => Value::I32(bytes[0] as i8 as i32),
         ScalarType::F16 => {
             // f16: decode from u16 bits, expand to f32
             let bits = u16::from_le_bytes(bytes.try_into().unwrap());
