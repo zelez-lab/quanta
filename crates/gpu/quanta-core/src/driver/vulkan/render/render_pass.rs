@@ -1043,6 +1043,25 @@ impl VulkanDevice {
             } else {
                 ffi::VK_SUBPASS_CONTENTS_INLINE
             };
+            // Occlusion-query pools reset OUTSIDE the pass: the spec
+            // forbids vkCmdResetQueryPool inside a render pass
+            // instance (VUID-vkCmdResetQueryPool-renderpass — the
+            // armed validation sweep's first catch; lavapipe executed
+            // the in-pass reset without complaint). Reset every query
+            // this pass is about to begin, before it begins.
+            {
+                let pools = self
+                    .query_pools
+                    .read()
+                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                for op in &pass.ops {
+                    if let RenderOp::BeginOcclusionQuery { handle, index } = op {
+                        if let Some(qp) = pools.get(handle) {
+                            ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
+                        }
+                    }
+                }
+            }
             ffi::vkCmdBeginRenderPass(cmd, &rp_begin, subpass_contents);
 
             // Default full-target viewport + scissor, in the same
@@ -1553,7 +1572,10 @@ impl VulkanDevice {
             RenderOp::Clear(_) | RenderOp::ClearDepth(_) | RenderOp::ClearStencil(_) => {}
             RenderOp::DebugPush { .. } | RenderOp::DebugPop => {}
 
-            // Occlusion queries (M3.3)
+            // Occlusion queries (M3.3). The pool reset happened
+            // before vkCmdBeginRenderPass — resetting here, inside
+            // the pass instance, violates
+            // VUID-vkCmdResetQueryPool-renderpass.
             RenderOp::BeginOcclusionQuery { handle, index } => {
                 let pools = self
                     .query_pools
@@ -1561,7 +1583,6 @@ impl VulkanDevice {
                     .map_err(|_| QuantaError::internal("lock poisoned"))?;
                 if let Some(qp) = pools.get(handle) {
                     unsafe {
-                        ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
                         ffi::vkCmdBeginQuery(cmd, qp.pool, *index, 0);
                     }
                 }
