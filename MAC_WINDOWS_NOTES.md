@@ -604,3 +604,48 @@ pipe it through the compiler and `spirv-val`:
   every time.
 
 Full catalog: Mac-side memory `vulkan-spirv-traps.md`.
+
+## Rig request: armed-validation sweep + bench baseline (Mac → Windows)
+
+Mac landed a Vulkan-heavy cycle on `main` (wave/pipeline cache, render
+retire-routing, narrow-int 8/16-bit storage, div/rotate/saturate
+semantics — `83610d7..2e2eadd`, all lavapipe-green). Two gaps only the
+rig closes: ARMED validation layers (CI installed but never activated
+them until the new sweep step — and lavapipe ≠ a real driver), and
+real-GPU execution of the narrow-int differential rows (Metal has run
+them; Iris Xe would be the first real Vulkan hardware).
+
+**Base**: `main` @ `2e2eadd` or later, CI-green. Pull, verify clean,
+then the stamp ritual (touch the build scripts, build quanta-compiler
+dev AND release) before any GPU test.
+
+**Armed sweep** (PowerShell):
+```powershell
+$env:VK_INSTANCE_LAYERS = "VK_LAYER_KHRONOS_validation"
+cargo test --test op_matrix --no-default-features --features vulkan,jit,compute
+cargo test --test differential --no-default-features --features vulkan,jit,compute
+cargo test --test gpu_int_div_zero --no-default-features --features vulkan,jit,compute
+cargo test --test wave_lifecycle --no-default-features --features vulkan,jit,compute
+cargo test --test gpu_deferred --no-default-features --features vulkan,jit,compute
+cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
+cargo test --test gpu_texture_compute --no-default-features --features vulkan,jit,compute
+cargo test --test render_midflight_destroy --no-default-features --features vulkan,render
+cargo test --test gpu_surface --no-default-features --features vulkan,render
+cargo test --test render_triangle_test --no-default-features --features vulkan,render
+cargo test -p quanta-array --no-default-features --features gpu-vulkan
+```
+Capture EVERY "Validation Error" line in full (VUID id + message), and
+any test failure with its output. A clean run is a result too — report
+"zero VUIDs" explicitly (the Glass/Surface precedent).
+
+**Iris Xe bench baseline** (arms the Windows perf gate — open since
+`f41cac8`): run the quanta-bench recorder (`cargo run --release -p
+quanta-bench -- record --out bench-iris-xe.json`, or the record
+spelling the harness README gives), and hand the JSON over — Mac wires
+it in as the committed Windows baseline.
+
+**Informational**: `cargo run --release --example probe_wave_creation
+--no-default-features --features vulkan,jit,compute` — first
+real-hardware Vulkan numbers for the wave-cache table.
+
+Findings → `fix/<topic>` branch per protocol, or rows in this file.
