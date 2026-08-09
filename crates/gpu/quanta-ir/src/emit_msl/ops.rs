@@ -182,18 +182,39 @@ pub(super) fn emit_op(
         KernelOp::BinOp { dst, a, b, op, ty } => {
             match op {
                 BinOp::Rotl => {
-                    // MSL: `rotate(x, k)` rotates left by k positions.
+                    // MSL: `rotate(x, k)` rotates left by k positions
+                    // (count taken mod the type's width). Rotate is a
+                    // bit-pattern op, so it runs in the SAME-WIDTH
+                    // UNSIGNED type: the overload set has no `char`
+                    // form — a (char,char) call silently promotes to
+                    // (int,int) and rotates at 32-bit width (measured
+                    // i8 rotl(-86, 2) = -85 instead of -86), and a bare
+                    // narrow count expression makes resolution
+                    // ambiguous. (uchar/ushort/uint/ulong, uchar…) are
+                    // exact matches at every width; the assignment
+                    // back to the destination's type keeps the bit
+                    // pattern.
+                    let u = unsigned_msl_name(ty);
                     out.push_str(&format!(
-                        "{}{} = rotate(r{}, r{});\n",
+                        "{}{} = rotate(({})r{}, ({})r{});\n",
                         pad,
                         dst_lv(mutable, ty.msl_name(), dst.0),
+                        u,
                         a.0,
+                        u,
                         b.0
                     ));
                 }
                 BinOp::Rotr => {
                     // MSL doesn't have a rotate-right built-in. Rewrite
-                    // as rotate-left by (width - k mod width).
+                    // as rotate-left by (width - k mod width), in the
+                    // same-width unsigned type like the Rotl arm (the
+                    // count expression computes in `int` after C
+                    // promotion — uncast, narrow overload resolution
+                    // is ambiguous and the emitted MSL doesn't
+                    // compile). A count of `width` lands on the
+                    // builtin's mod-width behavior (measured on the u8
+                    // rows: rotate(x, 8) == x).
                     let width: u32 = match ty {
                         ScalarType::U8 | ScalarType::I8 => 8,
                         ScalarType::U16 | ScalarType::I16 | ScalarType::F16 => 16,
@@ -207,11 +228,14 @@ pub(super) fn emit_op(
                         ScalarType::U64 | ScalarType::I64 | ScalarType::F64 => 64,
                         ScalarType::Bool => 1,
                     };
+                    let u = unsigned_msl_name(ty);
                     out.push_str(&format!(
-                        "{}{} = rotate(r{}, ({}) - (r{} % {}));\n",
+                        "{}{} = rotate(({})r{}, ({})(({}) - (r{} % {})));\n",
                         pad,
                         dst_lv(mutable, ty.msl_name(), dst.0),
+                        u,
                         a.0,
+                        u,
                         width,
                         b.0,
                         width
@@ -1132,5 +1156,19 @@ fn unsigned_max_lit_msl(ty: &ScalarType) -> &'static str {
         ScalarType::U64 | ScalarType::I64 => "0xFFFFFFFFFFFFFFFFul",
         // SatAdd is integer-only; floats/bools should never reach here.
         _ => "0u",
+    }
+}
+
+/// The unsigned MSL type of the same width — the domain the rotate
+/// arms compute in. MSL's `rotate` overload set has no `char` form
+/// (a char call promotes to `int` and rotates at 32-bit width), while
+/// the unsigned types are exact matches at every width; rotate is a
+/// bit-pattern op, so the unsigned domain is semantically free.
+fn unsigned_msl_name(ty: &ScalarType) -> &'static str {
+    match ty {
+        ScalarType::U8 | ScalarType::I8 => "uchar",
+        ScalarType::U16 | ScalarType::I16 => "ushort",
+        ScalarType::U64 | ScalarType::I64 => "ulong",
+        _ => "uint",
     }
 }

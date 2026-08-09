@@ -579,6 +579,11 @@ impl SpvEmitter {
     pub(crate) fn emit_constant_unsigned_max(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::U64 => self.emit_constant_u64(u64::MAX),
+            // Narrow types saturate at the TYPE's bound (their values
+            // ride the canonical 32-bit carrier, so the constant is a
+            // 32-bit word holding the narrow max).
+            ScalarType::U8 => self.emit_constant_u32(0xFF),
+            ScalarType::U16 => self.emit_constant_u32(0xFFFF),
             _ => self.emit_constant_u32(u32::MAX),
         }
     }

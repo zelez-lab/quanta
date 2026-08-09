@@ -624,12 +624,12 @@ fn build_shr_after_signed_def() -> KernelDef {
 //   - all-ones (`!0`): catches off-by-one truncation / wrap.
 //   - MIN / MAX of signed types: catches overflow on wrapping ops.
 //   - small literal pair: catches the trivial case.
-//   - zero: catches division/remainder by zero (skipped for Div/Rem).
+//   - zero divisor: pins x/0 = 0 and x%0 = 0 (the integer
+//     div-by-zero contract every lane guards for).
 
 /// U32 edge-input pairs: `(a, b)`. `b` is the shift amount for
 /// shift ops and the second operand otherwise. The same list is
-/// used for every op; division ops filter out `b == 0` at
-/// generation time.
+/// used for every op.
 fn u32_inputs() -> &'static [(u32, u32)] {
     &[
         (0x80000000, 8),
@@ -637,7 +637,8 @@ fn u32_inputs() -> &'static [(u32, u32)] {
         (0x12345678, 4),
         (1, 1),
         (0, 5),
-        (5, 0),
+        (5, 0), // ÷0 / %0 = 0 (the guarded contract)
+        (0, 0), // 0÷0 / 0%0 = 0
         (0x7FFFFFFF, 31),
     ]
 }
@@ -649,7 +650,8 @@ fn u64_inputs() -> &'static [(u64, u64)] {
         (0x1234_5678_9ABC_DEF0, 16),
         (1, 1),
         (0, 5),
-        (5, 0),
+        (5, 0), // ÷0 / %0 = 0
+        (0, 0),
     ]
 }
 
@@ -660,7 +662,9 @@ fn i32_inputs() -> &'static [(i32, i32)] {
         (-1, 1),
         (1, 1),
         (0, 5),
-        (5, 0),
+        (5, 0),  // ÷0 / %0 = 0
+        (-5, 0), // negative dividend, zero divisor
+        (0, 0),
         (-2_147_483_647, 2),
     ]
 }
@@ -672,23 +676,24 @@ fn i64_inputs() -> &'static [(i64, i64)] {
         (-1, 1),
         (1, 1),
         (0, 5),
-        (5, 0),
+        (5, 0),  // ÷0 / %0 = 0
+        (-5, 0), // negative dividend, zero divisor
+        (0, 0),
     ]
 }
 
 /// Apply a `BinOp` on the host side using the same wrapping/saturating
-/// semantics the CPU executor uses (`src/driver/cpu/eval.rs`).
-/// Returns `None` if the op is undefined for the input (e.g. `Div` by
-/// zero) so the caller can skip that case.
+/// semantics the CPU executor uses (`src/driver/cpu/eval.rs`),
+/// including the x/0 = 0 and x%0 = 0 contract every lane guards for.
+/// Returns `None` if the op is undefined for the input (signed MIN/−1
+/// — C UB) so the caller can skip that case.
 fn host_apply_u32(op: BinOp, a: u32, b: u32) -> Option<u32> {
     Some(match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
         BinOp::Mul => a.wrapping_mul(b),
-        BinOp::Div if b == 0 => return None,
-        BinOp::Div => a / b,
-        BinOp::Rem if b == 0 => return None,
-        BinOp::Rem => a % b,
+        BinOp::Div => a.checked_div(b).unwrap_or(0),
+        BinOp::Rem => a.checked_rem(b).unwrap_or(0),
         BinOp::BitAnd => a & b,
         BinOp::BitOr => a | b,
         BinOp::BitXor => a ^ b,
@@ -706,10 +711,8 @@ fn host_apply_u64(op: BinOp, a: u64, b: u64) -> Option<u64> {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
         BinOp::Mul => a.wrapping_mul(b),
-        BinOp::Div if b == 0 => return None,
-        BinOp::Div => a / b,
-        BinOp::Rem if b == 0 => return None,
-        BinOp::Rem => a % b,
+        BinOp::Div => a.checked_div(b).unwrap_or(0),
+        BinOp::Rem => a.checked_rem(b).unwrap_or(0),
         BinOp::BitAnd => a & b,
         BinOp::BitOr => a | b,
         BinOp::BitXor => a ^ b,
@@ -727,13 +730,12 @@ fn host_apply_i32(op: BinOp, a: i32, b: i32) -> Option<i32> {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
         BinOp::Mul => a.wrapping_mul(b),
-        BinOp::Div if b == 0 => return None,
-        // i32::MIN / -1 is UB in C/MSL — skip.
+        // i32::MIN / -1 is UB in C/MSL — skip. ÷0 and %0 are the
+        // guarded contract: both yield 0.
         BinOp::Div if a == i32::MIN && b == -1 => return None,
-        BinOp::Div => a / b,
-        BinOp::Rem if b == 0 => return None,
+        BinOp::Div => a.checked_div(b).unwrap_or(0),
         BinOp::Rem if a == i32::MIN && b == -1 => return None,
-        BinOp::Rem => a % b,
+        BinOp::Rem => a.checked_rem(b).unwrap_or(0),
         BinOp::BitAnd => a & b,
         BinOp::BitOr => a | b,
         BinOp::BitXor => a ^ b,
@@ -751,12 +753,10 @@ fn host_apply_i64(op: BinOp, a: i64, b: i64) -> Option<i64> {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
         BinOp::Mul => a.wrapping_mul(b),
-        BinOp::Div if b == 0 => return None,
         BinOp::Div if a == i64::MIN && b == -1 => return None,
-        BinOp::Div => a / b,
-        BinOp::Rem if b == 0 => return None,
+        BinOp::Div => a.checked_div(b).unwrap_or(0),
         BinOp::Rem if a == i64::MIN && b == -1 => return None,
-        BinOp::Rem => a % b,
+        BinOp::Rem => a.checked_rem(b).unwrap_or(0),
         BinOp::BitAnd => a & b,
         BinOp::BitOr => a | b,
         BinOp::BitXor => a ^ b,
@@ -938,46 +938,40 @@ fn cases_i64() -> Vec<OpCase> {
 // div/rem/compare/shift operands loaded from narrow memory are always
 // in-range. The host oracles below reuse the 32-bit wide oracles and
 // truncate to the storage width, which mirrors the CPU reference
-// (`eval.rs` + `write_scalar`) by construction.
+// (`eval.rs` + `write_scalar`) by construction — except the
+// width-dependent rotate/saturate families, intercepted at native
+// width (see the contract block below).
 //
 // Edge-input families per type: width boundaries (0, 1, MAX, MAX−1,
 // MIN), the sign-boundary byte/halfword (0x7F/0x80, 0x7FFF/0x8000),
 // wrap witnesses (MAX+1 via add, 0−5 via sub, 200·3 / 50000·3 via
 // mul), sign-extension probes (0xAA / 0xAAAA), MIN/−1 (defined at
 // narrow width — computed at 32-bit, truncated on store, unlike the
-// i32 case which stays excluded as C UB), ÷0 / %0 (filtered at
-// generation like the wide rows), and shift counts at width−1 /
+// i32 case which stays excluded as C UB), ÷0 / %0 (= 0, the guarded
+// contract, like the wide rows), and shift counts at width−1 /
 // width / beyond width. Shift counts stay ≤ 31: every native backend
 // shifts at ≥ int width after C integer promotion, so counts ≥ 32
 // are UB there — the wide rows observe the same cap.
 //
-// Excluded op families (narrow-specific; the divergences below were
-// measured on real Metal during this matrix's first differential
-// exercise of the narrow emitters, and independently confirmed on
-// the SPIR-V lane). Rows for them would pin one backend's behavior
-// as wrong — skipped-with-witness beats pinned-wrong:
+// Width-dependent op families (Rotl/Rotr, SatAdd/SatSub) run at the
+// TYPE's width on every lane — the decided contract, after this
+// matrix's first differential exercise of the narrow emitters caught
+// the CPU reference (and SPIR-V's saturate) operating in the widened
+// 32-bit domain instead:
 //
-//   - Rotl / Rotr: width-dependent, not ring ops. The CPU reference
-//     rotates the widened value at 32-bit width and truncates on
-//     store, while MSL and SPIR-V rotate at the native width —
-//     measured: u8 rotl(0x81, 1) = 0x02 under the reference, 0x03 on
-//     Metal (u16 likewise); SPIR-V witness u8 rotl(0x80, 1) = 0x01
-//     vs the reference's 0x00. Narrow Rotr on MSL is worse: the
-//     emitted `rotate(r, (8) - (r2 % 8))` doesn't compile — the
-//     count expression promotes to `int` and the MSL `rotate`
-//     overload set (uchar,uchar)/(int,int) is ambiguous. The IR has
-//     no pinned narrow-rotate width contract and no array-surface
-//     consumer emits narrow rotates; rows land when the contract
-//     decision + interpreter alignment ship as a follow-up.
-//   - SatAdd / SatSub: same width mismatch, three-way. The reference
-//     and SPIR-V saturate in the u32 domain then truncate (u8
-//     satadd(200, 200) = 400 → stored 144) while MSL clamps at the
-//     narrow bounds (measured: 255). SatSub happens to agree (32-bit
-//     saturating_sub of in-range narrow operands clamps to 0 exactly
-//     like the narrow clamp), but the family ships together or not
-//     at all. Saturating ops are not part of any dtype's array
-//     surface; the wide rows keep them for the u32/u64 emitter
-//     paths only.
+//   - Rotl / Rotr: a w-bit rotate for a w-bit type, count taken mod
+//     w (a negative signed count rotates by its low bits — the same
+//     congruence). Witnesses, pinned below: u8 rotl(0x81, 1) = 0x03
+//     (Metal), u8 rotl(0x80, 1) = 0x01 (SPIR-V) — the old widened
+//     reference produced 0x02 / 0x00. The host oracles intercept
+//     rotates before the wide delegation and rotate at the storage
+//     width, exactly like `eval.rs`.
+//   - SatAdd / SatSub: saturate at the TYPE's bounds (u8
+//     satadd(200, 200) = 255, pinned below; unsigned satsub clamps
+//     at 0, where the 32-bit and narrow clamps already agreed).
+//     Generated for unsigned types only, like the wide rows — the
+//     emitters' signed-sat arms still fall back to wrapping and stay
+//     out of the matrix.
 //
 // Narrow atomics: not excluded here because they cannot arise — the
 // op-matrix generates no atomic cases for any type, and the
@@ -1054,11 +1048,27 @@ fn i16_inputs() -> &'static [(i16, i16)] {
 /// wrapping op, truncate to the storage width — exactly the CPU
 /// reference's load / eval / store pipeline. Callers never pass
 /// shift counts ≥ 32 (the input lists cap them at width + 1).
+/// Rotate and saturate are width-dependent, not ring ops, so they
+/// run at the storage width (count mod width), like every lane.
 fn host_apply_u8(op: BinOp, a: u8, b: u8) -> Option<u8> {
+    match op {
+        BinOp::Rotl => return Some(a.rotate_left(b as u32)),
+        BinOp::Rotr => return Some(a.rotate_right(b as u32)),
+        BinOp::SatAdd => return Some(a.saturating_add(b)),
+        BinOp::SatSub => return Some(a.saturating_sub(b)),
+        _ => {}
+    }
     host_apply_u32(op, a as u32, b as u32).map(|v| v as u8)
 }
 
 fn host_apply_u16(op: BinOp, a: u16, b: u16) -> Option<u16> {
+    match op {
+        BinOp::Rotl => return Some(a.rotate_left(b as u32)),
+        BinOp::Rotr => return Some(a.rotate_right(b as u32)),
+        BinOp::SatAdd => return Some(a.saturating_add(b)),
+        BinOp::SatSub => return Some(a.saturating_sub(b)),
+        _ => {}
+    }
     host_apply_u32(op, a as u32, b as u32).map(|v| v as u16)
 }
 
@@ -1071,6 +1081,16 @@ fn host_apply_u16(op: BinOp, a: u16, b: u16) -> Option<u16> {
 /// 32-bit quotient truncates back to MIN — the defined narrow
 /// result every backend produces.
 fn host_apply_i8(op: BinOp, a: i8, b: i8) -> Option<i8> {
+    // Rotates run at the storage width; the count's bit pattern is
+    // taken mod the width, so a negative count rotates by its low
+    // bits (−1 ≡ 7 mod 8) — the exact congruence the emitters'
+    // masked-rotate / `rotate()` builtin computes. No UB filter
+    // needed, unlike shifts.
+    match op {
+        BinOp::Rotl => return Some(a.rotate_left(b as u32)),
+        BinOp::Rotr => return Some(a.rotate_right(b as u32)),
+        _ => {}
+    }
     if matches!(op, BinOp::Shl | BinOp::Shr) && b < 0 {
         return None;
     }
@@ -1078,6 +1098,11 @@ fn host_apply_i8(op: BinOp, a: i8, b: i8) -> Option<i8> {
 }
 
 fn host_apply_i16(op: BinOp, a: i16, b: i16) -> Option<i16> {
+    match op {
+        BinOp::Rotl => return Some(a.rotate_left(b as u32)),
+        BinOp::Rotr => return Some(a.rotate_right(b as u32)),
+        _ => {}
+    }
     if matches!(op, BinOp::Shl | BinOp::Shr) && b < 0 {
         return None;
     }
@@ -1162,19 +1187,29 @@ fn case_i16(op: BinOp, a: i16, b: i16, expected: i16) -> OpCase {
 
 fn cases_u8() -> Vec<OpCase> {
     let mut out = Vec::new();
-    for &op in INT_BINOPS {
+    for &op in INT_BINOPS.iter().chain(UNSIGNED_SAT_OPS).chain(ROTATE_OPS) {
         for &(a, b) in u8_inputs() {
             if let Some(e) = host_apply_u8(op, a, b) {
                 out.push(case_u8(op, a, b, e));
             }
         }
     }
+    // The measured divergence witnesses that decided the native-width
+    // contract, pinned verbatim (see the block comment above):
+    // Metal's u8 rotl(0x81, 1) = 0x03 (the widened reference said
+    // 0x02), SPIR-V's rotl(0x80, 1) = 0x01 (vs 0x00), and Metal's
+    // satadd(200, 200) = 255 (vs the store-truncated 144). Rotr at
+    // the same bit pattern pins the count-cast compile fix.
+    out.push(case_u8(BinOp::Rotl, 0x81, 1, 0x03));
+    out.push(case_u8(BinOp::Rotl, 0x80, 1, 0x01));
+    out.push(case_u8(BinOp::Rotr, 0x81, 1, 0xC0));
+    out.push(case_u8(BinOp::SatAdd, 200, 200, 255));
     out
 }
 
 fn cases_i8() -> Vec<OpCase> {
     let mut out = Vec::new();
-    for &op in INT_BINOPS {
+    for &op in INT_BINOPS.iter().chain(ROTATE_OPS) {
         for &(a, b) in i8_inputs() {
             if let Some(e) = host_apply_i8(op, a, b) {
                 out.push(case_i8(op, a, b, e));
@@ -1186,19 +1221,24 @@ fn cases_i8() -> Vec<OpCase> {
 
 fn cases_u16() -> Vec<OpCase> {
     let mut out = Vec::new();
-    for &op in INT_BINOPS {
+    for &op in INT_BINOPS.iter().chain(UNSIGNED_SAT_OPS).chain(ROTATE_OPS) {
         for &(a, b) in u16_inputs() {
             if let Some(e) = host_apply_u16(op, a, b) {
                 out.push(case_u16(op, a, b, e));
             }
         }
     }
+    // The u16 face of the same witnesses: rotate wraps into bit 0 at
+    // the 16-bit width, saturating add clamps at 0xFFFF.
+    out.push(case_u16(BinOp::Rotl, 0x8001, 1, 0x0003));
+    out.push(case_u16(BinOp::Rotr, 0x8001, 1, 0xC000));
+    out.push(case_u16(BinOp::SatAdd, 50_000, 50_000, 0xFFFF));
     out
 }
 
 fn cases_i16() -> Vec<OpCase> {
     let mut out = Vec::new();
-    for &op in INT_BINOPS {
+    for &op in INT_BINOPS.iter().chain(ROTATE_OPS) {
         for &(a, b) in i16_inputs() {
             if let Some(e) = host_apply_i16(op, a, b) {
                 out.push(case_i16(op, a, b, e));
@@ -2308,6 +2348,19 @@ fn cases_cast() -> Vec<OpCase> {
         ));
     }
 
+    // i32 → u64 sign-extends (C semantics): −1 → 2^64 − 1. The wide
+    // face of the signed → u64 contract the narrow cast lane pins —
+    // the reference's `eval_cast` used to mask at the source width
+    // here too, so the negative rows pin the wide fix as well.
+    for &a in &[0i32, 1, -1, 42, -42, i32::MIN, i32::MAX] {
+        out.push(case_cast(
+            RawValues::I32(vec![a]),
+            RawValues::U64(vec![a as u64]),
+            ScalarType::I32,
+            ScalarType::U64,
+        ));
+    }
+
     out
 }
 
@@ -2327,17 +2380,16 @@ fn cases_cast() -> Vec<OpCase> {
 //   - Out-of-range / NaN float → int: non-portable per the existing
 //     f32 → u32/i32 contract (the reference saturates, the native
 //     backends do their native conversion). In-range inputs only.
-//   - Negative signed-narrow → u64: the reference zero-extends from
-//     the *source* width (i8 −1 → 255), while MSL's C conversion
-//     sign-extends to the full 64 bits (measured: i8 −1 → 2^64 − 1)
-//     — numpy and the scope contract side with MSL. The reference's
-//     `eval_cast` u64 arm masks to the source width for narrow *and*
-//     i32 sources alike, so this is a pre-existing wide-int gap
-//     surfacing at narrow width, not a narrow regression; rows land
-//     when the u64-extension contract is settled. Non-negative
-//     signed sources agree on every backend and are pinned below.
-//     Signed-narrow → i64 sign-extends identically everywhere and
-//     is pinned with negative values.
+//
+// Signed → u64 sign-extends (C semantics, numpy's behavior): i8 −1 →
+// 2^64 − 1, for narrow AND i32 sources — the decided contract after
+// the narrow rows caught the reference's `eval_cast` u64 arm masking
+// at the *source* width (i8 −1 → 255). MSL's C conversion and both
+// SPIR-V emitters' OpSConvert path already sign-extended; negative
+// signed sources are pinned below at every source width (the i32 →
+// u64 rows live in the wide cast lane). Signed-narrow → i64
+// sign-extends identically everywhere and is pinned with negative
+// values.
 
 fn cases_cast_narrow() -> Vec<OpCase> {
     let mut out = Vec::new();
@@ -2357,8 +2409,8 @@ fn cases_cast_narrow() -> Vec<OpCase> {
         out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
     }
 
-    // i8 → everything (u64 targets: non-negative sources only — see
-    // the block comment).
+    // i8 → everything (u64 targets sign-extend: −1 → 2^64 − 1 — the
+    // Rust `as` oracle IS the C conversion).
     for &a in &[0i8, 1, -1, i8::MIN, i8::MAX] {
         let v =
             |x: RawValues, to: ScalarType| case_cast(RawValues::I8(vec![a]), x, ScalarType::I8, to);
@@ -2367,12 +2419,10 @@ fn cases_cast_narrow() -> Vec<OpCase> {
         out.push(v(RawValues::I16(vec![a as i16]), ScalarType::I16));
         out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
         out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
         out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
         out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
         out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
-        if a >= 0 {
-            out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
-        }
     }
 
     // u16 → everything.
@@ -2391,7 +2441,7 @@ fn cases_cast_narrow() -> Vec<OpCase> {
         out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
     }
 
-    // i16 → everything (u64 targets: non-negative sources only).
+    // i16 → everything (u64 targets sign-extend).
     for &a in &[0i16, 1, -1, i16::MIN, i16::MAX] {
         let v = |x: RawValues, to: ScalarType| {
             case_cast(RawValues::I16(vec![a]), x, ScalarType::I16, to)
@@ -2401,12 +2451,10 @@ fn cases_cast_narrow() -> Vec<OpCase> {
         out.push(v(RawValues::U16(vec![a as u16]), ScalarType::U16));
         out.push(v(RawValues::U32(vec![a as u32]), ScalarType::U32));
         out.push(v(RawValues::I32(vec![a as i32]), ScalarType::I32));
+        out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
         out.push(v(RawValues::I64(vec![a as i64]), ScalarType::I64));
         out.push(v(RawValues::F32(vec![a as f32]), ScalarType::F32));
         out.push(v(RawValues::F64(vec![a as f64]), ScalarType::F64));
-        if a >= 0 {
-            out.push(v(RawValues::U64(vec![a as u64]), ScalarType::U64));
-        }
     }
 
     // Wide ints → narrow: truncate mod 2^w. The value list crosses

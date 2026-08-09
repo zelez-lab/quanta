@@ -112,6 +112,11 @@ fn dispatch_pair_typed(
         (RawValues::I32(a), RawValues::I32(b), RawValues::F32(_)) => {
             dispatch_pair::<i32, f32>(gpu, wave, a, b, RawValues::F32)
         }
+        // i32 → u64 (sign-extends — the wide face of the signed → u64
+        // contract).
+        (RawValues::I32(a), RawValues::I32(b), RawValues::U64(_)) => {
+            dispatch_pair::<i32, u64>(gpu, wave, a, b, RawValues::U64)
+        }
         // Narrow ints ride native-width typed fields (`Field<u8>` etc.
         // — 1-/2-byte stride, the §5 storage contract). Symmetric
         // BinOp/UnaryOp arms first.

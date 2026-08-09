@@ -56,10 +56,34 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb),
                 BinOp::Shr => va.wrapping_shr(vb),
-                BinOp::Rotl => va.rotate_left(vb),
-                BinOp::Rotr => va.rotate_right(vb),
-                BinOp::SatAdd => va.saturating_add(vb),
-                BinOp::SatSub => va.saturating_sub(vb),
+                // Rotate and saturate are width-dependent, not ring ops:
+                // they run at the TYPE's width, not the 32-bit register
+                // width. Truncate the operand to the storage width,
+                // rotate/saturate there (Rust's narrow rotate takes the
+                // count mod the width — the same modular count the
+                // emitters' masked-rotate / `rotate()` builtin uses),
+                // then zero-extend the result back to the canonical u32
+                // carrier exactly like a load would.
+                BinOp::Rotl => match ty {
+                    ScalarType::U8 => (va as u8).rotate_left(vb) as u32,
+                    ScalarType::U16 => (va as u16).rotate_left(vb) as u32,
+                    _ => va.rotate_left(vb),
+                },
+                BinOp::Rotr => match ty {
+                    ScalarType::U8 => (va as u8).rotate_right(vb) as u32,
+                    ScalarType::U16 => (va as u16).rotate_right(vb) as u32,
+                    _ => va.rotate_right(vb),
+                },
+                BinOp::SatAdd => match ty {
+                    ScalarType::U8 => (va as u8).saturating_add(vb as u8) as u32,
+                    ScalarType::U16 => (va as u16).saturating_add(vb as u16) as u32,
+                    _ => va.saturating_add(vb),
+                },
+                BinOp::SatSub => match ty {
+                    ScalarType::U8 => (va as u8).saturating_sub(vb as u8) as u32,
+                    ScalarType::U16 => (va as u16).saturating_sub(vb as u16) as u32,
+                    _ => va.saturating_sub(vb),
+                },
             })
         }
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
@@ -88,10 +112,31 @@ pub(super) fn eval_binop(a: Value, b: Value, op: &BinOp, ty: &ScalarType) -> Val
                 BinOp::BitXor => va ^ vb,
                 BinOp::Shl => va.wrapping_shl(vb as u32),
                 BinOp::Shr => va.wrapping_shr(vb as u32),
-                BinOp::Rotl => va.rotate_left(vb as u32),
-                BinOp::Rotr => va.rotate_right(vb as u32),
-                BinOp::SatAdd => va.saturating_add(vb),
-                BinOp::SatSub => va.saturating_sub(vb),
+                // Native-width rotate/saturate — see the unsigned arm.
+                // The count's bit pattern is taken mod the width (a
+                // negative count rotates by its low bits, matching the
+                // emitters); signed results sign-extend back to the
+                // canonical i32 carrier exactly like a load would.
+                BinOp::Rotl => match ty {
+                    ScalarType::I8 => (va as i8).rotate_left(vb as u32) as i32,
+                    ScalarType::I16 => (va as i16).rotate_left(vb as u32) as i32,
+                    _ => va.rotate_left(vb as u32),
+                },
+                BinOp::Rotr => match ty {
+                    ScalarType::I8 => (va as i8).rotate_right(vb as u32) as i32,
+                    ScalarType::I16 => (va as i16).rotate_right(vb as u32) as i32,
+                    _ => va.rotate_right(vb as u32),
+                },
+                BinOp::SatAdd => match ty {
+                    ScalarType::I8 => (va as i8).saturating_add(vb as i8) as i32,
+                    ScalarType::I16 => (va as i16).saturating_add(vb as i16) as i32,
+                    _ => va.saturating_add(vb),
+                },
+                BinOp::SatSub => match ty {
+                    ScalarType::I8 => (va as i8).saturating_sub(vb as i8) as i32,
+                    ScalarType::I16 => (va as i16).saturating_sub(vb as i16) as i32,
+                    _ => va.saturating_sub(vb),
+                },
             })
         }
         ScalarType::U64 => {
@@ -354,21 +399,24 @@ pub(super) fn eval_math(func: &MathFn, args: &[Value], ty: &ScalarType) -> Value
 }
 
 pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value {
-    // Cast semantics: when widening from a narrower unsigned source,
-    // the WASM/IR convention is **zero-extend** the bit pattern. The
-    // raw `val.as_u64()` would sign-extend when `val` happens to be
-    // tagged `Value::I32(-x)` even though the lowerer's `from` says
-    // U32. Honour `from` explicitly so the same bit pattern gives
-    // the same numeric result regardless of how the source Value
-    // was tagged upstream.
+    // Widening cast semantics follow C (numpy's behavior, and what the
+    // native backends emit): the SOURCE's signedness decides the
+    // extension, regardless of the target's. Unsigned sources
+    // zero-extend from their width; signed sources sign-extend to the
+    // full 64 bits even for a u64 target — `i8(-1) as u64` is
+    // 0xFFFF_FFFF_FFFF_FFFF (Metal's C conversions, SPIR-V's
+    // OpSConvert path in both emitter families).
     //
-    // Mask-then-extend matches the WASM `i64.extend_i32_u` / Quanta
-    // `Cast { from: U32, to: U64 }` semantics: drop high bits to the
-    // source width, then widen.
+    // Both forms honour `from` explicitly rather than trusting the
+    // Value tag: the raw `val.as_u64()` would sign-extend when `val`
+    // happens to be tagged `Value::I32(-x)` even though the lowerer's
+    // `from` says U32. Mask-then-extend matches the WASM
+    // `i64.extend_i32_u` / Quanta `Cast { from: U32, to: U64 }`
+    // semantics: drop high bits to the source width, then widen.
     let zero_extended_u64: u64 = match from {
-        ScalarType::U8 | ScalarType::I8 | ScalarType::I4 => (val.as_u32() & 0xFF) as u64,
-        ScalarType::U16 | ScalarType::I16 => (val.as_u32() & 0xFFFF) as u64,
-        ScalarType::U32 | ScalarType::I32 => val.as_u32() as u64,
+        ScalarType::U8 => (val.as_u32() & 0xFF) as u64,
+        ScalarType::U16 => (val.as_u32() & 0xFFFF) as u64,
+        ScalarType::U32 => val.as_u32() as u64,
         _ => val.as_u64(),
     };
     let sign_extended_i64: i64 = match from {
@@ -388,8 +436,15 @@ pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
             Value::I32(val.as_i32())
         }
-        // For widening to u64: zero-extend honouring `from`.
-        ScalarType::U64 => Value::U64(zero_extended_u64),
+        // For widening to u64: the source's signedness decides —
+        // signed sources sign-extend (C semantics), unsigned sources
+        // zero-extend from their width.
+        ScalarType::U64 => Value::U64(match from {
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                sign_extended_i64 as u64
+            }
+            _ => zero_extended_u64,
+        }),
         // For widening to i64: sign-extend honouring `from`.
         ScalarType::I64 => Value::I64(sign_extended_i64),
         ScalarType::Bool => Value::Bool(val.as_bool()),
@@ -781,6 +836,160 @@ mod proptest_eval {
             20 => MathFn::Round,
             21 => MathFn::Fma,
             _ => unreachable!(),
+        }
+    }
+}
+
+// ── Width-semantics tests (rotate / saturate / widen) ───────────────────────
+//
+// Pins the native-width contracts the emitters share: rotate and
+// saturate run at the TYPE's width (count mod width), and widening to
+// u64 sign-extends signed sources (C semantics). The witness values
+// are the measured Metal/SPIR-V divergences that decided the contracts.
+
+#[cfg(test)]
+mod width_semantics {
+    use super::*;
+    use quanta_ir::{BinOp, ScalarType};
+
+    fn binop_u32(a: u32, b: u32, op: BinOp, ty: ScalarType) -> u32 {
+        eval_binop(Value::U32(a), Value::U32(b), &op, &ty).as_u32()
+    }
+
+    fn binop_i32(a: i32, b: i32, op: BinOp, ty: ScalarType) -> i32 {
+        eval_binop(Value::I32(a), Value::I32(b), &op, &ty).as_i32()
+    }
+
+    /// The Metal witness: u8 rotl(0x81, 1) = 0x03 — the high bit wraps
+    /// to bit 0 at the 8-bit width, not bit 8 of the wide register.
+    #[test]
+    fn rotl_u8_rotates_at_native_width() {
+        assert_eq!(binop_u32(0x81, 1, BinOp::Rotl, ScalarType::U8), 0x03);
+        // The SPIR-V witness: 0x80 rotl 1 = 0x01.
+        assert_eq!(binop_u32(0x80, 1, BinOp::Rotl, ScalarType::U8), 0x01);
+        // Count == width and beyond: taken mod 8.
+        assert_eq!(binop_u32(0xAA, 8, BinOp::Rotl, ScalarType::U8), 0xAA);
+        assert_eq!(binop_u32(0xAA, 9, BinOp::Rotl, ScalarType::U8), 0x55);
+    }
+
+    #[test]
+    fn rotr_u8_rotates_at_native_width() {
+        assert_eq!(binop_u32(0x81, 1, BinOp::Rotr, ScalarType::U8), 0xC0);
+        assert_eq!(binop_u32(0x01, 1, BinOp::Rotr, ScalarType::U8), 0x80);
+        assert_eq!(binop_u32(0xAA, 8, BinOp::Rotr, ScalarType::U8), 0xAA);
+    }
+
+    #[test]
+    fn rotl_u16_rotates_at_native_width() {
+        assert_eq!(binop_u32(0x8001, 1, BinOp::Rotl, ScalarType::U16), 0x0003);
+        assert_eq!(binop_u32(0xAAAA, 17, BinOp::Rotl, ScalarType::U16), 0x5555);
+    }
+
+    /// Signed narrow rotates are bit-pattern rotates at the native
+    /// width; the result sign-extends into the canonical i32 carrier.
+    /// A negative count rotates by its low bits (mod width) — the
+    /// same modular count the emitters compute.
+    #[test]
+    fn rot_i8_native_width_and_sign_extension() {
+        // 0x80 rotl 1 = 0x01.
+        assert_eq!(binop_i32(i8::MIN as i32, 1, BinOp::Rotl, ScalarType::I8), 1);
+        // 0x01 rotr 1 = 0x80 → sign-extends to -128.
+        assert_eq!(binop_i32(1, 1, BinOp::Rotr, ScalarType::I8), -128);
+        // rotl by -1 ≡ rotl by 7 ≡ rotr by 1.
+        assert_eq!(
+            binop_i32(2, -1, BinOp::Rotl, ScalarType::I8),
+            binop_i32(2, 1, BinOp::Rotr, ScalarType::I8),
+        );
+    }
+
+    #[test]
+    fn rot_i16_native_width_and_sign_extension() {
+        assert_eq!(
+            binop_i32(i16::MIN as i32, 1, BinOp::Rotl, ScalarType::I16),
+            1
+        );
+        assert_eq!(binop_i32(1, 1, BinOp::Rotr, ScalarType::I16), -32768);
+    }
+
+    /// The Metal witness: u8 satadd(200, 200) = 255 — clamped at the
+    /// TYPE's bound, not stored-truncated from a 32-bit 400.
+    #[test]
+    fn sat_narrow_clamps_at_type_bounds() {
+        assert_eq!(binop_u32(200, 200, BinOp::SatAdd, ScalarType::U8), 255);
+        assert_eq!(binop_u32(0xFF, 1, BinOp::SatAdd, ScalarType::U8), 255);
+        assert_eq!(binop_u32(100, 100, BinOp::SatAdd, ScalarType::U8), 200);
+        assert_eq!(binop_u32(5, 200, BinOp::SatSub, ScalarType::U8), 0);
+        assert_eq!(
+            binop_u32(50_000, 50_000, BinOp::SatAdd, ScalarType::U16),
+            65_535
+        );
+        assert_eq!(binop_u32(0, 5, BinOp::SatSub, ScalarType::U16), 0);
+        // Signed narrow saturation (reference completeness — the
+        // matrix generates unsigned sat only).
+        assert_eq!(binop_i32(100, 100, BinOp::SatAdd, ScalarType::I8), 127);
+        assert_eq!(binop_i32(-100, -100, BinOp::SatAdd, ScalarType::I8), -128);
+        assert_eq!(binop_i32(-100, 100, BinOp::SatSub, ScalarType::I8), -128);
+        assert_eq!(
+            binop_i32(30_000, 30_000, BinOp::SatAdd, ScalarType::I16),
+            32_767
+        );
+    }
+
+    /// Wide rotate/saturate keep their 32-/64-bit semantics.
+    #[test]
+    fn wide_rotate_and_sat_unchanged() {
+        assert_eq!(
+            binop_u32(0x8000_0000, 1, BinOp::Rotl, ScalarType::U32),
+            0x0000_0001
+        );
+        assert_eq!(
+            binop_u32(u32::MAX, 1, BinOp::SatAdd, ScalarType::U32),
+            u32::MAX
+        );
+    }
+
+    /// Signed → u64 sign-extends (C semantics): i8(-1) → 2^64 − 1.
+    #[test]
+    fn cast_signed_to_u64_sign_extends() {
+        let cases: &[(Value, ScalarType, u64)] = &[
+            (Value::I32(-1), ScalarType::I8, u64::MAX),
+            (
+                Value::I32(i8::MIN as i32),
+                ScalarType::I8,
+                0xFFFF_FFFF_FFFF_FF80,
+            ),
+            (Value::I32(-1), ScalarType::I16, u64::MAX),
+            (
+                Value::I32(i16::MIN as i32),
+                ScalarType::I16,
+                0xFFFF_FFFF_FFFF_8000,
+            ),
+            (Value::I32(-1), ScalarType::I32, u64::MAX),
+            (Value::I32(i32::MIN), ScalarType::I32, 0xFFFF_FFFF_8000_0000),
+            // Non-negative signed sources still widen numerically.
+            (Value::I32(0x7F), ScalarType::I8, 0x7F),
+            (Value::I32(42), ScalarType::I32, 42),
+        ];
+        for (val, from, expected) in cases {
+            let got = eval_cast(*val, from, &ScalarType::U64);
+            assert_eq!(got.as_u64(), *expected, "cast {from:?} -> u64");
+        }
+    }
+
+    /// Unsigned sources keep zero-extension from their width, even
+    /// when the carrier Value is tagged signed-negative.
+    #[test]
+    fn cast_unsigned_to_u64_zero_extends() {
+        let cases: &[(Value, ScalarType, u64)] = &[
+            (Value::U32(0xFF), ScalarType::U8, 0xFF),
+            (Value::I32(-1), ScalarType::U8, 0xFF),
+            (Value::U32(0xFFFF), ScalarType::U16, 0xFFFF),
+            (Value::U32(u32::MAX), ScalarType::U32, 0xFFFF_FFFF),
+            (Value::I32(-1), ScalarType::U32, 0xFFFF_FFFF),
+        ];
+        for (val, from, expected) in cases {
+            let got = eval_cast(*val, from, &ScalarType::U64);
+            assert_eq!(got.as_u64(), *expected, "cast {from:?} -> u64");
         }
     }
 }

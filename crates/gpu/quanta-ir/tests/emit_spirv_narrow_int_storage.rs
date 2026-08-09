@@ -29,10 +29,13 @@ const OP_LOAD: u32 = 61;
 const OP_STORE: u32 = 62;
 const OP_DECORATE: u32 = 71;
 const OP_U_CONVERT: u32 = 113;
+const OP_SELECT: u32 = 169;
+const OP_UGREATER_THAN: u32 = 172;
 const OP_ULESS_THAN: u32 = 176;
 const OP_SLESS_THAN: u32 = 177;
 const OP_SHIFT_RIGHT_ARITHMETIC: u32 = 195;
 const OP_SHIFT_LEFT_LOGICAL: u32 = 196;
+const OP_BITWISE_AND: u32 = 199;
 const DECORATION_ARRAY_STRIDE: u32 = 6;
 
 /// `(bit width, signedness, stride, name)` rows for the four narrow
@@ -308,6 +311,49 @@ fn accum_kernel(in_ty: ScalarType, name: &str) -> KernelDef {
         ],
         body,
         6,
+    )
+}
+
+/// `out[i] = a[i] <op> b[i]` over `ty` storage — the width-dependent
+/// BinOp seams (saturating clamp, rotate masking).
+fn binop_kernel(op: BinOp, ty: ScalarType, name: &str) -> KernelDef {
+    let body = vec![
+        KernelOp::QuarkId { dst: Reg(0) },
+        KernelOp::Load {
+            dst: Reg(1),
+            field: 0,
+            index: Reg(0),
+            ty,
+        },
+        KernelOp::Load {
+            dst: Reg(2),
+            field: 1,
+            index: Reg(0),
+            ty,
+        },
+        KernelOp::BinOp {
+            dst: Reg(3),
+            a: Reg(1),
+            b: Reg(2),
+            op,
+            ty,
+        },
+        KernelOp::Store {
+            field: 2,
+            index: Reg(0),
+            src: Reg(3),
+            ty,
+        },
+    ];
+    def(
+        name,
+        vec![
+            field_read("a", 0, ty),
+            field_read("b", 1, ty),
+            field_write("out", 2, ty),
+        ],
+        body,
+        4,
     )
 }
 
@@ -643,5 +689,110 @@ fn wide_int_kernels_declare_no_narrow_capabilities() {
         assert!(!has_capability(&insts, CAP_STORAGE_BUFFER_16BIT));
         assert!(!has_extension(&insts, "SPV_KHR_8bit_storage"));
         spirv_val(&name, &spirv);
+    }
+}
+
+#[test]
+fn narrow_satadd_clamps_at_the_type_bound() {
+    // u8/u16 SatAdd saturates at the TYPE's bound: the sum rides the
+    // 32-bit carrier (which cannot wrap for canonical narrow
+    // operands), so the overflow test is `sum > MAX_w` against the
+    // narrow max (OpUGreaterThan), selecting the max on overflow —
+    // not the wide wrap test `sum < a`.
+    for (ty, max, tag) in [
+        (ScalarType::U8, 0xFFu32, "u8"),
+        (ScalarType::U16, 0xFFFF, "u16"),
+    ] {
+        let name = format!("{tag}_satadd");
+        let spirv = emit_spirv::emit(&binop_kernel(BinOp::SatAdd, ty, &name)).unwrap();
+        let w = words(&spirv);
+        let insts = instructions(&w);
+        let max_id = constant_u32(&insts, max)
+            .unwrap_or_else(|| panic!("{name}: narrow max constant {max:#x} must be emitted"));
+        let over = result_of(&insts, OP_UGREATER_THAN, |a| a.get(3) == Some(&max_id))
+            .unwrap_or_else(|| panic!("{name}: overflow test must be `sum > {max:#x}`"));
+        assert!(
+            result_of(&insts, OP_SELECT, |a| a.get(2) == Some(&over)
+                && a.get(3) == Some(&max_id))
+            .is_some(),
+            "{name}: overflow must select the narrow max"
+        );
+        assert!(
+            !insts.iter().any(|(op, _)| *op == OP_ULESS_THAN),
+            "{name}: the wide wrap test (sum < a) must not appear"
+        );
+        spirv_val(&name, &spirv);
+    }
+
+    // Wide control: u32 SatAdd keeps the wrap test (`sum < a`) and
+    // the 32-bit max.
+    let spirv =
+        emit_spirv::emit(&binop_kernel(BinOp::SatAdd, ScalarType::U32, "u32_satadd")).unwrap();
+    let w = words(&spirv);
+    let insts = instructions(&w);
+    assert!(
+        constant_u32(&insts, u32::MAX).is_some(),
+        "u32_satadd: 32-bit max constant must be emitted"
+    );
+    assert!(
+        insts.iter().any(|(op, _)| *op == OP_ULESS_THAN),
+        "u32_satadd: wide overflow test is `sum < a`"
+    );
+    assert!(
+        !insts.iter().any(|(op, _)| *op == OP_UGREATER_THAN),
+        "u32_satadd: no narrow clamp compare on the wide path"
+    );
+    spirv_val("u32_satadd", &spirv);
+}
+
+#[test]
+fn narrow_rotate_masks_and_reextends_signed_carriers() {
+    // Signed narrow rotates mask the SIGN-extended carrier to the
+    // storage width before the shift decomposition (an OpBitwiseAnd
+    // against the width mask — without it the logical right shift
+    // drags the extension bits into the low w bits), and re-extend
+    // the result (a third shl + arithmetic-shr pair beyond the two
+    // the loads contribute). Unsigned narrow carriers are already
+    // zero-extended: no width mask, no arithmetic shifts.
+    for (sty, uty, mask, dist, tag) in [
+        (ScalarType::I8, ScalarType::U8, 0xFFu32, 24u32, "i8"),
+        (ScalarType::I16, ScalarType::U16, 0xFFFF, 16, "i16"),
+    ] {
+        for op in [BinOp::Rotl, BinOp::Rotr] {
+            let name = format!("{tag}_rot");
+            let spirv = emit_spirv::emit(&binop_kernel(op, sty, &name)).unwrap();
+            let w = words(&spirv);
+            let insts = instructions(&w);
+            let mask_id = constant_u32(&insts, mask)
+                .unwrap_or_else(|| panic!("{name}: width-mask constant {mask:#x} must exist"));
+            assert!(
+                result_of(&insts, OP_BITWISE_AND, |a| a.get(3) == Some(&mask_id)).is_some(),
+                "{name}: the carrier must be masked to the width before the shifts"
+            );
+            let dist_id = constant_u32(&insts, dist)
+                .unwrap_or_else(|| panic!("{name}: extension distance {dist} must exist"));
+            let ashr_count = insts
+                .iter()
+                .filter(|(op, a)| *op == OP_SHIFT_RIGHT_ARITHMETIC && a.get(3) == Some(&dist_id))
+                .count();
+            assert_eq!(
+                ashr_count, 3,
+                "{name}: two load widens + the result re-extension = 3 \
+                 arithmetic shifts by {dist}"
+            );
+            spirv_val(&name, &spirv);
+
+            // Unsigned twin: zero-extended carrier — no width mask,
+            // no sign-extension shifts.
+            let uname = format!("u{}_rot", &tag[1..]);
+            let spirv = emit_spirv::emit(&binop_kernel(op, uty, &uname)).unwrap();
+            let w = words(&spirv);
+            let insts = instructions(&w);
+            assert!(
+                !insts.iter().any(|(op, _)| *op == OP_SHIFT_RIGHT_ARITHMETIC),
+                "{uname}: no arithmetic shifts on the unsigned path"
+            );
+            spirv_val(&uname, &spirv);
+        }
     }
 }

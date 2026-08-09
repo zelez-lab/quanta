@@ -245,6 +245,24 @@ impl SpvEmitter {
                 ),
                 _ => (self.emit_constant_u32(mask), self.emit_constant_u32(width)),
             };
+            // Signed narrow values ride the carrier SIGN-extended; the
+            // decomposition's logical right shift would drag the
+            // extension bits into the low w bits. Mask the value to
+            // its width first, and re-extend the result below so the
+            // register stays canonical. Unsigned narrow carriers are
+            // already zero-extended — no mask needed. Mirrors the JIT
+            // emitter.
+            let narrow_signed_bits: Option<u32> = match ty {
+                ScalarType::I8 => Some(8),
+                ScalarType::I16 => Some(16),
+                _ => None,
+            };
+            let a_rot = if let Some(bits) = narrow_signed_bits {
+                let u32_ty = self.ensure_type_u32();
+                self.narrow_int_widen_to_u32(a_val, u32_ty, bits, false)
+            } else {
+                a_val
+            };
             let k_masked = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
@@ -272,20 +290,29 @@ impl SpvEmitter {
             Self::emit_op(
                 &mut self.sec_function,
                 OP_SHIFT_LEFT_LOGICAL,
-                &[result_ty, lo, a_val, shl_amt],
+                &[result_ty, lo, a_rot, shl_amt],
             );
             let hi = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_SHIFT_RIGHT_LOGICAL,
-                &[result_ty, hi, a_val, shr_amt],
+                &[result_ty, hi, a_rot, shr_amt],
             );
-            let result = self.alloc_id();
+            let raw = self.alloc_id();
             Self::emit_op(
                 &mut self.sec_function,
                 OP_BITWISE_OR,
-                &[result_ty, result, lo, hi],
+                &[result_ty, raw, lo, hi],
             );
+            // Re-canonicalize signed narrow results: mask to the width
+            // and sign-extend (the widen helper's shl + arithmetic-shr
+            // does both).
+            let result = if let Some(bits) = narrow_signed_bits {
+                let u32_ty = self.ensure_type_u32();
+                self.narrow_int_widen_to_u32(raw, u32_ty, bits, true)
+            } else {
+                raw
+            };
             self.set_reg(dst, result, result_ty);
             return Ok(());
         }
@@ -396,6 +423,11 @@ impl SpvEmitter {
                 );
                 self.set_reg(dst, raw, result_ty);
             } else if matches!(op, BinOp::SatAdd) {
+                // Saturation clamps at the TYPE's bounds. Narrow values
+                // ride the canonical u32 carrier, so their 32-bit sum
+                // never wraps — overflow is `sum > MAX_w` against the
+                // narrow max; wide types keep the wrap test `sum < a`.
+                // Mirrors the JIT emitter.
                 let sum = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
@@ -403,13 +435,21 @@ impl SpvEmitter {
                     &[result_ty, sum, a_val, b_val],
                 );
                 let bool_ty = self.ensure_type_bool();
-                let overflow = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    OP_ULESS_THAN,
-                    &[bool_ty, overflow, sum, a_val],
-                );
                 let max_val = self.emit_constant_unsigned_max(ty);
+                let overflow = self.alloc_id();
+                if matches!(ty, ScalarType::U8 | ScalarType::U16) {
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_UGREATER_THAN,
+                        &[bool_ty, overflow, sum, max_val],
+                    );
+                } else {
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_ULESS_THAN,
+                        &[bool_ty, overflow, sum, a_val],
+                    );
+                }
                 let result = self.alloc_id();
                 Self::emit_op(
                     &mut self.sec_function,
