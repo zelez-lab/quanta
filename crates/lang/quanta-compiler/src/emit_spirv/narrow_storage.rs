@@ -1,13 +1,93 @@
-//! Narrow-scalar (bf16 / fp8) storage conversions, ported line-for-line
-//! from the JIT emitter (`quanta-ir/src/emit_spirv/ops.rs`) so the AOT and
-//! JIT SPIR-V emitters share one storage contract: bf16 buffers are 16-bit
-//! elements, fp8 buffers are 8-bit elements (native stride, matching the
-//! host upload and the CPU executor); push-constant members stay u32-slot.
+//! Narrow-scalar (bf16 / fp8 / u8 / i8 / u16 / i16) storage conversions,
+//! ported line-for-line from the JIT emitter
+//! (`quanta-ir/src/emit_spirv/ops.rs`) so the AOT and JIT SPIR-V emitters
+//! share one storage contract: bf16/u16/i16 buffers are 16-bit elements,
+//! fp8/u8/i8 buffers are 8-bit elements (native stride, matching the host
+//! upload and the CPU executor); push-constant members stay u32-slot.
 
 use super::constants::*;
 use super::emitter::SpvEmitter;
 
 impl SpvEmitter {
+    // ── narrow-int storage conversions ───────────────────────────────────
+    //
+    // u8/i8/u16/i16 buffers store 8-/16-bit elements at native stride —
+    // the same StorageBuffer8/16BitAccess seam as fp8/bf16 — while the
+    // registers stay the canonical unified u32. Loads widen, stores
+    // truncate (mod 2^w — the wrapping contract). Signedness is a
+    // property of the widen, not the storage element: signed types
+    // sign-extend into the u32 via shl + arithmetic-shr (the emitter's
+    // signedness idiom), matching the CPU interpreter's widen-on-load
+    // (`read_scalar`) and MSL's C integer promotion.
+
+    /// Widen a loaded narrow-int value into the canonical u32 register.
+    /// `loaded_ty` is the type the value was loaded as: the 8-/16-bit
+    /// storage element for buffers, or `%uint` for a push-constant
+    /// member / cast source carrying the value in its low bits (whose
+    /// high bits are discarded — the CPU reference reads only the low
+    /// bytes of a push slot, and mask-then-extends on casts).
+    pub(crate) fn narrow_int_widen_to_u32(
+        &mut self,
+        loaded: u32,
+        loaded_ty: u32,
+        bits: u32,
+        signed: bool,
+    ) -> u32 {
+        let u32_ty = self.ensure_type_u32();
+        let widened = if loaded_ty != u32_ty {
+            let w = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, w, loaded]);
+            w
+        } else {
+            loaded
+        };
+        if signed {
+            // Sign-extend within u32: shift the value's sign bit to bit
+            // 31, then arithmetic-shift back down. Shift opcodes carry
+            // the signedness — the operands stay the canonical `%uint`.
+            let dist = self.emit_constant_u32(32 - bits);
+            let hi = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_LEFT_LOGICAL,
+                &[u32_ty, hi, widened, dist],
+            );
+            let ext = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_RIGHT_ARITHMETIC,
+                &[u32_ty, ext, hi, dist],
+            );
+            ext
+        } else if loaded_ty != u32_ty {
+            // OpUConvert from the narrow element zero-extended — exact.
+            widened
+        } else {
+            // u32 carrier: mask to the value's width (the zero-extend).
+            let mask = self.emit_constant_u32((1u32 << bits) - 1);
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BITWISE_AND,
+                &[u32_ty, out, widened, mask],
+            );
+            out
+        }
+    }
+
+    /// Truncate a canonical-u32 register value to the narrow 8-/16-bit
+    /// storage element type for an OpStore. OpUConvert keeps the low
+    /// bits — mod 2^w, the wrapping store contract.
+    pub(crate) fn narrow_int_truncate_for_store(&mut self, val: u32, storage_ty: u32) -> u32 {
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_U_CONVERT,
+            &[storage_ty, out, val],
+        );
+        out
+    }
+
     // ── bf16 storage conversions ─────────────────────────────────────────
     //
     // bf16 is stored as a 16-bit pattern (the top half of an f32) but
@@ -536,3 +616,7 @@ impl SpvEmitter {
         Self::emit_op(&mut self.sec_function, OP_STORE, &[chain, merged, 0x2, 4]);
     }
 }
+
+#[cfg(test)]
+#[path = "narrow_int_storage_tests.rs"]
+mod narrow_int_storage_tests;

@@ -16,6 +16,20 @@ fn fp8_dims(ty: ScalarType) -> Option<(u32, u32)> {
     }
 }
 
+/// `(bit_width, signed)` for a narrow int scalar type, else `None`.
+/// These four store at native 1-/2-byte stride and widen to the
+/// canonical u32 register at the Load boundary (i4 is not one of them —
+/// it rides the PackedU32 nibble path).
+fn narrow_int_info(ty: ScalarType) -> Option<(u32, bool)> {
+    match ty {
+        ScalarType::U8 => Some((8, false)),
+        ScalarType::I8 => Some((8, true)),
+        ScalarType::U16 => Some((16, false)),
+        ScalarType::I16 => Some((16, true)),
+        _ => None,
+    }
+}
+
 impl SpvEmitter {
     pub(crate) fn emit_op_load(
         &mut self,
@@ -62,6 +76,12 @@ impl SpvEmitter {
                 self.bf16_unpack_to_f32(loaded, elem_ty)
             } else if let Some((eb, mb)) = fp8_dims(ty) {
                 self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+            } else if let Some((bits, signed)) = narrow_int_info(ty) {
+                // Narrow ints ride a u32 member too; mask /
+                // sign-extend its low bits, matching the CPU
+                // reference which reads only the member's low
+                // bytes at the slot offset.
+                self.narrow_int_widen_to_u32(loaded, elem_ty, bits, signed)
             } else {
                 loaded
             };
@@ -86,8 +106,9 @@ impl SpvEmitter {
             );
             let loaded = self.alloc_id();
             // Load with the *storage* element type at its native alignment
-            // (2 for bf16, 1 for fp8), then unpack to the body type
-            // (u16/u8 → f32). Memory operand 0x2 = Aligned.
+            // (2 for bf16/u16/i16, 1 for fp8/u8/i8), then widen to the body
+            // type (u16/u8 → f32 for the narrow floats, → canonical u32 for
+            // the narrow ints). Memory operand 0x2 = Aligned.
             let alignment = self.storage_byte_size(ty);
             Self::emit_op(
                 &mut self.sec_function,
@@ -98,6 +119,8 @@ impl SpvEmitter {
                 self.bf16_unpack_to_f32(loaded, elem_ty)
             } else if let Some((eb, mb)) = fp8_dims(ty) {
                 self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+            } else if let Some((bits, signed)) = narrow_int_info(ty) {
+                self.narrow_int_widen_to_u32(loaded, elem_ty, bits, signed)
             } else {
                 loaded
             };
@@ -125,11 +148,17 @@ impl SpvEmitter {
         // materialized as an int first — OpStore is strictly typed and there is
         // no bool buffer element type. Other type combinations are already
         // reconciled upstream by the producing op.
+        // Materialize in the BODY type (canonical u32 register for
+        // narrow ints, f32 for the narrow floats), never the storage
+        // element type: a coercion into an 8-/16-bit element would
+        // need constants of a type this module only holds for
+        // storage, and the pack/truncate below narrows anyway.
         let bool_ty = self.ensure_type_bool();
         if elem_ty != bool_ty && self.bool_vals.contains(&val) {
             let as_uint = self.bool_to_int(val);
             let uint_ty = self.ensure_type_u32();
-            val = self.coerce_to(as_uint, uint_ty, elem_ty);
+            let body_ty = self.scalar_type_id(ty);
+            val = self.coerce_to(as_uint, uint_ty, body_ty);
         }
         // int4 PackedU32: write nibble idx%8 of word idx/8 via
         // read-modify-write (single-quark in the op-matrix).
@@ -138,10 +167,15 @@ impl SpvEmitter {
             return Ok(());
         }
         // bf16/fp8: pack the f32 body value into its narrow storage bits.
+        // Narrow ints: truncate the canonical u32 register to the
+        // 8-/16-bit storage element (mod 2^w — the wrapping
+        // contract, for free).
         let val = if matches!(ty, ScalarType::BF16) {
             self.bf16_pack_from_f32(val)
         } else if let Some((eb, mb)) = fp8_dims(ty) {
             self.fp8_pack_from_f32(val, eb, mb)
+        } else if narrow_int_info(ty).is_some() {
+            self.narrow_int_truncate_for_store(val, elem_ty)
         } else {
             val
         };
@@ -562,9 +596,44 @@ impl SpvEmitter {
             ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
         );
 
+        // Int → narrow int (u8/i8/u16/i16 target): the CPU
+        // reference mask-then-extends on every cast (`eval_cast`)
+        // and MSL's per-op register typing truncates on
+        // assignment, so the register must hold the REDUCED
+        // value, not an alias of the wide one — a later compare /
+        // div / float-cast in the same kernel sees the same value
+        // on every backend. Reduce within the canonical u32
+        // (64-bit sources truncate down first); float sources
+        // keep the raw Convert* below (out-of-range float→int is
+        // the documented non-portable case). bf16/fp8 sources are
+        // float-register (f32 body) here even though this
+        // emitter's `from_float` flag doesn't count them.
+        let src_ty = self.reg_type_id(src)?;
+        let from_float_reg = from_float
+            || matches!(
+                from,
+                ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3
+            );
+        if let (false, Some((bits, signed))) = (from_float_reg, narrow_int_info(to)) {
+            let u32_ty = self.ensure_type_u32();
+            let from_64 = self.type_u64 == Some(src_ty) || self.type_i64 == Some(src_ty);
+            let narrowed = if from_64 {
+                let t = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, t, src_val]);
+                t
+            } else {
+                src_val
+            };
+            // The u32-carrier path of the widen helper IS
+            // mask-then-extend: AND for unsigned targets,
+            // shl + arithmetic-shr for signed ones.
+            let reduced = self.narrow_int_widen_to_u32(narrowed, u32_ty, bits, signed);
+            self.set_reg(dst, reduced, result_ty);
+            return Ok(());
+        }
+
         // Same canonical SPIR-V type (e.g. u32↔i32 — both `%uint`): a pure
         // alias. OpBitcast between identical types is invalid SPIR-V.
-        let src_ty = self.reg_type_id(src)?;
         if src_ty == result_ty {
             self.set_reg(dst, src_val, result_ty);
             return Ok(());
