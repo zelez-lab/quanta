@@ -441,7 +441,7 @@ matters.
 
 | Method | Description |
 |--------|-------------|
-| `.msaa(n)` | Render the pass at n× MSAA into a **pooled intermediate** (created on first use, keyed by the target's handle, reused across passes); the pass's target stays the single-sample resolve destination |
+| `.msaa(n)` | Render the pass at n× MSAA into a **pooled intermediate** (created on first use, reused across passes — owned targets key it by handle, acquired surface frames by shape, so every frame of one surface configuration shares ONE intermediate); the pass's target stays the single-sample resolve destination |
 | `.msaa_resolve()` | End THIS pass with a subpass resolve of the intermediate into the target; without it the pass ends with `Store` and the samples survive into the next `.msaa(n)` pass |
 | `.load()` | Explicitly mark the pass as loading the intermediate (the default when no `.clear()` is recorded) |
 
@@ -471,9 +471,15 @@ rails, all `InvalidParam` at `pulse()`: `.msaa_resolve()` or `.load()`
 without `.msaa(n)`; `.msaa(n)` on a target that is itself multisampled;
 combining `.msaa(n)` with explicit `.color_targets()`. Changing `n`
 between passes over one target evicts and recreates the intermediate.
-Pool lifetime: intermediates live until the device drops (dropping the
-target does not evict its entry) — apps that churn short-lived targets
-should prefer the manual `msaa_target()`/`resolve_texture` path.
+Pool lifetime: an owned target's intermediate lives until the device
+drops (dropping the target does not evict its entry) — apps that churn
+short-lived targets should prefer the manual
+`msaa_target()`/`resolve_texture` path. A surface shape's intermediate
+is trimmed once windowed `.msaa(n)` passes stop using it (resizes
+don't accumulate stale intermediates); because frames of one shape
+share it, unresolved samples persist per shape, not per acquired frame
+— don't interleave unresolved `.msaa(n)` passes between two live
+frames of the same shape.
 WebGPU's render path cannot subpass-resolve yet and fails `.msaa()`
 passes with `NotSupported`.
 

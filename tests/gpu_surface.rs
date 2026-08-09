@@ -791,3 +791,82 @@ fn surface_msaa_effect_frame_loop_with_midflight_drops() {
     }
     drop(prev_pulse);
 }
+
+/// One `.msaa(4)` frame: clear+store pass, then load+resolve pass —
+/// the two-pass shape that exercises both frame-lane lookups AND the
+/// sample-preservation edge on the pooled intermediate.
+fn drive_msaa_frame(gpu: &quanta::Gpu, surface: &mut quanta::Surface) {
+    surface
+        .render_frame(|frame| {
+            let mut p1 = gpu
+                .render(frame.texture())?
+                .msaa(4)
+                .clear(Color::rgba(0.1, 0.2, 0.3, 1.0))
+                .pulse()?;
+            p1.wait()?;
+            let mut p2 = gpu
+                .render(frame.texture())?
+                .msaa(4)
+                .load()
+                .msaa_resolve()
+                .pulse()?;
+            p2.wait()?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// The windowed `.msaa(n)` pool leak: surface frames mint a fresh
+/// texture handle every acquire, so a pool keyed on the frame handle
+/// grew one full-size MSAA intermediate per frame, forever. Frames of
+/// one surface configuration must instead reuse ONE pooled
+/// intermediate (frame-lane keying by shape), and a reconfigure must
+/// not accumulate one intermediate per historical extent (the
+/// staleness trim).
+#[test]
+fn surface_msaa_frames_reuse_one_pooled_intermediate() {
+    let Some(gpu) = try_isolated_gpu() else {
+        eprintln!("skipping: no GPU available");
+        return;
+    };
+    if !gpu.supports_surface_present() {
+        eprintln!("skipping: backend has no present path");
+        return;
+    }
+
+    let mut surface = gpu
+        .create_surface(&SurfaceTarget::Headless, &SurfaceConfig::new(64, 64))
+        .unwrap();
+
+    // Warm the pool: after one frame the device holds the single
+    // pooled intermediate for this surface configuration.
+    drive_msaa_frame(&gpu, &mut surface);
+    let baseline = gpu.debug_registry_counts();
+
+    // Many more frames than the swapchain depth (3): every one must
+    // find the pooled intermediate again instead of minting an entry.
+    for _ in 0..12 {
+        drive_msaa_frame(&gpu, &mut surface);
+    }
+    assert_eq!(
+        gpu.debug_registry_counts(),
+        baseline,
+        "windowed .msaa(4) frames must reuse one pooled intermediate — texture growth \
+         here is the per-acquire pool-key leak"
+    );
+
+    // Resize: the new shape mints a new intermediate, and the old
+    // shape must be trimmed once it goes unused (more frames than the
+    // trim horizon) — one live intermediate again, not one per
+    // historical extent.
+    surface.configure(SurfaceConfig::new(32, 32)).unwrap();
+    for _ in 0..12 {
+        drive_msaa_frame(&gpu, &mut surface);
+    }
+    assert_eq!(
+        gpu.debug_registry_counts(),
+        baseline,
+        "after a reconfigure the stale shape's intermediate must be trimmed, leaving \
+         one live intermediate for the new extent"
+    );
+}

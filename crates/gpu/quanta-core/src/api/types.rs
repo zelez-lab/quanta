@@ -4,8 +4,11 @@ use alloc::string::String;
 ///
 /// Marked `#[non_exhaustive]`: formats will be added — match with a
 /// wildcard arm.
+// `Hash` makes the format usable in device-side cache keys (the MSAA
+// intermediate pool keys windowed intermediates by (extent, format,
+// samples)); a plain fieldless enum, so the derive is exact.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     RGBA8,
     BGRA8,

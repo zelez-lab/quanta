@@ -123,7 +123,7 @@ pub use wave::Wave;
 #[cfg(feature = "render")]
 pub use icb::IndirectRenderBundle;
 #[cfg(all(feature = "render", feature = "std"))]
-pub use msaa_pool::MsaaPool;
+pub use msaa_pool::{MsaaPool, MsaaPoolKey};
 #[cfg(feature = "render")]
 pub use pipeline::*;
 #[cfg(feature = "render")]

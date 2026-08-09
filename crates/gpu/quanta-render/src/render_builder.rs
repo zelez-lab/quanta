@@ -22,7 +22,7 @@ use quanta_core::{
     Texture,
 };
 #[cfg(feature = "std")]
-use quanta_core::{Format, LoadOp, MsaaPool, StoreOp};
+use quanta_core::{Format, LoadOp, MsaaPool, MsaaPoolKey, StoreOp};
 
 /// Builder-managed MSAA state: the snapshot of the pass's final target
 /// captured at [`render()`](crate::RenderGpu::render) time (everything
@@ -34,7 +34,9 @@ use quanta_core::{Format, LoadOp, MsaaPool, StoreOp};
 #[cfg(feature = "std")]
 struct MsaaState {
     pool: Arc<MsaaPool>,
-    target_handle: u64,
+    /// How the pool keys this pass's intermediate: owned targets by
+    /// driver handle, surface frames by shape (see `msaa_pool`).
+    target_key: MsaaPoolKey,
     target_width: u32,
     target_height: u32,
     target_format: Format,
@@ -96,7 +98,7 @@ impl RenderBuilder {
             pass,
             msaa: MsaaState {
                 pool,
-                target_handle: target.handle(),
+                target_key: MsaaPoolKey::for_target(target),
                 target_width: target.width(),
                 target_height: target.height(),
                 target_format: target.format(),
@@ -230,9 +232,13 @@ impl RenderBuilder {
     /// The builder takes over the whole MSAA lifecycle retained-mode
     /// consumers used to hand-manage: it redirects the pass to an
     /// n-sample intermediate matching the target's `(width, height,
-    /// format)`, pooled device-side and keyed by the target's handle —
-    /// created on first use, reused by every later `.msaa(n)` pass over
-    /// the same target. Load/clear ops apply to the **intermediate**:
+    /// format)`, pooled device-side — created on first use, reused by
+    /// every later `.msaa(n)` pass over the same target. Owned targets
+    /// key their intermediate by handle; an acquired surface frame
+    /// (whose handle is minted fresh every acquire) keys by shape, so
+    /// every frame of one surface configuration reuses ONE
+    /// intermediate instead of growing the pool per frame.
+    /// Load/clear ops apply to the **intermediate**:
     /// `.clear(color)` wipes it; the default (no clear, or an explicit
     /// [`load()`](Self::load)) preserves the samples the previous pass
     /// stored. Each pass ends with a plain `Store` — samples survive
@@ -267,11 +273,16 @@ impl RenderBuilder {
     /// - `.msaa(n)` and explicit [`color_targets()`](Self::color_targets)
     ///   conflict: the builder owns the pass's color attachment.
     /// - changing `n` between passes over the same target evicts and
-    ///   recreates the pooled intermediate (don't do it while a pass
-    ///   using the old one is in flight). See `quanta-core`'s
+    ///   recreates the pooled intermediate (the drivers defer the
+    ///   actual destroy past in-flight work). See `quanta-core`'s
     ///   `msaa_pool` docs for the pool's full lifetime story — in
-    ///   short: intermediates live until the device drops; dropping
-    ///   the target does not evict its entry.
+    ///   short: an owned target's intermediate lives until the device
+    ///   drops (dropping the target does not evict its entry); a
+    ///   surface shape's intermediate is trimmed once no windowed
+    ///   `.msaa(n)` pass has used it for a while. On surface frames,
+    ///   samples stored without a resolve persist per **shape**, not
+    ///   per acquired frame — don't interleave unresolved `.msaa(n)`
+    ///   passes between two live frames of the same shape.
     /// - on WebGPU multisampling is 4x only (the spec's guaranteed
     ///   count) — `.msaa(4)` works, other counts fail with
     ///   `NotSupported`; the resolve lowers to the color attachment's
@@ -543,7 +554,7 @@ impl RenderBuilder {
             .pool
             .intermediate_color_target(
                 self.gpu.device_handle(),
-                st.target_handle,
+                st.target_key,
                 st.target_width,
                 st.target_height,
                 st.target_format,
