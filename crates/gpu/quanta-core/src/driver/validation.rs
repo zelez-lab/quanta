@@ -329,6 +329,10 @@ impl GpuDevice for ValidationDevice {
         self.inner.supports_i64()
     }
 
+    fn supports_narrow_int(&self) -> bool {
+        self.inner.supports_narrow_int()
+    }
+
     fn supports_subgroups(&self) -> bool {
         self.inner.supports_subgroups()
     }

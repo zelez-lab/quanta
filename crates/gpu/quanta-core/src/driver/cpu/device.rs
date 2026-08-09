@@ -303,6 +303,12 @@ impl GpuDevice for CpuDevice {
         true
     }
 
+    fn supports_narrow_int(&self) -> bool {
+        // The software interpreter reads/writes narrow-int fields at
+        // native 1-/2-byte stride and widens to 32-bit registers.
+        true
+    }
+
     fn supports_subgroups(&self) -> bool {
         // The software interpreter resolves subgroup reduce/scan ops
         // warp-cooperatively (SubgroupMode Collect + Resolve passes).

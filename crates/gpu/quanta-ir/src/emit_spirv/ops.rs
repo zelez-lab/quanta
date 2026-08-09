@@ -17,6 +17,20 @@ fn fp8_dims(ty: &ScalarType) -> Option<(u32, u32)> {
     }
 }
 
+/// `(bit_width, signed)` for a narrow int scalar type, else `None`.
+/// These four store at native 1-/2-byte stride and widen to the
+/// canonical u32 register at the Load boundary (i4 is not one of them —
+/// it rides the PackedU32 nibble path).
+fn narrow_int_info(ty: &ScalarType) -> Option<(u32, bool)> {
+    match ty {
+        ScalarType::U8 => Some((8, false)),
+        ScalarType::I8 => Some((8, true)),
+        ScalarType::U16 => Some((16, false)),
+        ScalarType::I16 => Some((16, true)),
+        _ => None,
+    }
+}
+
 impl SpvEmitter {
     pub(crate) fn emit_single_op(
         &mut self,
@@ -211,6 +225,12 @@ impl SpvEmitter {
                         self.bf16_unpack_to_f32(loaded, elem_ty)
                     } else if let Some((eb, mb)) = fp8_dims(ty) {
                         self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+                    } else if let Some((bits, signed)) = narrow_int_info(ty) {
+                        // Narrow ints ride a u32 member too; mask /
+                        // sign-extend its low bits, matching the CPU
+                        // reference which reads only the member's low
+                        // bytes at the slot offset.
+                        self.narrow_int_widen_to_u32(loaded, elem_ty, bits, signed)
                     } else {
                         loaded
                     };
@@ -234,8 +254,9 @@ impl SpvEmitter {
                     );
                     let loaded = self.alloc_id();
                     // Load with the *storage* element type at its native
-                    // alignment (2 for bf16, 1 for fp8), then unpack to the
-                    // body type (u16/u8 → f32).
+                    // alignment (2 for bf16/u16/i16, 1 for fp8/u8/i8), then
+                    // widen to the body type (u16/u8 → f32 for the narrow
+                    // floats, → canonical u32 for the narrow ints).
                     let alignment = self.storage_byte_size(*ty);
                     Self::emit_op(
                         &mut self.sec_function,
@@ -246,6 +267,8 @@ impl SpvEmitter {
                         self.bf16_unpack_to_f32(loaded, elem_ty)
                     } else if let Some((eb, mb)) = fp8_dims(ty) {
                         self.fp8_unpack_to_f32(loaded, elem_ty, eb, mb)
+                    } else if let Some((bits, signed)) = narrow_int_info(ty) {
+                        self.narrow_int_widen_to_u32(loaded, elem_ty, bits, signed)
                     } else {
                         loaded
                     };
@@ -269,10 +292,16 @@ impl SpvEmitter {
                 // A bool value stored into a numeric buffer (e.g.
                 // `out[i] = (a < b) as u32`) must be materialized as an int —
                 // OpStore is strictly typed and there's no bool element type.
+                // Materialize in the BODY type (canonical u32 register for
+                // narrow ints, f32 for the narrow floats), never the storage
+                // element type: OpSelect over an 8-/16-bit element would
+                // need constants of a type this module only holds for
+                // storage, and the pack/truncate below narrows anyway.
                 let bool_ty = self.ensure_type_bool();
                 let src_ty = self.reg_type_id(*src)?;
                 if src_ty == bool_ty && elem_ty != bool_ty {
-                    val = self.coerce_to(val, bool_ty, elem_ty);
+                    let body_ty = self.scalar_type_id(*ty);
+                    val = self.coerce_to(val, bool_ty, body_ty);
                 }
                 // int4 PackedU32: write nibble idx%8 of word idx/8 via
                 // read-modify-write (single-quark in the op-matrix).
@@ -280,11 +309,16 @@ impl SpvEmitter {
                     self.i4_store_nibble(var_id, idx, val);
                     return Ok(());
                 }
-                // bf16: pack the f32 body value into its storage bits first.
+                // bf16/fp8: pack the f32 body value into its storage bits.
+                // Narrow ints: truncate the canonical u32 register to the
+                // 8-/16-bit storage element (mod 2^w — the wrapping
+                // contract, for free).
                 let stored_val = if matches!(ty, ScalarType::BF16) {
                     self.bf16_pack_from_f32(val)
                 } else if let Some((eb, mb)) = fp8_dims(ty) {
                     self.fp8_pack_from_f32(val, eb, mb)
+                } else if narrow_int_info(ty).is_some() {
+                    self.narrow_int_truncate_for_store(val, elem_ty)
                 } else {
                     val
                 };
@@ -710,10 +744,42 @@ impl SpvEmitter {
                     ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I64
                 );
 
+                // Int → narrow int (u8/i8/u16/i16 target): the CPU
+                // reference mask-then-extends on every cast (`eval_cast`)
+                // and MSL's per-op register typing truncates on
+                // assignment, so the register must hold the REDUCED
+                // value, not an alias of the wide one — a later compare /
+                // div / float-cast in the same kernel sees the same value
+                // on every backend. Reduce within the canonical u32
+                // (64-bit sources truncate down first); float sources
+                // keep the raw Convert* below (out-of-range float→int is
+                // the documented non-portable case).
+                let src_ty = self.reg_type_id(*src)?;
+                if let (false, false, Some((bits, signed))) = (
+                    from_float,
+                    matches!(from, ScalarType::Bool),
+                    narrow_int_info(to),
+                ) {
+                    let u32_ty = self.ensure_type_u32();
+                    let from_64 = self.type_u64 == Some(src_ty) || self.type_i64 == Some(src_ty);
+                    let narrowed = if from_64 {
+                        let t = self.alloc_id();
+                        Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, t, src_val]);
+                        t
+                    } else {
+                        src_val
+                    };
+                    // The u32-carrier path of the widen helper IS
+                    // mask-then-extend: AND for unsigned targets,
+                    // shl + arithmetic-shr for signed ones.
+                    let reduced = self.narrow_int_widen_to_u32(narrowed, u32_ty, bits, signed);
+                    self.set_reg(*dst, reduced, result_ty);
+                    return Ok(());
+                }
+
                 // Same canonical SPIR-V type (e.g. u32↔i32 — both `%uint`):
                 // a pure alias. OpBitcast between identical types is invalid
                 // SPIR-V.
-                let src_ty = self.reg_type_id(*src)?;
                 if src_ty == result_ty {
                     self.set_reg(*dst, src_val, result_ty);
                     return Ok(());
@@ -1926,6 +1992,85 @@ impl SpvEmitter {
         }
 
         Ok(())
+    }
+
+    // ── narrow-int storage conversions ───────────────────────────────────
+    //
+    // u8/i8/u16/i16 buffers store 8-/16-bit elements at native stride —
+    // the same StorageBuffer8/16BitAccess seam as fp8/bf16 — while the
+    // registers stay the canonical unified u32. Loads widen, stores
+    // truncate (mod 2^w — the wrapping contract). Signedness is a
+    // property of the widen, not the storage element: signed types
+    // sign-extend into the u32 via shl + arithmetic-shr (the emitter's
+    // signedness idiom), matching the CPU interpreter's widen-on-load
+    // (`read_scalar`) and MSL's C integer promotion.
+
+    /// Widen a loaded narrow-int value into the canonical u32 register.
+    /// `loaded_ty` is the type the value was loaded as: the 8-/16-bit
+    /// storage element for buffers, or `%uint` for a push-constant
+    /// member / cast source carrying the value in its low bits (whose
+    /// high bits are discarded — the CPU reference reads only the low
+    /// bytes of a push slot, and mask-then-extends on casts).
+    pub(crate) fn narrow_int_widen_to_u32(
+        &mut self,
+        loaded: u32,
+        loaded_ty: u32,
+        bits: u32,
+        signed: bool,
+    ) -> u32 {
+        let u32_ty = self.ensure_type_u32();
+        let widened = if loaded_ty != u32_ty {
+            let w = self.alloc_id();
+            Self::emit_op(&mut self.sec_function, OP_U_CONVERT, &[u32_ty, w, loaded]);
+            w
+        } else {
+            loaded
+        };
+        if signed {
+            // Sign-extend within u32: shift the value's sign bit to bit
+            // 31, then arithmetic-shift back down. Shift opcodes carry
+            // the signedness — the operands stay the canonical `%uint`.
+            let dist = self.emit_constant_u32(32 - bits);
+            let hi = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_LEFT_LOGICAL,
+                &[u32_ty, hi, widened, dist],
+            );
+            let ext = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_SHIFT_RIGHT_ARITHMETIC,
+                &[u32_ty, ext, hi, dist],
+            );
+            ext
+        } else if loaded_ty != u32_ty {
+            // OpUConvert from the narrow element zero-extended — exact.
+            widened
+        } else {
+            // u32 carrier: mask to the value's width (the zero-extend).
+            let mask = self.emit_constant_u32((1u32 << bits) - 1);
+            let out = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_function,
+                OP_BITWISE_AND,
+                &[u32_ty, out, widened, mask],
+            );
+            out
+        }
+    }
+
+    /// Truncate a canonical-u32 register value to the narrow 8-/16-bit
+    /// storage element type for an OpStore. OpUConvert keeps the low
+    /// bits — mod 2^w, the wrapping store contract.
+    pub(crate) fn narrow_int_truncate_for_store(&mut self, val: u32, storage_ty: u32) -> u32 {
+        let out = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_function,
+            OP_U_CONVERT,
+            &[storage_ty, out, val],
+        );
+        out
     }
 
     // ── bf16 storage conversions ─────────────────────────────────────────

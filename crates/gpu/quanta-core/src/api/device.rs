@@ -124,6 +124,22 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         false
     }
 
+    /// Whether the backend can run kernels over narrow-int fields —
+    /// `u8` / `i8` / `u16` / `i16` buffer elements at native 1-/2-byte
+    /// stride. One query for all four: they ship as one feature and
+    /// gate together on every backend this stack runs. Metal and the
+    /// CPU reference interpreter always support them. Vulkan requires
+    /// BOTH the `storageBuffer8BitAccess` and `storageBuffer16BitAccess`
+    /// device features (enabled at device creation when advertised;
+    /// they ship together on every real 1.2+ driver and on lavapipe —
+    /// the conjunction is conservative-correct if one ever splits).
+    /// WebGPU reports `false`: WGSL has no 8-/16-bit storage types, and
+    /// the bf16/fp8 u32-slot emulation is deliberately not extended to
+    /// dtypes whose entire point is the 1-/2-byte element.
+    fn supports_narrow_int(&self) -> bool {
+        false
+    }
+
     /// Whether the backend can run kernels that use subgroup (warp/
     /// SIMD-group) *arithmetic* operations — `reduce_add_*` /
     /// `reduce_min_*` / `reduce_max_*` / `scan_add_*` and friends.

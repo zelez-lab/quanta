@@ -221,6 +221,20 @@ impl Gpu {
         self.ctx.device.supports_i64()
     }
 
+    /// Whether the active backend can run kernels over narrow-int
+    /// (`u8` / `i8` / `u16` / `i16`) fields at native 1-/2-byte stride.
+    /// One query for all four — they gate together everywhere this
+    /// stack runs. The software lane and Metal always support them;
+    /// Vulkan requires the 8-bit AND 16-bit storage-buffer device
+    /// features (universal on 1.2+ desktop drivers and lavapipe);
+    /// WebGPU does not — WGSL has no narrow storage types, and such
+    /// kernels fail `wave_jit` with `NotSupported` carrying the
+    /// capability-table reason. The query is the polite pre-check;
+    /// validation is the enforcement.
+    pub fn supports_narrow_int(&self) -> bool {
+        self.ctx.device.supports_narrow_int()
+    }
+
     /// Whether the active backend can run kernels that use subgroup
     /// (warp / SIMD-group) arithmetic operations (subgroup reduce /
     /// scan). The software lane, Metal, and llvmpipe support them;

@@ -64,6 +64,13 @@ impl GpuDevice for VulkanDevice {
         self.shader_int64_supported
     }
 
+    fn supports_narrow_int(&self) -> bool {
+        // Both storage features gate together (see the trait doc): the
+        // 8-bit AND 16-bit conjunction, conservative-correct on the
+        // (unobserved) driver that would split them.
+        self.storage_buffer_8bit_supported && self.storage_buffer_16bit_supported
+    }
+
     fn supports_subgroups(&self) -> bool {
         self.subgroup_arithmetic_supported
     }

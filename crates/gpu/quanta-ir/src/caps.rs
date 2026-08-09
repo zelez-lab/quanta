@@ -179,12 +179,17 @@ pub const VULKAN: BackendCaps = BackendCaps {
     fp8_e4m3: TypeSupport::RequiresFeature("storageBuffer8BitAccess"),
     f32: TypeSupport::Native,
     f64: TypeSupport::RequiresFeature("shaderFloat64"),
-    u8_: TypeSupport::Native,
-    u16_: TypeSupport::Native,
+    // Narrow ints share the bf16/fp8 storage seam: buffers are native
+    // 8-/16-bit elements, so kernels touching them declare the same
+    // StorageBuffer8BitAccess / StorageBuffer16BitAccess capabilities
+    // and need the matching device feature (storage-boundary-only —
+    // registers widen to u32, no Int8/shaderInt16 arithmetic feature).
+    u8_: TypeSupport::RequiresFeature("storageBuffer8BitAccess"),
+    u16_: TypeSupport::RequiresFeature("storageBuffer16BitAccess"),
     u32_: TypeSupport::Native,
     u64_: TypeSupport::Native,
-    i8_: TypeSupport::Native,
-    i16_: TypeSupport::Native,
+    i8_: TypeSupport::RequiresFeature("storageBuffer8BitAccess"),
+    i16_: TypeSupport::RequiresFeature("storageBuffer16BitAccess"),
     i32_: TypeSupport::Native,
     i64_: TypeSupport::Native,
     i4_: TypeSupport::Native, // packed-nibble emulated path
@@ -272,6 +277,43 @@ mod tests {
     #[test]
     fn webgpu_rejects_64bit_types() {
         for ty in [ScalarType::F64, ScalarType::U64, ScalarType::I64] {
+            assert!(
+                WEBGPU.scalar(ty).is_rejected(),
+                "WebGPU should reject {:?}",
+                ty
+            );
+        }
+    }
+
+    #[test]
+    fn vulkan_gates_narrow_ints_on_storage_features() {
+        for (ty, feature) in [
+            (ScalarType::U8, "storageBuffer8BitAccess"),
+            (ScalarType::I8, "storageBuffer8BitAccess"),
+            (ScalarType::U16, "storageBuffer16BitAccess"),
+            (ScalarType::I16, "storageBuffer16BitAccess"),
+        ] {
+            match VULKAN.scalar(ty) {
+                TypeSupport::RequiresFeature(name) => {
+                    assert_eq!(name, feature, "wrong feature for {:?}", ty)
+                }
+                other => panic!("expected RequiresFeature for {:?}, got {:?}", ty, other),
+            }
+        }
+    }
+
+    #[test]
+    fn webgpu_rejects_narrow_ints() {
+        // No u32-slot emulation for narrow ints (unlike bf16/fp8): a
+        // 1-/2-byte dtype silently spending 4 bytes per element would
+        // betray the density contract, so WGSL's missing narrow storage
+        // types are a hard NotSupported.
+        for ty in [
+            ScalarType::U8,
+            ScalarType::I8,
+            ScalarType::U16,
+            ScalarType::I16,
+        ] {
             assert!(
                 WEBGPU.scalar(ty).is_rejected(),
                 "WebGPU should reject {:?}",

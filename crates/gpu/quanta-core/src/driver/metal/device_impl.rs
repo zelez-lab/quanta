@@ -75,6 +75,13 @@ impl GpuDevice for MetalDevice {
         true
     }
 
+    fn supports_narrow_int(&self) -> bool {
+        // MSL has native `uchar` / `char` / `ushort` / `short` device
+        // pointers on every Metal GPU Quanta targets; narrow-int
+        // buffers bind at 1-/2-byte stride with no feature gate.
+        true
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

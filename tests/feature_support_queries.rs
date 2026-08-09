@@ -37,6 +37,15 @@ fn cpu_reports_empty_shading_rate_list() {
 }
 
 #[test]
+fn cpu_supports_narrow_int_fields() {
+    // The software interpreter reads/writes u8/i8/u16/i16 fields at
+    // native 1-/2-byte stride; the narrow-int query reports it. One
+    // query covers all four types — they gate together per backend.
+    let gpu = quanta::init_cpu();
+    assert!(gpu.supports_narrow_int());
+}
+
+#[test]
 fn feature_queries_match_render_path_gates() {
     // If a backend reports `supports_vrs() = false`, then the
     // typed VRS state path must not return Ok on `set_rate`. CPU

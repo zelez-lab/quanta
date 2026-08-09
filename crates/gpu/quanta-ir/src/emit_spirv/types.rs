@@ -383,13 +383,19 @@ impl SpvEmitter {
     /// The SPIR-V type of a field's *buffer storage* element (which can
     /// differ from the in-register body type). bf16 stores as a 16-bit int
     /// and fp8 as an 8-bit int — native stride, matching the host's tight
-    /// upload (`Field<u16>` / `Field<u8>`) and the CPU executor. int4 packs
+    /// upload (`Field<u16>` / `Field<u8>`) and the CPU executor. The narrow
+    /// ints (u8/i8/u16/i16) ride the same storage seam: 8-/16-bit buffer
+    /// elements widened to the canonical u32 register at the Load/Store
+    /// boundary (signedness is a property of the widen, not the storage
+    /// element — both i8 and u8 store as the 8-bit int type). int4 packs
     /// 8 nibbles into a u32 word (PackedU32); everything else stores as its
     /// body type.
     pub(crate) fn storage_scalar_type_id(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::BF16 => self.ensure_type_u16(),
             ScalarType::FP8E5M2 | ScalarType::FP8E4M3 => self.ensure_type_u8(),
+            ScalarType::U8 | ScalarType::I8 => self.ensure_type_u8(),
+            ScalarType::U16 | ScalarType::I16 => self.ensure_type_u16(),
             // int4 packs into u32 words (8 nibbles/word, PackedU32).
             ScalarType::I4 => self.ensure_type_u32(),
             _ => self.scalar_type_id(ty),
@@ -401,7 +407,9 @@ impl SpvEmitter {
     /// (`Wave::set_value`), and narrow member types would drag in the
     /// separate `storagePushConstant16/8` features — so bf16/fp8/int4
     /// members stay u32-slot (the value in the low bits) and the Load
-    /// unpack widens from there.
+    /// unpack widens from there. Narrow ints ride the `scalar_type_id`
+    /// fallthrough to the same u32 slot (their canonical register type);
+    /// the Load arm masks/sign-extends the member's low bits.
     pub(crate) fn push_constant_type_id(&mut self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::BF16 | ScalarType::FP8E5M2 | ScalarType::FP8E4M3 | ScalarType::I4 => {
@@ -412,7 +420,9 @@ impl SpvEmitter {
     }
 
     /// Storage stride for a field element, in bytes. Matches
-    /// `storage_scalar_type_id`: native stride for the narrow floats.
+    /// `storage_scalar_type_id`: native stride for the narrow floats, and
+    /// for the narrow ints via the `scalar_byte_size` fallthrough
+    /// (u8/i8 = 1, u16/i16 = 2).
     pub(crate) fn storage_byte_size(&self, ty: ScalarType) -> u32 {
         match ty {
             ScalarType::BF16 => 2,

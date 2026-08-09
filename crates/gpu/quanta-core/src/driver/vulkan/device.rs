@@ -284,6 +284,20 @@ pub struct VulkanDevice {
     /// was enabled at `vkCreateDevice`. Kernels using `i64`/`u64` emit
     /// the `Int64` capability, valid only when this feature is enabled.
     pub(super) shader_int64_supported: bool,
+    /// Whether `storageBuffer16BitAccess`
+    /// (`VkPhysicalDevice16BitStorageFeatures`) is available and was
+    /// enabled at `vkCreateDevice`. Gates the native-stride 16-bit
+    /// storage seam — bf16 and u16/i16 fields — whose kernels declare
+    /// the `StorageBuffer16BitAccess` SPIR-V capability. 1.0/1.1
+    /// devices, where the chained feature query never runs, report
+    /// `false` conservatively.
+    pub(super) storage_buffer_16bit_supported: bool,
+    /// Whether `storageBuffer8BitAccess`
+    /// (`VkPhysicalDevice8BitStorageFeatures`) is available and was
+    /// enabled at `vkCreateDevice`. Gates the native-stride 8-bit
+    /// storage seam — fp8 and u8/i8 fields — whose kernels declare
+    /// `StorageBuffer8BitAccess` + `SPV_KHR_8bit_storage`.
+    pub(super) storage_buffer_8bit_supported: bool,
     /// Whether `VkPhysicalDeviceSubgroupProperties.supportedOperations`
     /// advertises `VK_SUBGROUP_FEATURE_ARITHMETIC_BIT` for the compute
     /// stage. Kernels using subgroup reduce/scan emit
@@ -1886,6 +1900,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             sparse_binding_supported,
             shader_float64_supported,
             shader_int64_supported,
+            storage_buffer_16bit_supported: storage16_supported,
+            storage_buffer_8bit_supported: storage8_supported,
             subgroup_arithmetic_supported,
             dispatch_base_fn,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
