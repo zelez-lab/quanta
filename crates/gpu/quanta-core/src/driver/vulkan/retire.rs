@@ -49,6 +49,29 @@ pub(super) enum Retired {
         pipeline: ffi::VkPipeline,
         layout: ffi::VkPipelineLayout,
     },
+    /// A render pipeline + the creation-scope objects it owns
+    /// (`pipeline_destroy` routes here: the caller may drop its
+    /// `Pipeline` between `pulse()` and the fence). Only the
+    /// VkPipeline is pending-state-sensitive
+    /// (VUID-vkDestroyPipeline-pipeline-00765) — the layout, baked
+    /// render pass and per-pipeline descriptor-set layout could go
+    /// immediately per spec, but retiring the quartet as one entry
+    /// keeps the destroy atomic.
+    #[cfg(feature = "render")]
+    RenderPipeline {
+        pipeline: ffi::VkPipeline,
+        layout: ffi::VkPipelineLayout,
+        render_pass: ffi::VkRenderPass,
+        descriptor_set_layout: ffi::VkDescriptorSetLayout,
+    },
+    /// An occlusion query pool — a submitted pass writes it until its
+    /// fence signals (VUID-vkDestroyQueryPool-queryPool-00793).
+    QueryPool(ffi::VkQueryPool),
+    /// A render bundle's private command pool. Destroying it frees its
+    /// secondary command buffers, which are pending exactly while the
+    /// primary that `vkCmdExecuteCommands` them is
+    /// (VUID-vkDestroyCommandPool-commandPool-00041).
+    CommandPool(ffi::VkCommandPool),
 }
 
 // Raw Vulkan handles are plain pointers. The bin only ever holds its
@@ -153,6 +176,24 @@ unsafe fn destroy(device: ffi::VkDevice, resources: Retired) {
             Retired::Pipeline { pipeline, layout } => {
                 ffi::vkDestroyPipeline(device, pipeline, core::ptr::null());
                 ffi::vkDestroyPipelineLayout(device, layout, core::ptr::null());
+            }
+            #[cfg(feature = "render")]
+            Retired::RenderPipeline {
+                pipeline,
+                layout,
+                render_pass,
+                descriptor_set_layout,
+            } => {
+                ffi::vkDestroyPipeline(device, pipeline, core::ptr::null());
+                ffi::vkDestroyPipelineLayout(device, layout, core::ptr::null());
+                ffi::vkDestroyRenderPass(device, render_pass, core::ptr::null());
+                ffi::vkDestroyDescriptorSetLayout(device, descriptor_set_layout, core::ptr::null());
+            }
+            Retired::QueryPool(pool) => {
+                ffi::vkDestroyQueryPool(device, pool, core::ptr::null());
+            }
+            Retired::CommandPool(pool) => {
+                ffi::vkDestroyCommandPool(device, pool, core::ptr::null());
             }
             Retired::Sampler(sampler) => {
                 ffi::vkDestroySampler(device, sampler, core::ptr::null());
