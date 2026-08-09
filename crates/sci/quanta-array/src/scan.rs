@@ -27,6 +27,10 @@ impl<T: ArrayScalar> Array<T> {
     /// Inclusive prefix sum along the last axis of a 2-D `[R, L]` array:
     /// `out[r, j] = self[r, 0] + … + self[r, j]`, same shape. (A 1-D `[L]`
     /// array is treated as one row.)
+    ///
+    /// Integer partials accumulate **in `T`, wrapping mod 2^w** (a `u8`
+    /// running sum wraps past 255) — the same contract and astype-widen
+    /// escape as `sum_axis`.
     pub fn cumsum_last(&self) -> Result<Array<T>, ArrayError> {
         let dims = self.shape().to_vec();
         let (r, l) = match dims.len() {

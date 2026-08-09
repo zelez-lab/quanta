@@ -73,6 +73,15 @@ assert_eq!(counts.sum()?, 23);
 assert_eq!(counts.max()?, 9);
 ```
 
+Narrow-int arrays (`u8`/`i8`/`u16`/`i16`) have no same-width `sum()` on
+purpose — it would wrap at the type's range. Widen explicitly instead,
+which also picks the accumulator (numpy's `sum(dtype=…)`):
+
+```rust,ignore
+let bytes = Array::from_slice(&gpu, &image_u8, &[n])?;
+let total = bytes.astype::<u32>()?.sum()?;   // exact up to 2³²
+```
+
 `sum()` returns a host scalar, which completes any pending deferred
 work. When the total feeds further GPU work (a loss, a normalizer),
 `sum_device()` runs the identical reduction but keeps the result as a

@@ -14,8 +14,21 @@ use crate::scalar::ArrayScalar;
 
 impl<T: ArrayScalar> Array<T> {
     /// Convert this array's elements to type `U` (`out[i] = self[i] as U`),
-    /// row-major and elementwise. Float↔int follow the usual truncation /
-    /// rounding of the `Cast` op.
+    /// row-major and elementwise, between any two of the ten element types.
+    ///
+    /// Int↔int semantics (= numpy's same conversions):
+    /// - **narrower → wider**: zero-extend unsigned sources, sign-extend
+    ///   signed sources — exact (`i8` −1 → `i32` −1, `u8` 255 → `i32` 255);
+    /// - **wider → narrower**: truncate mod 2^w (`u32` 300 → `u8` 44,
+    ///   `i16` −1 → `u8` 255);
+    /// - **same-width signed↔unsigned**: bit-pattern reinterpret
+    ///   (`i8` −1 ↔ `u8` 255).
+    ///
+    /// Int→float is exact for every 8-/16-bit value. Float→int truncates
+    /// toward zero **for in-range values**; out-of-range or NaN inputs are
+    /// not portable across backends (the CPU reference saturates, hardware
+    /// backends do their native conversion) — widen or clamp first when the
+    /// data may exceed the target's range.
     pub fn astype<U: ArrayScalar>(&self) -> Result<Array<U>, ArrayError> {
         let from = T::scalar_type();
         let to = U::scalar_type();

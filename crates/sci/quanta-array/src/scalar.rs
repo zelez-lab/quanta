@@ -15,10 +15,17 @@ use quanta_core::GpuType;
 
 /// A numeric array element: has additive/multiplicative identities and a
 /// host-side conversion from `f64` (for `arange`/`linspace` step math).
+///
+/// Implemented for the ten element types: `f32` / `f64`, `i32` / `u32`,
+/// `i64` / `u64`, and the narrow ints `u8` / `i8` / `u16` / `i16`.
+/// Integer arithmetic is two's-complement wrapping (mod 2^w) at every
+/// store and cast, whatever the width.
 pub trait ArrayScalar: GpuType {
     const ZERO: Self;
     const ONE: Self;
-    /// Convert from an `f64` index/step value (truncating for integers).
+    /// Convert from an `f64` index/step value. For integers this is Rust
+    /// `as`: truncate toward zero, **saturating** at the type's range
+    /// (`Array::<u8>::arange` stepping past 255 clamps to 255).
     fn from_f64(v: f64) -> Self;
 }
 
@@ -28,6 +35,13 @@ pub trait FloatScalar: ArrayScalar {}
 /// An array element with device-wide reductions (`sum`/`min`/`max`),
 /// dispatched to the matching `quanta-prims` reduce kernel. Implemented for
 /// the types prims provides reduces for: f32 / i32 / u32.
+///
+/// The other integer dtypes (i64/u64 and the narrow u8/i8/u16/i16) have no
+/// whole-array reduce on purpose — a same-width `sum` of a `u8` array wraps
+/// at 255, a wrong answer for the type's usual population. The spelling is
+/// an explicit widen: `a.astype::<u32>()?.sum()`, which makes the
+/// accumulator the caller's choice (numpy's `sum(dtype=…)`). In-dtype
+/// whole-array min/max exist via `a.reshape(&[1, n])?.max_axis_last()`.
 ///
 /// The reductions take an on-device [`Field`](quanta_core::Field) so the data
 /// never round-trips through host memory — the array stays GPU-resident.
@@ -165,5 +179,5 @@ macro_rules! float_scalar {
     )*};
 }
 
-int_scalar!(i32, u32, i64, u64);
+int_scalar!(i32, u32, i64, u64, u8, i8, u16, i16);
 float_scalar!(f32, f64);

@@ -375,7 +375,8 @@ impl<T: GpuType> Array<T> {
 
     // ── named arithmetic ufuncs (all numeric dtypes) ─────────────────────
 
-    /// Elementwise negation.
+    /// Elementwise negation. On unsigned integers this wraps
+    /// (`-x ≡ 2^w − x`, numpy's uint behaviour): `neg` of `u8` 1 is 255.
     pub fn neg(&self) -> Result<Array<T>, ArrayError> {
         self.unary_op(IrUnaryOp::Neg)
     }

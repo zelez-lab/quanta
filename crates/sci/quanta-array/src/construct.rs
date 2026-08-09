@@ -2,7 +2,8 @@
 //!
 //! Generic builders (`from_slice`, `from_vec`, `full`) work for any
 //! [`GpuType`]. The numeric builders (`zeros`/`ones`/`arange`/`linspace`/
-//! `eye`) are generic over [`ArrayScalar`] (f32/f64/i32/u32/i64/u64).
+//! `eye`) are generic over [`ArrayScalar`] (f32/f64/i32/u32/i64/u64 and
+//! the narrow ints u8/i8/u16/i16).
 
 use quanta_core::{Gpu, GpuType};
 use quanta_tensor::Layout;
@@ -57,7 +58,8 @@ impl<T: ArrayScalar> Array<T> {
 
     /// 1-D array `[start, start+step, …)` of length `n` (numpy `arange`
     /// with an explicit count + step). Step math is done in `f64` and
-    /// converted to `T` (truncating for integers).
+    /// converted to `T` (for integers: truncate toward zero, saturating
+    /// at the type's range — a `u8` ramp stepping past 255 clamps to 255).
     pub fn arange(gpu: &Gpu, start: f64, step: f64, n: usize) -> Result<Array<T>, ArrayError> {
         let data: Vec<T> = (0..n)
             .map(|i| T::from_f64(start + step * i as f64))

@@ -31,7 +31,9 @@
 //!
 //! ## Dtype safety
 //!
-//! Construction and arithmetic are generic over every numeric dtype, but the
+//! Construction and arithmetic are generic over every numeric dtype —
+//! `f32` / `f64`, `i32` / `u32`, `i64` / `u64`, and the narrow ints
+//! `u8` / `i8` / `u16` / `i16` at native 1-/2-byte storage — but the
 //! transcendental math ufuncs (`sqrt`/`exp`/`sin`/…) are floating-point only.
 //! Calling one on an integer array is a **compile error**, not a silent wrong
 //! result:
@@ -41,6 +43,19 @@
 //! let a = quanta_array::Array::from_slice(&g, &[4i32, 9, 16], &[3]).unwrap();
 //! let _ = a.sqrt(); // ERROR: `i32: FloatScalar` is not satisfied
 //! ```
+//!
+//! The narrow dtypes hold the same line:
+//!
+//! ```compile_fail
+//! let g = quanta_core::init_cpu();
+//! let a = quanta_array::Array::from_slice(&g, &[4u8, 9, 16], &[3]).unwrap();
+//! let _ = a.sqrt(); // ERROR: `u8: FloatScalar` is not satisfied
+//! ```
+//!
+//! Integer arithmetic is two's-complement **wrapping** (mod 2^w) at every
+//! width, and whole-array `sum`/`min`/`max` deliberately don't exist for
+//! i64/u64 or the narrow ints — the exact-sum spelling is an explicit widen,
+//! `a.astype::<u32>()?.sum()`, so the accumulator is the caller's choice.
 
 mod array;
 mod astype;

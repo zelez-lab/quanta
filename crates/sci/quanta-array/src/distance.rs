@@ -15,6 +15,11 @@ impl<T: ArrayScalar> Array<T> {
     /// every row of `centers` `[K, D]`, giving `[N, K]` where
     /// `out[n, k] = Σ_d (self[n, d] − centers[k, d])²`. The k-means assignment
     /// metric (pair with `argmin_last` for nearest-centroid).
+    ///
+    /// Integer inputs follow the wrapping contract of all integer
+    /// arithmetic here — squared distances overflow a `u8` almost
+    /// immediately, so for narrow data the useful spelling is
+    /// `a.astype::<f32>()?.cdist_sq(&c.astype()?)`.
     pub fn cdist_sq(&self, centers: &Array<T>) -> Result<Array<T>, ArrayError> {
         let a = self.shape();
         let b = centers.shape();

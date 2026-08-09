@@ -25,6 +25,13 @@ impl<T: ArrayScalar> Array<T> {
     /// Sum over `axis`, keeping it as a size-1 dimension. `[d0,…,dᵢ,…]` →
     /// `[d0,…,1,…]`. Errors if `axis` is out of range. (numpy
     /// `arr.sum(axis=i, keepdims=True)`.)
+    ///
+    /// Integer sums accumulate **in `T`, wrapping mod 2^w** — for the
+    /// narrow dtypes that wrap is close (a `u8` axis-sum wraps past 255),
+    /// bit-identical on every backend, and equals numpy's
+    /// `arr.sum(axis, dtype=arr.dtype)`. When you want the exact sum,
+    /// widen first — `a.astype::<u32>()?.sum_axis(axis)` — which is
+    /// numpy's default-widening `sum` spelled explicitly.
     pub fn sum_axis(&self, axis: usize) -> Result<Array<T>, ArrayError> {
         let dims: Vec<usize> = self.shape().to_vec();
         let r = dims.len();

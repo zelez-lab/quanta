@@ -13,7 +13,7 @@ integer arrays.
 | NumPy | Quanta | Notes |
 |-------|--------|-------|
 | `np.ndarray` | `Array<T>` | host handle to a GPU buffer |
-| `dtype` | the `T` in `Array<T>` | `f32` / `f64` / `i32` / `u32` / … |
+| `dtype` | the `T` in `Array<T>` | `f32` / `f64` / `i32` / `u32` / `i64` / `u64` / `u8` / `i8` / `u16` / `i16` |
 | `arr.shape` | `arr.shape()` | `&[usize]` |
 | `arr.ndim` | `arr.rank()` | |
 | `arr.size` | `arr.len()` | |
@@ -45,6 +45,7 @@ unambiguous on the host.
 | `np.abs`, `np.floor`, `np.ceil` | `a.abs()?`, `a.floor()?`, `a.ceil()?` |
 | `np.minimum(a, b)`, `np.maximum`, `a ** b` | `a.minimum(&b)?`, `a.maximum(&b)?`, `a.pow(&b)?` |
 | `a.sum()`, `a.mean()`, `a.min()`, `a.max()` | `a.sum()?`, `a.mean()?`, `a.min()?`, `a.max()?` |
+| `a.astype(np.float32)` | `a.astype::<f32>()?` (any of the ten dtypes; int↔int wraps mod 2^w like numpy) |
 
 Broadcasting follows the NumPy rule (trailing dimensions align; size-1 axes
 stretch). It is lowered into strided indexing in the generated kernel, so no
@@ -104,7 +105,15 @@ let out = centered.div(&Array::full(&gpu, span, &[4])?)?.to_vec()?;
   of silent-precision bugs at build time.
 - **Reduction dtypes.** `sum`/`min`/`max` exist for `f32`/`i32`/`u32` (the
   reduces `quanta-prims` ships); `mean` is float-only. `f64` has math functions
-  but no device reduce yet.
+  but no device reduce yet. The narrow ints (`u8`/`i8`/`u16`/`i16`) have no
+  whole-array reduce **by design**: numpy's `uint8_array.sum()` silently
+  widens to the platform int; here the widening is explicit —
+  `a.astype::<u32>()?.sum()` — so the accumulator is your choice. Per-axis
+  `sum_axis` works for every dtype and accumulates in `T`, wrapping — it is
+  numpy's `arr.sum(axis, dtype=arr.dtype)`.
+- **Narrow ints are stored narrow.** A `u8` array spends one byte per element
+  on the device (no silent widening); arithmetic wraps mod 2^w, matching
+  numpy's same-dtype behaviour.
 - **Per-axis reductions land, fancy indexing doesn't yet.** `arr.sum(axis=0,
   keepdims=True)` maps to `arr.sum_axis(0)?` (and `mean_axis`); `arr[mask]` and
   `arr[idx]` (masked / fancy indexing) are planned increments, not in this release.

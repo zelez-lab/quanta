@@ -29,8 +29,11 @@ assert_eq!(a.len(), 4);
 ```
 
 `Array<T>` is generic over the numeric dtype. The element type comes from the
-data you give it (`f32`, `f64`, `i32`, `u32`, …), so it follows the same
-[GpuType](fields-and-types.md) set as the rest of the stack.
+data you give it — `f32` / `f64`, `i32` / `u32`, `i64` / `u64`, and the
+narrow ints `u8` / `i8` / `u16` / `i16` (stored at their native 1-/2-byte
+width) — so it follows the same [GpuType](fields-and-types.md) set as the
+rest of the stack. Integer arithmetic wraps mod 2^w at every width;
+`astype::<U>()` converts between any two element types.
 
 ## Construction
 
@@ -101,9 +104,16 @@ let m = a.mean()?;      // 2.75
 reduces for — `f32`, `i32`, `u32`. `mean` is float-only (it divides). `f64`
 arrays keep their math functions but have no device reduce, so `f64.sum()`
 does not compile — again, an honest boundary rather than a hidden fallback.
+The narrow ints (`u8`/`i8`/`u16`/`i16`) share that posture on purpose: a
+same-width `u8` sum would wrap at 255, so the whole-array-reduce spelling
+is an explicit widen — `a.astype::<u32>()?.sum()` — making the accumulator
+your choice, exactly like numpy's `sum(dtype=…)`.
 
-> Per-axis reductions (`arr.sum(axis=0)`) and `prod` are a later increment —
-> they need a segmented/strided reduce shape that prims doesn't ship yet.
+> Per-axis reductions exist for every numeric dtype: `arr.sum_axis(i)`
+> (keepdims), accumulating **in `T`** — integer axis-sums wrap mod 2^w
+> (widen first via `astype` when you want the exact sum) — plus the
+> exact 2-D row reduces `max/min/argmax/argmin_axis_last`. `prod` is a
+> later increment (prims has no multiply-reduce yet).
 
 ## Linear algebra (f32)
 

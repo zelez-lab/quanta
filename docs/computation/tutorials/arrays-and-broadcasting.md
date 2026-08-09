@@ -42,7 +42,9 @@ let l = Array::<f32>::linspace(&gpu, 0.0, 1.0, 5)?; // np.linspace(0,1,5)
 ```
 
 The `&[2, 3]` is the shape. The element type comes from the data (`f32` here) —
-`Array` is generic over every numeric dtype (`f32`, `f64`, `i32`, `u32`, …).
+`Array` is generic over every numeric dtype: `f32` / `f64`, `i32` / `u32`,
+`i64` / `u64`, and the narrow ints `u8` / `i8` / `u16` / `i16` at native
+1-/2-byte storage.
 
 ## Elementwise math
 
