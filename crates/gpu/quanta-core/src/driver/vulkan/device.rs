@@ -1552,6 +1552,15 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         let mut enabled_feats = unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() };
         if device_features.sparse_binding != 0 {
             enabled_feats.sparse_binding = 1;
+            // Sparse 2D textures create images with the
+            // SPARSE_RESIDENCY bit, which is invalid unless
+            // sparseResidencyImage2D is ALSO enabled
+            // (VUID-VkImageCreateInfo-imageType-00971 — the rig's
+            // armed sweep caught the enable gap; Iris Xe offers the
+            // feature). Enable exactly as advertised.
+            if device_features.sparse_residency_image2d != 0 {
+                enabled_feats.sparse_residency_image2d = 1;
+            }
         }
         // Enable 64-bit floats when the device advertises them, so
         // kernels that use `f64` (and emit the Float64 SPIR-V

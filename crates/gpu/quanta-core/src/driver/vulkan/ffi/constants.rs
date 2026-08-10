@@ -42,6 +42,9 @@ pub const fn null_handle() -> *mut c_void {
 
 pub type VkResult = i32;
 pub const VK_SUCCESS: VkResult = 0;
+/// Success code (not an error): a query result was requested without
+/// WAIT and at least one query was still unavailable.
+pub const VK_NOT_READY: VkResult = 1;
 
 // ─── VkPhysicalDeviceType ───────────────────────────────────────────────────
 // Spec-stable values. OTHER = 0 and VIRTUAL_GPU = 3 exist but are not

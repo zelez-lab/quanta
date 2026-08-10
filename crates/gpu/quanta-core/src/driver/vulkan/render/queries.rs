@@ -31,6 +31,38 @@ impl VulkanDevice {
             return Err(QuantaError::invalid_param("query pool creation failed")
                 .with_context(&format!("timestamp_query_create: VkResult {result}")));
         }
+        // Reset every slot once at creation: reading a query that was
+        // never reset is invalid (VUID-vkGetQueryPoolResults-None-09401
+        // — the rig's armed sweep caught it on a create-then-read
+        // shape). Post-reset, unwritten slots are initialized and the
+        // no-WAIT read below reports them as zeros, matching Metal's
+        // zero-filled buffer. `timestamp_write` re-resets its one slot
+        // in the same command buffer as the write.
+        let reset = (|| -> Result<(), QuantaError> {
+            let lease = self.alloc_command_buffer()?;
+            let cmd = lease.cmd;
+            let begin = ffi::VkCommandBufferBeginInfo {
+                s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                p_next: core::ptr::null(),
+                flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                p_inheritance_info: core::ptr::null(),
+            };
+            unsafe {
+                if ffi::vkBeginCommandBuffer(cmd, &begin) != ffi::VK_SUCCESS {
+                    return Err(QuantaError::submit_failed());
+                }
+                ffi::vkCmdResetQueryPool(cmd, pool, 0, count);
+                if ffi::vkEndCommandBuffer(cmd) != ffi::VK_SUCCESS {
+                    return Err(QuantaError::submit_failed());
+                }
+            }
+            self.submit_and_wait(lease).and_then(|mut p| p.wait())
+        })();
+        if let Err(e) = reset {
+            // Unwind: the pool is a live device child no entry owns yet.
+            unsafe { ffi::vkDestroyQueryPool(self.device, pool, core::ptr::null()) };
+            return Err(e);
+        }
         let handle = self.alloc_handle();
         self.query_pools
             .write()
@@ -103,10 +135,16 @@ impl VulkanDevice {
                 count * core::mem::size_of::<u64>(),
                 results.as_mut_ptr() as *mut c_void,
                 core::mem::size_of::<u64>() as u64,
-                ffi::VK_QUERY_RESULT_64_BIT | ffi::VK_QUERY_RESULT_WAIT_BIT,
+                // No WAIT: `timestamp_write` submits and waits, so every
+                // written slot is available by read time. Waiting here
+                // would HANG on created-but-never-written slots (reset
+                // at creation, never made available); without it they
+                // come back VK_NOT_READY and keep their pre-zeroed
+                // values — Metal's zero-filled-buffer semantics.
+                ffi::VK_QUERY_RESULT_64_BIT,
             )
         };
-        if result != ffi::VK_SUCCESS {
+        if result != ffi::VK_SUCCESS && result != ffi::VK_NOT_READY {
             return Err(QuantaError::invalid_param("query read failed")
                 .with_context(&format!("timestamp_query_read: VkResult {result}")));
         }
