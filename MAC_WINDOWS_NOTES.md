@@ -777,3 +777,18 @@ it in as the committed Windows baseline.
 real-hardware Vulkan numbers for the wave-cache table.
 
 Findings → `fix/<topic>` branch per protocol, or rows in this file.
+
+## Mac integration verdict (rig handover accepted)
+
+`fix/vulkan-idle-race-and-surface-leak` reviewed and FAST-FORWARDED to
+`main` (SHAs preserved: `3b37225`, `168d145`, `fa645e4`) — trailers
+clean, the branch's 13/13 board verified (run 31358225504), Metal
+collateral re-run green on the Mac. `392735c` on top wires the Iris Xe
+baseline (`bench/baselines/windows-x86_64.json` + the justfile windows
+arm — bench-check is armed on the rig now) and RULES item 19: the test
+is renamed `surface_win32_dangling_handles_never_create` and accepts
+NotSupported (extension absent) OR Internal (extension present, garbage
+caps, surface unwound) — never success. Items 16-19 CLOSED. Items
+20/21 are Mac's queue (sparseResidencyImage2D enable-when-offered;
+timestamp query reset-before-read). The probe's real-hardware numbers
+went into the wave-cache design record's table.
