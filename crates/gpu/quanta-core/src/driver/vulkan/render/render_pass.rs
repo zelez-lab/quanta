@@ -1055,10 +1055,10 @@ impl VulkanDevice {
                     .read()
                     .map_err(|_| QuantaError::internal("lock poisoned"))?;
                 for op in &pass.ops {
-                    if let RenderOp::BeginOcclusionQuery { handle, index } = op {
-                        if let Some(qp) = pools.get(handle) {
-                            ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
-                        }
+                    if let RenderOp::BeginOcclusionQuery { handle, index } = op
+                        && let Some(qp) = pools.get(handle)
+                    {
+                        ffi::vkCmdResetQueryPool(cmd, qp.pool, *index, 1);
                     }
                 }
             }
