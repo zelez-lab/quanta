@@ -69,6 +69,12 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 | 13 | The dispatch CI lanes were broken by construction | Windows | `fix/ci-metal-lane-compiler` | **MERGED** as `6834818` + `6ba340a` + `e8dc60d`; branch deleted |
 | 14 | `gpu_advanced` ABORTS on the GH macos-14 runner's paravirtual Metal | Mac | _(direct on `main`)_ | **RULED + FIXED** — probe-and-self-skip, suite-level (`1ccdc59`): `try_gpu` declines a device whose name contains "Paravirtual"; real hardware runs everything. Per-test narrowing waits on a runner log naming the offenders |
 | 15 | Absolute `debug_registry_counts` asserts vs the shared device | **Mac** | _none yet_ | **SHIPPED** in `bbf4367` — `quanta::init_isolated()` / `init_cpu_isolated()` landed, every absolute-count test converted, the two `--test-threads=1` serializations removed from `ci.yml` |
+| 16 | `wait_idle` races the queue — device idle bypasses `queue_lock` | Windows | `fix/vulkan-idle-race-and-surface-leak` | **FIXED on branch** — `3b37225`; verification in the sweep entry |
+| 17 | Surface-creation error paths orphan the `VkSurfaceKHR` + partials | Windows | `fix/vulkan-idle-race-and-surface-leak` | **FIXED on branch** — `168d145` |
+| 18 | `clippy::collapsible_if` in `render_pass.rs` from `2f68dfb` (Mac-blind class, item-3 redux) | Windows | `fix/vulkan-idle-race-and-surface-leak` | **FIXED on branch** — `fa645e4` |
+| 19 | `surface_win32_target_rejected_off_windows` assumes `VK_KHR_win32_surface` never exists where the suite runs — false on this rig | **Mac** | _none_ | **RULING WANTED** — options in the sweep entry |
+| 20 | Sparse 2D images never enable `sparseResidencyImage2D` (`VUID-VkImageCreateInfo-imageType-00971` ×3) | ? | _none_ | **NEW** — gpu_advanced under VVL; pre-existing, not this cycle's |
+| 21 | Timestamp query read without reset (`VUID-vkGetQueryPoolResults-None-09401`) | ? | _none_ | **NEW** — same run; pre-existing |
 
 ## Delegation notes
 
@@ -83,6 +89,127 @@ git add MAC_WINDOWS_NOTES.md && git commit -m "notes: <what changed>" && git pus
 <!-- newest first. Handover entries + findings. e.g.
 ### fix/spirv-signedness  [win] <sha>  — pipeline: green
 what it fixes, file:line, anything the Mac needs before merging. -->
+
+### Rig request closed: armed sweep + baseline + probe `[win]` — plus the fix branch the sweep demanded
+
+**Base**: `2f68dfb` (CI-green tip, two commits past `2e2eadd`). Compilers
+dev+release stamped `2f68dfb`; the layer load was PROVEN before trusting
+any clean run (`VK_LOADER_DEBUG=layer` → "Insert instance layer
+VK_LAYER_KHRONOS_validation" from the SDK dll) — a bad layer name fails
+silently and would fake a clean sweep.
+
+**Armed sweep, 11 suites — nine ran ZERO validation errors**: op_matrix
+(6), differential (11), gpu_int_div_zero (4), wave_lifecycle (5),
+gpu_deferred (9), icb_vulkan (1), gpu_texture_compute (16),
+render_midflight_destroy (3), quanta-array (~290 across all binaries).
+The narrow-int storage rows and div/rotate/saturate semantics are clean
+on real Vulkan hardware. Two command corrections for the record:
+quanta-array's hardware feature is spelled `vulkan` (`gpu-vulkan`
+belongs to prims/blas/rand/fft), and quanta-bench defaults to metal so
+the recorder needs `--no-default-features --features vulkan`.
+
+**The two dirty suites → `fix/vulkan-idle-race-and-surface-leak`**,
+three commits, one per defect:
+
+| commit | what |
+|--------|------|
+| `3b37225` | `vulkan:` device idle waits under the queue lock |
+| `168d145` | `vulkan:` surface creation unwinds every failure |
+| `fa645e4` | `vulkan:` the occlusion reset collapses to a let-chain |
+
+**1. VkQueue threading race** — render_triangle_test passed 20/20 but
+VVL flagged `UNASSIGNED-Threading-MultipleThreads-Write`:
+"vkQueueSubmit(): object of type VkQueue is simultaneously used in
+current thread 3980 and thread 16596" — once in four parallel runs,
+never single-threaded, the registry-era race signature. Cause:
+`wait_idle` called `vkDeviceWaitIdle` bare, and a device idle counts as
+a use of EVERY queue the device owns. Every other queue touch (submit,
+present, sparse bind, queue idle) already held `queue_lock`; now the
+device idle does too.
+
+**2. Surface leak on the win32 leg** — gpu_surface's 10 headless
+failures are this rig's known gap (no VK_EXT_headless_surface on Intel
+Windows — environmental, unchanged). The 11th failure is the finding:
+this is the first Windows Vulkan with `VK_KHR_win32_surface` to run the
+suite, so `surface_win32_target_rejected_off_windows`'s dangling-HWND
+surface actually gets CREATED. The caps query then returns garbage
+(extent width 1673515620 against max 16384 —
+`VUID-VkSwapchainCreateInfoKHR-imageFormat-01778`), vkCreateSwapchainKHR
+fails, and the error path returned with the surface still alive:
+`VUID-vkDestroyInstance-instance-00629`, "VkInstance has 1 leaked
+objects: VkSurfaceKHR". The fix makes every failure past surface
+creation unwind what already exists — surface after a failed swapchain
+build; views/swapchain/fences/semaphores on the later fence, semaphore,
+lease and map-insert failures; build_swapchain sweeps its own partial
+views (a dropped CmdLease reclaims itself). → **item 19** for the
+test-semantics ruling: post-fix the leak VUID is GONE and the 01778
+flag on the bogus-handle ATTEMPT remains (driver-faithful —
+garbage in, clean error out), but the test still asserts NotSupported
+where creation now proceeds to an honest `Internal` failure. The
+test's own comment says it assumed the extension absent everywhere the
+suite runs; on this rig that's false. Options: skip when win32 support
+is real, accept the error-not-NotSupported outcome as the pass, or
+spend a real HWND on it.
+
+**3.** Main's tip `2f68dfb` landed a `clippy::collapsible_if` in
+`render_pass.rs` — the item-3 blindness class again (the cross-target
+gate runs `check`, no lints; only this rig compiles driver/vulkan
+natively). Let-chain, the same shape as `retire_or_park`.
+
+#### Verification (Iris Xe; clean handshake, compiler re-stamped `fa645e4`, no ACCEPT_STALE)
+
+- rtt parallel ×4 pre-commit + ×2 post-commit: **zero VVL errors**
+  (from 1-in-4 runs dirty); gpu_surface: **zero leaked objects**;
+  gpu_deferred / wave_lifecycle / render_midflight_destroy /
+  gpu_advanced re-runs green under VVL.
+- `cargo fmt --check` clean; native
+  `cargo clippy -p quanta --no-default-features --features
+  vulkan,jit,compute,render -- -D warnings` exit 0 (fails on `2f68dfb`);
+  the `vulkan,compute` no-render combo checks clean.
+- Cross-target gate lines are the dispatch run's business (no linux
+  target on this rig). Pipeline: awaiting push, then
+  `gh workflow run ci.yml --ref fix/vulkan-idle-race-and-surface-leak`.
+
+#### Two NEW pre-existing classes — the sweep extended to gpu_advanced
+
+18/18 pass, 4 VVL errors; both classes predate this cycle and the
+branch touches neither. → items 20, 21:
+
+- `VUID-VkImageCreateInfo-imageType-00971` ×3 — sparse 2D images take
+  `VK_IMAGE_CREATE_SPARSE_BINDING/RESIDENCY` but device creation never
+  enables the `sparseResidencyImage2D` feature. The caps probe says
+  Iris Xe OFFERS it — an enable gap, not a support gap.
+- `VUID-vkGetQueryPoolResults-None-09401` — a timestamp query is read
+  while uninitialized: created, never reset before
+  `vkGetQueryPoolResults` (`timestamp_query_create_returns_result`).
+
+#### Iris Xe bench baseline (VVL off, release, stamped compiler)
+
+Recorder: `cargo run --release -p quanta-bench --no-default-features
+--features vulkan -- run --out bench-iris-xe.json`. The JSON, verbatim —
+wire it in as the Windows baseline:
+
+```json
+{
+  "platform": "windows-x86_64",
+  "gpu": "Intel(R) Iris(R) Xe Graphics",
+  "results": [
+    {"name": "heavy_compute", "workload": "1000_elements", "elements": 1000, "gpu_ms": 1.1807, "cpu_ms": 17.3806},
+    {"name": "heavy_compute", "workload": "10000_elements", "elements": 10000, "gpu_ms": 1.5717, "cpu_ms": 173.6220},
+    {"name": "heavy_compute", "workload": "100000_elements", "elements": 100000, "gpu_ms": 8.2158, "cpu_ms": 1737.2388},
+    {"name": "heavy_compute", "workload": "1000000_elements", "elements": 1000000, "gpu_ms": 81.1413, "cpu_ms": 17327.6437},
+    {"name": "add_one_dispatch", "workload": "64x_dispatch_1048576_elements", "elements": 1048576, "gpu_ms": 0.7894},
+    {"name": "mandelbrot", "workload": "3840x2160", "elements": 8294400, "gpu_ms": 123.5830}
+  ]
+}
+```
+
+#### Wave-cache probe — first real-hardware Vulkan numbers
+
+creation only (warm cache) **0.1 µs/op** · creation only (cold, 32
+distinct kernels) **5074.0 µs/op** · creation+dispatch+wait
+**344.4 µs/op** · dispatch+wait (reused wave) **244.6 µs/op** ·
+cacheable share **99.9 µs/op = 29%** of the per-op cost.
 
 ### The dispatch story — read this before the per-branch entries `[win]`
 
