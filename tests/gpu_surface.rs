@@ -269,13 +269,17 @@ fn surface_android_target_rejected_off_android() {
 }
 
 #[test]
-fn surface_win32_target_rejected_off_windows() {
-    // The Win32 surface leg: a `Win32` target only creates a surface on a
-    // Windows Vulkan that offers `VK_KHR_win32_surface`. Everywhere the
-    // suite actually runs — the Metal backend here, the lavapipe Vulkan
-    // lane in CI — that extension is absent, so creation must fail
-    // `NotSupported`. On Vulkan the failure names the missing extension;
-    // on Metal the target is simply unavailable.
+fn surface_win32_dangling_handles_never_create() {
+    // The Win32 surface leg: dangling handles must NEVER yield a
+    // surface; the failure MODE is platform-dependent. Where
+    // `VK_KHR_win32_surface` is absent — the Metal backend here, the
+    // lavapipe lane in CI — creation fails NotSupported naming the
+    // gap. On a Windows Vulkan that OFFERS the extension (the Iris Xe
+    // rig was the first to run this suite on one), the dangling
+    // handles get as far as a real VkSurfaceKHR whose caps query
+    // returns garbage: the swapchain build fails honestly and the
+    // error path unwinds the surface — the rig's armed validation
+    // caught the orphan the old early-return leaked.
     let Some(gpu) = try_gpu() else {
         eprintln!("skipping: no GPU available");
         return;
@@ -301,7 +305,12 @@ fn surface_win32_target_rejected_off_windows() {
                 || msg.contains("not available on the Metal backend"),
             "unexpected NotSupported reason: {msg}"
         ),
-        other => panic!("expected NotSupported, got {other:?}"),
+        // Extension present: the garbage-handle creation must fail on
+        // the swapchain path — the honest kind is Internal, and the
+        // surface must have been unwound (armed validation asserts
+        // the no-leak half on the rig).
+        QuantaErrorKind::Internal(_) => {}
+        other => panic!("expected NotSupported or Internal, got {other:?}"),
     }
 }
 

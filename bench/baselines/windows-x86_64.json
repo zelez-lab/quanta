@@ -1,0 +1,12 @@
+{
+  "platform": "windows-x86_64",
+  "gpu": "Intel(R) Iris(R) Xe Graphics",
+  "results": [
+    {"name": "heavy_compute", "workload": "1000_elements", "elements": 1000, "gpu_ms": 1.1807, "cpu_ms": 17.3806},
+    {"name": "heavy_compute", "workload": "10000_elements", "elements": 10000, "gpu_ms": 1.5717, "cpu_ms": 173.6220},
+    {"name": "heavy_compute", "workload": "100000_elements", "elements": 100000, "gpu_ms": 8.2158, "cpu_ms": 1737.2388},
+    {"name": "heavy_compute", "workload": "1000000_elements", "elements": 1000000, "gpu_ms": 81.1413, "cpu_ms": 17327.6437},
+    {"name": "add_one_dispatch", "workload": "64x_dispatch_1048576_elements", "elements": 1048576, "gpu_ms": 0.7894},
+    {"name": "mandelbrot", "workload": "3840x2160", "elements": 8294400, "gpu_ms": 123.5830}
+  ]
+}

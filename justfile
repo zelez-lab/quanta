@@ -58,7 +58,7 @@ example-bench-nbody:
 
 # Performance regression suite (step 069)
 # Records JSON results; gated by `bench-check` against committed baseline.
-BENCH_BASELINE := if os() == "macos" { "bench/baselines/macos-aarch64.json" } else { "bench/baselines/linux-x86_64.json" }
+BENCH_BASELINE := if os() == "macos" { "bench/baselines/macos-aarch64.json" } else if os() == "windows" { "bench/baselines/windows-x86_64.json" } else { "bench/baselines/linux-x86_64.json" }
 
 bench:
     cargo run --release -p quanta-bench -- run
