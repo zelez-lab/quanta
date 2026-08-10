@@ -724,11 +724,15 @@ fn numpy_fixture_shape_edges_load() {
         assert_eq!(a.to_vec().unwrap(), vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
     }
     if let Some(b) = fixture("v2_long_header.npy") {
+        // numpy caps ndarrays at 64 dims, so a simple-dtype header can
+        // never organically overflow the u16 length field — the
+        // fixture pins the v2.0 FRAMING (u32 header length) via
+        // numpy's low-level writer with the version forced.
         let h = npy::header(&b).unwrap();
         assert_eq!(h.version, (2, 0));
-        assert_eq!(h.shape.len(), 20_000);
         let a = npy::load::<f32>(&g, &b).unwrap();
-        assert_eq!(a.to_vec().unwrap(), vec![0.0]);
+        assert_eq!(a.shape(), &[2, 3]);
+        assert_eq!(a.to_vec().unwrap(), vec![0.0, 0.25, 0.5, 0.75, 1.0, 1.25]);
     }
     if let Some(b) = fixture("big_endian.npy") {
         assert_eq!(npy::header(&b).unwrap().descr, ">f4");

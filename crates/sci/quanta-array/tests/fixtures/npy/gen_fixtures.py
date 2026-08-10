@@ -72,8 +72,15 @@ save("scalar_0d.npy", np.float32(2.5))  # shape ()
 save("vec3.npy", np.arange(3, dtype=np.float32))  # the (3,) 1-tuple form
 save("fortran.npy", np.asfortranarray(np.arange(6, dtype=np.float32).reshape(2, 3)))
 
-# v2.0: a header past 64 KiB forces the u32 length field.
-save("v2_long_header.npy", np.zeros((1,) * 20000, dtype=np.float32))
+# v2.0: numpy caps ndarrays at 64 dims, so a simple-dtype header can
+# never organically overflow the u16 length field — ask numpy's own
+# low-level writer for the v2.0 framing directly instead. Still a
+# numpy-written file; only the version is pinned.
+with open("v2_long_header.npy", "wb") as f:
+    np.lib.format.write_array(
+        f, np.arange(6, dtype=np.float32).reshape(2, 3) / 4, version=(2, 0)
+    )
+print("wrote v2_long_header.npy (forced v2.0 framing)")
 
 # Big-endian: the positive byteswap-on-load case.
 save("big_endian.npy", (np.arange(6, dtype=np.float32) / 4).astype(">f4"))

@@ -13,9 +13,13 @@
 //! entries — the CD always has real sizes). Stored and deflate (method
 //! 8, [`inflate`]) entries are accepted, CRC-verified after extraction.
 //! Extra fields and archive comments are tolerated per the ZIP spec;
-//! ZIP64 markers are detected and refused loudly (the claim boundary:
-//! numpy emits ZIP64 only above 4 GiB, and safetensors is the declared
-//! big-weights lane). Names must end in `.npy` — anything else means the
+//! archive-level ZIP64 (CD extras, the EOCD locator, real ≥4 GiB
+//! sizes) is detected and refused loudly (the claim boundary:
+//! numpy emits ZIP64 SIZES only above 4 GiB, and safetensors is the
+//! declared big-weights lane) — but LOCAL-header ZIP64 size sentinels
+//! are tolerated, because CPython's zipfile streams entries that way
+//! at any size (every real numpy .npz carries them); the CD stays
+//! authoritative. Names must end in `.npy` — anything else means the
 //! ZIP was not written as an npz.
 //!
 //! Seam for the typed layer: `npz::save_named` appends `.npy` to its
@@ -370,11 +374,22 @@ fn extract(bytes: &[u8], cd: &CdEntry) -> Result<Vec<u8>, NpyError> {
     }
     // Bit 3 (streaming mode) moves sizes/CRC to a data descriptor and
     // zeroes them here; the CD stays authoritative either way. Without
-    // bit 3 the two records must agree.
+    // bit 3 the two records must agree — EXCEPT that a size of
+    // 0xFFFFFFFF is the ZIP64 sentinel, which defers the value to the
+    // local ZIP64 extra field rather than disagreeing with the CD.
+    // CPython's zipfile streams entries that way at ANY size (real
+    // numpy .npz files carry sentinel local sizes + a local ZIP64
+    // extra while their CD sizes are plain u32) — the caught-by-real-
+    // fixtures case. The CD-driven read and per-entry CRC keep the
+    // integrity check; archive-level ZIP64 (CD extras, the EOCD
+    // locator, real ≥4 GiB sizes) stays loudly refused.
+    const ZIP64_SIZE_SENTINEL: u32 = 0xFFFF_FFFF;
+    let l_csize = rd_u32(rec, 18);
+    let l_usize = rd_u32(rec, 22);
     if flags & 0x0008 == 0
         && (rd_u32(rec, 14) != cd.crc
-            || rd_u32(rec, 18) as usize != cd.compressed
-            || rd_u32(rec, 22) as usize != cd.uncompressed)
+            || (l_csize != ZIP64_SIZE_SENTINEL && l_csize as usize != cd.compressed)
+            || (l_usize != ZIP64_SIZE_SENTINEL && l_usize as usize != cd.uncompressed))
     {
         return Err(zip_err(
             name.into(),
