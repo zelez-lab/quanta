@@ -37,10 +37,20 @@ impl PropertyLookup for UnicodeTables {
             PropClass::DecimalDigit => unicode::general_category(c) == GeneralCategory::Nd,
             PropClass::Whitespace => unicode::is_whitespace(c),
             PropClass::Word => {
+                // Oniguruma's Unicode word class: letters, marks,
+                // decimal digits, connector punctuation — AND
+                // Join_Control (exactly U+200C ZWNJ / U+200D ZWJ).
+                // The conformance corpus arbitrated the last member:
+                // the reference's Whitespace pre-tokenizer splits
+                // emoji ZWJ families into alternating single-char
+                // matches because ZWJ is \w there (probed live
+                // against tokenizers 0.21.4).
                 unicode::is_letter(c)
                     || unicode::is_mark(c)
                     || unicode::general_category(c) == GeneralCategory::Nd
                     || unicode::general_category(c) == GeneralCategory::Pc
+                    || c == '\u{200C}'
+                    || c == '\u{200D}'
             }
         }
     }

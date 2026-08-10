@@ -1,0 +1,159 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "<unk>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": {
+    "type": "Nmt"
+  },
+  "pre_tokenizer": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  },
+  "model": {
+    "type": "Unigram",
+    "unk_id": 0,
+    "vocab": [
+      [
+        "<unk>",
+        0.0
+      ],
+      [
+        "▁",
+        -2.0
+      ],
+      [
+        "▁hello",
+        -4.0
+      ],
+      [
+        "▁world",
+        -4.2
+      ],
+      [
+        "hello",
+        -5.0
+      ],
+      [
+        "world",
+        -5.2
+      ],
+      [
+        "▁the",
+        -3.5
+      ],
+      [
+        "▁cat",
+        -4.1
+      ],
+      [
+        "▁a",
+        -3.0
+      ],
+      [
+        "▁play",
+        -4.4
+      ],
+      [
+        "ing",
+        -3.8
+      ],
+      [
+        "s",
+        -3.2
+      ],
+      [
+        "ed",
+        -3.9
+      ],
+      [
+        "h",
+        -6.0
+      ],
+      [
+        "e",
+        -5.5
+      ],
+      [
+        "l",
+        -5.6
+      ],
+      [
+        "o",
+        -5.4
+      ],
+      [
+        "w",
+        -6.1
+      ],
+      [
+        "r",
+        -5.8
+      ],
+      [
+        "d",
+        -5.7
+      ],
+      [
+        "t",
+        -5.3
+      ],
+      [
+        "c",
+        -6.2
+      ],
+      [
+        "a",
+        -5.1
+      ],
+      [
+        "p",
+        -6.3
+      ],
+      [
+        "y",
+        -6.4
+      ],
+      [
+        "n",
+        -5.9
+      ],
+      [
+        "i",
+        -5.5
+      ],
+      [
+        "g",
+        -6.5
+      ],
+      [
+        "▁h",
+        -5.0
+      ],
+      [
+        "▁w",
+        -5.2
+      ]
+    ],
+    "byte_fallback": false
+  }
+}

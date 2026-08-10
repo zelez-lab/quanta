@@ -51,10 +51,25 @@
 #![forbid(unsafe_code)]
 
 pub mod artifact;
+pub mod bpe;
+pub mod decode;
+pub mod encoding;
 pub mod error;
 pub mod json;
+pub mod model;
+pub mod normalize;
+pub mod normalized;
+pub mod postprocess;
+pub mod pretokenize;
 pub mod props;
 pub mod regex;
+pub mod tokenizer;
 pub mod unicode;
+pub mod unigram;
+pub mod wordlevel;
+pub mod wordpiece;
 
+pub use encoding::Encoding;
 pub use error::{PINNED_REFERENCE, TokenizerError};
+pub use model::{Model, ModelToken};
+pub use tokenizer::Tokenizer;

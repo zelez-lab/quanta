@@ -1016,7 +1016,38 @@ fn check_merges(
 }
 
 fn model(v: &Value, path: &str) -> Result<ModelConfig, TokenizerError> {
-    let (t, o) = tag(v, path)?;
+    expect_object(v, path)?;
+    // The reference's ModelWrapper deserializes tagged OR untagged —
+    // real-world artifacts carry the legacy untagged model object
+    // (gpt2 and bert-base-uncased among them, which is how the
+    // conformance anchors caught this), its family inferred from
+    // field shape in the reference's declaration order (BPE,
+    // WordPiece, WordLevel, Unigram). Distinctive required fields
+    // make the inference deterministic: `merges` → BPE;
+    // `max_input_chars_per_word` → WordPiece; an array-of-pairs
+    // vocab → Unigram; a map vocab with `unk_token` → WordLevel.
+    let t = match v.get("type") {
+        Some(t) => expect_str(t, &join(path, "type"))?,
+        None => {
+            if v.get("merges").is_some() {
+                "BPE"
+            } else if v.get("max_input_chars_per_word").is_some() {
+                "WordPiece"
+            } else if matches!(v.get("vocab"), Some(Value::Array(_))) {
+                "Unigram"
+            } else if v.get("vocab").is_some() && v.get("unk_token").is_some() {
+                "WordLevel"
+            } else {
+                return Err(schema(
+                    &join(path, "type"),
+                    "is missing and no legacy untagged model shape matches (no \
+                     merges / max_input_chars_per_word / array vocab / map vocab \
+                     with unk_token)",
+                ));
+            }
+        }
+    };
+    let o = v;
     match t {
         "BPE" => {
             // `dropout` non-null is a named exclusion (§12): train-time
