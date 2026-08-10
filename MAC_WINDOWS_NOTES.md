@@ -167,8 +167,9 @@ natively). Let-chain, the same shape as `retire_or_park`.
   vulkan,jit,compute,render -- -D warnings` exit 0 (fails on `2f68dfb`);
   the `vulkan,compute` no-render combo checks clean.
 - Cross-target gate lines are the dispatch run's business (no linux
-  target on this rig). Pipeline: awaiting push, then
-  `gh workflow run ci.yml --ref fix/vulkan-idle-race-and-surface-leak`.
+  target on this rig). **Pipeline verdict: dispatch run 31358225504 on
+  `fa645e4` — 13/13 jobs GREEN**, both GPU lanes, metal-validation and
+  perf-regression included. The branch hands over with a full board.
 
 #### Two NEW pre-existing classes — the sweep extended to gpu_advanced
 
