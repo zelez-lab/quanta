@@ -514,6 +514,14 @@ impl GpuDevice for VulkanDevice {
     }
 
     fn wait_idle(&self) -> Result<(), QuantaError> {
+        // `vkDeviceWaitIdle` counts as a use of EVERY queue the device
+        // owns, so it needs the same external synchronization as a
+        // submit — without the lock it races `vkQueueSubmit` from other
+        // threads on the shared device.
+        let _q = self
+            .queue_lock
+            .lock()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
         let r = unsafe { ffi::vkDeviceWaitIdle(self.device) };
         if r != ffi::VK_SUCCESS {
             return Err(QuantaError::internal("vkDeviceWaitIdle failed"));
