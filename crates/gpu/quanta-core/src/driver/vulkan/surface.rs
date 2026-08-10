@@ -329,8 +329,21 @@ impl VulkanDevice {
         // 3. Build the swapchain + per-surface objects. The negotiated
         // format may differ from `config.format` (a preference on
         // Vulkan) — it is what acquired frames must report.
-        let (swapchain, images, views, vk_format, format, extent, usage) =
-            self.build_swapchain(procs, surface, config, ffi::null_handle())?;
+        //
+        // From here on every failure must unwind what already exists:
+        // the surface (and later the swapchain, views and fences) are
+        // live instance/device children that no entry owns yet, so an
+        // early return would orphan them past teardown
+        // (VUID-vkDestroyInstance-instance-00629).
+        let (swapchain, images, views, vk_format, format, extent, usage) = match self
+            .build_swapchain(procs, surface, config, ffi::null_handle())
+        {
+            Ok(built) => built,
+            Err(e) => {
+                unsafe { (procs.destroy_surface)(self.instance.raw, surface, core::ptr::null()) };
+                return Err(e);
+            }
+        };
 
         let fence_info = ffi::VkFenceCreateInfo {
             s_type: ffi::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -346,6 +359,21 @@ impl VulkanDevice {
             flags: ffi::VK_FENCE_CREATE_SIGNALED_BIT,
         };
         let mut present_fence = ffi::null_handle();
+        // Unwind for every failure below: views, swapchain, whichever
+        // fences exist, then the surface.
+        let destroy_built = |acquire_fence: ffi::VkFence, present_fence: ffi::VkFence| unsafe {
+            for &v in &views {
+                ffi::vkDestroyImageView(self.device, v, core::ptr::null());
+            }
+            (procs.destroy_swapchain)(self.device, swapchain, core::ptr::null());
+            if !acquire_fence.is_null() {
+                ffi::vkDestroyFence(self.device, acquire_fence, core::ptr::null());
+            }
+            if !present_fence.is_null() {
+                ffi::vkDestroyFence(self.device, present_fence, core::ptr::null());
+            }
+            (procs.destroy_surface)(self.instance.raw, surface, core::ptr::null());
+        };
         unsafe {
             if ffi::vkCreateFence(
                 self.device,
@@ -360,37 +388,62 @@ impl VulkanDevice {
                     &mut present_fence,
                 ) != ffi::VK_SUCCESS
             {
+                destroy_built(acquire_fence, present_fence);
                 return Err(QuantaError::out_of_memory());
             }
         }
-        let present_sems = self.create_present_sems(images.len())?;
-        let present_lease = self.alloc_command_buffer()?;
+        let present_sems = match self.create_present_sems(images.len()) {
+            Ok(sems) => sems,
+            Err(e) => {
+                destroy_built(acquire_fence, present_fence);
+                return Err(e);
+            }
+        };
+        // On failure the lease itself needs no unwinding (a dropped
+        // `CmdLease` returns to the cache), but the semaphores do.
+        let present_lease = match self.alloc_command_buffer() {
+            Ok(lease) => lease,
+            Err(e) => {
+                for &s in &present_sems {
+                    unsafe { ffi::vkDestroySemaphore(self.device, s, core::ptr::null()) };
+                }
+                destroy_built(acquire_fence, present_fence);
+                return Err(e);
+            }
+        };
 
         let handle = self.alloc_handle();
-        self.vk_surfaces
-            .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(
-                handle,
-                VkSurfaceEntry {
-                    surface,
-                    swapchain,
-                    images,
-                    views,
-                    width: extent.0,
-                    height: extent.1,
-                    format,
-                    vk_format,
-                    usage,
-                    present_mode: config.present_mode,
-                    needs_rebuild: false,
-                    acquire_fence,
-                    present_sems,
-                    present_lease,
-                    present_fence,
-                    present_serial: core::sync::atomic::AtomicU64::new(0),
-                },
-            );
+        let mut surfaces = match self.vk_surfaces.write() {
+            Ok(guard) => guard,
+            Err(_) => {
+                for &s in &present_sems {
+                    unsafe { ffi::vkDestroySemaphore(self.device, s, core::ptr::null()) };
+                }
+                destroy_built(acquire_fence, present_fence);
+                return Err(QuantaError::internal("lock poisoned"));
+            }
+        };
+        surfaces.insert(
+            handle,
+            VkSurfaceEntry {
+                surface,
+                swapchain,
+                images,
+                views,
+                width: extent.0,
+                height: extent.1,
+                format,
+                vk_format,
+                usage,
+                present_mode: config.present_mode,
+                needs_rebuild: false,
+                acquire_fence,
+                present_sems,
+                present_lease,
+                present_fence,
+                present_serial: core::sync::atomic::AtomicU64::new(0),
+            },
+        );
         Ok(handle)
     }
 
@@ -588,6 +641,15 @@ impl VulkanDevice {
                 ffi::vkCreateImageView(self.device, &view_info, core::ptr::null(), &mut view)
             };
             if r != ffi::VK_SUCCESS {
+                // The swapchain and the views built so far are already
+                // live device children — unwind them or they outlive
+                // the entry that was never inserted.
+                unsafe {
+                    for &v in &views {
+                        ffi::vkDestroyImageView(self.device, v, core::ptr::null());
+                    }
+                    (procs.destroy_swapchain)(self.device, swapchain, core::ptr::null());
+                }
                 return Err(QuantaError::out_of_memory());
             }
             views.push(view);
