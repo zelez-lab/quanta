@@ -21,6 +21,7 @@ members = [
     "crates/ml/quanta-autograd",
     "crates/ml/quanta-nn",
     "crates/ml/quanta-nn-derive",
+    "crates/ml/quanta-tokenizers",
     "crates/sci/quanta-fft",
     "examples/headless_compute",
     "examples/web_add_one",

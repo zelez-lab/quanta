@@ -1,0 +1,14 @@
+[package]
+name = "quanta-tokenizers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Run pretrained tokenizers from tokenizer.json (the HF tokenizers interchange format) — pure host string processing, zero dependencies, wasm32-clean."
+keywords = ["tokenizer", "nlp", "bpe", "wordpiece", "unigram"]
+categories = ["text-processing", "parser-implementations"]
+
+# Zero dependencies — including zero quanta crates (the crate's subject
+# is strings and u32 ids, not Gpu/Field), extending to wasm32. The JSON
+# parser, Unicode tables, and regex engine are all in-crate.
+[dependencies]

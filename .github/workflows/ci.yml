@@ -293,6 +293,7 @@ jobs:
           cargo test -p quanta-array --features software
           cargo test -p quanta-autograd --features software -- --skip gpt_decoder
           cargo test -p quanta-nn --features software
+          cargo test -p quanta-tokenizers
 
   # ─── Metal validation layer ──────────────────────────────────────────
   # Same gate as gpu-tests-metal — needs real Metal hardware.
