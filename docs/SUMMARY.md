@@ -68,6 +68,7 @@
 - [Training with Autodiff](computation/how-to/autograd-training.md)
 - [FFT (Fourier Transforms)](computation/how-to/fft.md)
 - [Async Copy and GPU Printf](computation/how-to/async-copy-and-printf.md)
+- [Tokenize Text (run a pretrained tokenizer)](computation/how-to/tokenize-text.md)
 
 ## Reference
 

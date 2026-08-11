@@ -33,20 +33,30 @@
 //! a misparse. Artifact files are untrusted: every length is
 //! text-bounded, every index bounds-checked, recursion capped.
 //!
-//! ## Layout (the arc lands in layers)
+//! ## Layout
 //!
 //! - [`json`] — the complete in-crate RFC 8259 parser (the artifact
 //!   substrate).
 //! - [`artifact`] — the typed `tokenizer.json` schema layer: every
 //!   pipeline family parsed, validated, and held as config structs.
+//! - [`unicode`] — UAX #15 normalization + properties over vendored
+//!   UCD tables; the `Precompiled` charsmap walker.
+//! - [`regex`] + [`props`] — the closed-construct split-regex engine
+//!   and its property bridge to the tables.
+//! - [`normalized`] / [`normalize`] / [`pretokenize`] — the
+//!   alignment-tracked pipeline stages executing the configs.
+//! - [`model`] + [`bpe`] / [`wordpiece`] / [`unigram`] / [`wordlevel`]
+//!   — the seam and the four family runtimes.
+//! - [`encoding`] / [`postprocess`] / [`decode`] — the `Encoding`
+//!   record with truncation/padding, the post-processors, the
+//!   decoders and streaming decode.
+//! - [`tokenizer`] — the facade: artifact bytes in, running
+//!   pipeline out.
 //! - [`error`] — the taxonomy ([`TokenizerError`]), loud and
 //!   offset/context-carrying.
 //!
-//! The pipeline stages that *execute* these configs (normalizers over
-//! vendored Unicode tables, the closed-construct split-regex engine,
-//! the four model families, encode/decode and the `Encoding` record)
-//! build on this layer; the crate announces when the arc completes —
-//! no intermediate state is presented as shipped.
+//! The declared surface and its conformance evidence live in
+//! `TOKENIZER_CONTRACT.md` at the crate root.
 
 #![forbid(unsafe_code)]
 

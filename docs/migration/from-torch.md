@@ -79,6 +79,32 @@ bias correction, weight decay, and the step in a single dispatch. Bias
 correction uses the exact `1/(1−βᵗ)` factors (T9220: exact at every step,
 not just asymptotically).
 
+## Tokenizers
+
+HF `AutoTokenizer` usage maps onto **`quanta-tokenizers`** — a
+standalone zero-dependency crate (not behind the `quanta` facade;
+`cargo add quanta-tokenizers` next to `quanta`) that runs
+`tokenizer.json`, the artifact every Hub model ships. The conformance
+reference is pinned (HF `tokenizers` 0.21.x, bit-exact against
+reference-produced vectors for gpt2 and bert-base-uncased);
+`TOKENIZER_CONTRACT.md` at the crate root is the row-by-row contract.
+
+| transformers / tokenizers | quanta-tokenizers |
+|---|---|
+| `AutoTokenizer.from_pretrained("gpt2")` | `Tokenizer::from_bytes(&std::fs::read("tokenizer.json")?)?` — the downloaded artifact; no hub client, no file-path wrappers, eager whole-artifact validation |
+| `tok(text)["input_ids"]` | `tok.encode(text, true)?.ids()` — `add_special_tokens` is an explicit argument, never ambient |
+| `tok(a, b)` (sentence pair) | `tok.encode_pair(a, b, true)?` — pair templates, `type_ids` |
+| `tok(batch, padding=True, truncation=True)` | `tok.encode_batch(&batch, true)?` — the artifact's SAVED truncation/padding are the active defaults; `set_truncation` / `set_padding` override, `set_*(None)` disables |
+| `out["attention_mask"]`, `offset_mapping` | `enc.attention_mask()`, `enc.offsets()` — byte offsets into the original input, plus tokens / type_ids / word_ids / `overflowing` on the same `Encoding` |
+| `tok.decode(ids, skip_special_tokens=True)` | `tok.decode(&ids, true)?` — out-of-range ids error loudly instead of being silently skipped |
+| `TextStreamer`-style incremental detok | `tok.decode_stream(true)` + `stream.step(id)?` — holds bytes split across ids (byte-level artifacts split multibyte chars); concatenated emits ≡ whole decode |
+| `tok.convert_tokens_to_ids` / `get_vocab` | `token_to_id` / `id_to_token` / `get_vocab(with_added)` / `vocab_size(with_added)` |
+| `torch.tensor(out["input_ids"])` | `Array::from_slice(&gpu, enc.ids(), &[n])?` — feeds `nn::embedding::Embedding` directly (the chain head takes `Array<u32>`) |
+| `tok.apply_chat_template(...)` | out of scope — chat templates are a *different artifact* (`tokenizer_config.json` Jinja); format the prompt string yourself, the special tokens ship |
+
+The [tokenize-text how-to](../computation/how-to/tokenize-text.md)
+walks the load → encode → `Embedding` → stream-decode path.
+
 ## A full loop, side by side
 
 PyTorch:
@@ -130,6 +156,7 @@ this loop line by line.
   are host loops for now, matching the single-head attention core.
 - **No `.to(device)`.** Arrays are created on a `Gpu` handle and stay
   there; there is one device per handle rather than a global default.
-- **No DataLoader.** Data loading and tokenizers are a separate step of
-  the numeric stack (see the structural exclusions in `PARITY.md`);
+- **No DataLoader.** Data loading is a separate step of the numeric
+  stack (see the structural exclusions in `PARITY.md`); tokenizers ship
+  as the standalone `quanta-tokenizers` crate ([above](#tokenizers));
   minibatch selection inside a graph is `Var::narrow` on axis 0.

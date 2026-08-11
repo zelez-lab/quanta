@@ -70,13 +70,16 @@ recipe (Lean proof foundation, then implementation with differential tests).
 | Named parameter traversal (`state_dict` equivalent) | **shipped** — `ParamTree::{collect_named, named_flatten}`: derived structs name by FIELD, tuples by INDEX, `Option` transparent, `.`-joined paths (`"0.w"`, `"proj.norm.gamma"`); order = flatten order (the invariant `load_state` rebuilds through). The derive generates it. |
 | In-memory + bytes round-trip save/load | **shipped** — `state::{save_state, load_state}`: dependency-free `QNNS` byte format; **load matches by NAME, not order** (a reordered/refield-ordered witness loads identically), and missing / extra / wrong-shape / wrong-dtype leaves are loud errors naming the path. Elements travel as f64 LE (exact for f32 and f64 trees); compact native-width encoding = future increment. Optimizer state trees checkpoint with the same two calls. |
 | safetensors interop | **shipped** — `safetensors::{save, load, save_named, load_named}`: the HF format, dependency-free (hand-rolled header JSON per the no-wrapper-crates policy, byte-exact against a hand-built spec reference). Saves `F32`; loads `F32` exact + `F16`/`BF16` upconverted (incl. subnormals) — other dtypes are loud errors naming the tensor. Tree forms ride `named_flatten`: NAME-keyed load with the `load_state` missing/extra/shape contract; `__metadata__` round-trips. |
-| npy / npz interop | **deferred to step 084.8** — plain-array IO belongs beside `quanta-array`; the checkpoint path above no longer waits on it |
+| npy / npz interop | **shipped** in `quanta-array` (`npy`/`npz` modules, `NPY_INTEROP.md`) — plain-array IO landed beside the arrays, as ruled |
 | torch/ONNX checkpoint import | **deferred** — interop lane, post-084.8 |
 
 ## Structural exclusions (not deferrals — they live elsewhere by design)
 
 - Anything distributed (sharding, collectives, actor-scheduled backward):
   dija-nn's scope per the placement policy; it wraps this crate.
-- Data loading / tokenizers: step 084.8 (quanta-data lane).
+- Data loading: step 084.8 (quanta-data lane). Tokenizers: **shipped** —
+  the standalone `quanta-tokenizers` crate (`TOKENIZER_CONTRACT.md` at
+  its root is the declared surface); the bridge is
+  `Array::from_slice(&gpu, encoding.ids(), &[n])` into `Embedding`.
 - Inference-serving optimizations (paged KV cache, batching servers):
   a future inference step; the attention kernel exposes the kv-cache hook.

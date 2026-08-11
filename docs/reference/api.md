@@ -1232,6 +1232,42 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 
 ---
 
+## `quanta-tokenizers` — run pretrained tokenizers
+
+`tokenizer.json` (the HF `tokenizers` single-file artifact — what every
+model on the Hub ships) in, token ids out: the full encode pipeline
+(normalize → pre-tokenize → model → post-process), decode, special
+tokens, truncation/padding. All four model families run — BPE,
+WordPiece, Unigram, WordLevel. A standalone companion crate
+(`crates/ml/quanta-tokenizers`), NOT behind the `quanta` facade —
+depend on it directly. Zero dependencies including zero quanta crates,
+pure `std`, wasm32-clean (browser-side tokenization compiles as-is).
+The conformance reference is pinned (HF `tokenizers` 0.21.x): every
+`type` tag that version deserializes either runs or is a named
+exclusion, and a tag outside the inventory is a loud `UnknownTag`
+error. Completeness contract (every family, deferral, and correction):
+`TOKENIZER_CONTRACT.md` at the crate root.
+
+| Item | Description |
+|------|-------------|
+| `Tokenizer::from_bytes(&[u8]) -> Result<Tokenizer>` | Loads a `tokenizer.json` (bytes-level — `std::fs::read` is the one-liner). Validates the WHOLE artifact eagerly: every stage constructed, every vocab/merge cross-checked — a tokenizer that loads, runs. Accepts the tagged model object AND the legacy untagged spelling real artifacts use |
+| `encode(&str, add_special_tokens) -> Result<Encoding>` | Full pipeline including the added-token two-pass split and the post-processor |
+| `encode_pair(&str, &str, add_special_tokens)` | The BERT-class pair story: pair templates, `type_ids`, OnlyFirst/OnlySecond truncation |
+| `encode_batch(&[impl AsRef<str>], …) -> Result<Vec<Encoding>>` | Sequential host loop + batch padding (`BatchLongest` needs the batch). Not internally threaded (zero-dep); parallel spelling: `std::thread::scope` over chunks, then `encoding::pad_encodings` |
+| `Encoding` | The reference's full record: `ids` / `type_ids` / `tokens` / `offsets` (BYTE offsets into the ORIGINAL input, alignment-tracked through any normalizer stack) / `special_tokens_mask` / `attention_mask` / `word_ids` / `overflowing` (truncation stride windows), plus alignment helpers `token_to_chars`, `char_to_token`, `word_to_tokens`, `word_to_chars`, `token_to_word`, `char_to_word` |
+| `decode(&[u32], skip_special_tokens)` / `decode_batch` | Runs the artifact's decoder chain. An out-of-range id is a loud `Decode` error naming the id and vocab size (the pinned reference silently skips — silence loses data) |
+| `decode_stream(skip_special_tokens)` → `DecodeStream::step(id) -> Result<Option<String>>` | Incremental detokenization for generation loops. Prefix-diff semantics: emits the new valid-UTF-8 suffix, holds bytes split across tokens (byte-level artifacts split multibyte chars across ids); concatenated emits ≡ whole-sequence decode |
+| `token_to_id` / `id_to_token` / `vocab_size(with_added)` / `get_vocab(with_added)` | The lookup quartet; the artifact names its own specials — resolve them via `token_to_id` |
+| `set_truncation(Option<TruncationConfig>)` / `set_padding(Option<PaddingConfig>)` | The artifact's saved sections load as the ACTIVE defaults; override or disable (`None`). Truncation: `max_length` / LongestFirst-OnlyFirst-OnlySecond / direction / `stride` with overflow into `Encoding::overflowing`. Padding: BatchLongest or Fixed, direction, `pad_id` / `pad_type_id` / `pad_token`, `pad_to_multiple_of` |
+| `TokenizerError` | Loud, self-contained taxonomy: byte-offset JSON errors, JSON-path schema errors, `UnknownTag` naming the pinned reference, load-time vocab validation, `RegexConstruct` claim boundary, `Charsmap` offsets, decode ids. Artifacts are treated as hostile input throughout |
+
+The bridge to the GPU stack is one line, not a dependency:
+`Array::from_slice(&gpu, encoding.ids(), &[encoding.len()])?` feeds
+`nn::embedding::Embedding` directly (`ids: Array<u32>` heads the
+chain). See the [tokenize-text how-to](../computation/how-to/tokenize-text.md).
+
+---
+
 ## Design decisions
 
 Features Quanta deliberately does not include:

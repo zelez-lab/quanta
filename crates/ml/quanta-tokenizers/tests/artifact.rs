@@ -740,8 +740,9 @@ fn metaspace_current_spelling() {
 
 #[test]
 fn metaspace_legacy_add_prefix_space_spelling() {
-    // The legacy serialization the reference still accepts (str_rep is
-    // accepted-and-ignored).
+    // The legacy ≤0.19 serialization. The 0.21 line's deserializer
+    // refuses it; loading it here is a deliberate claim WIDENING
+    // (contract §11(e)) — str_rep is accepted-and-ignored.
     assert_eq!(
         pre(r#"{"type":"Metaspace","replacement":"▁","add_prefix_space":true,"str_rep":"▁"}"#),
         PreTokenizerConfig::Metaspace {
