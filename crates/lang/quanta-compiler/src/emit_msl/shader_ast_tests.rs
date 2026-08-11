@@ -88,10 +88,14 @@ fn field_access_and_swizzles() {
 }
 
 #[test]
-fn casts_are_stripped() {
-    let body = "{ let a = 3.0 as f32 ; Vec4 :: new (a, a, a, a) }";
+fn casts_are_real_conversions() {
+    // The float-era emitter STRIPPED casts; with `u32` in the grammar a cast
+    // is a real conversion — `(float)` / `(uint)`, the `(uint)` truncating
+    // toward zero like the slice-index coercion and SPIR-V `OpConvertFToU`.
+    let body = "{ let a = 3.0 as f32 ; let b = ( a as u32 ) as f32 ; Vec4 :: new (a, b, a, b) }";
     let msl = emit_body(body, BodyTail::Return, &[], None).unwrap();
-    assert!(msl.contains("auto a = 3.0;"), "got: {msl}");
+    assert!(msl.contains("auto a = (float)(3.0);"), "got: {msl}");
+    assert!(msl.contains("(float)(((uint)(a)))"), "got: {msl}");
     assert!(!msl.contains(" as "), "cast leaked: {msl}");
 }
 

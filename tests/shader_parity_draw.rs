@@ -1209,3 +1209,119 @@ fn draw_orientation_pinning() {
         );
     }
 }
+
+// ─── D16: integer modulo scanlines (mirrors fixture `mod_scanlines`) ──────────
+// The shader-language doc's scanlines example verbatim: `frag_coord().y as
+// u32` truncates, `% 2u32` picks row parity, and the integer `==` selects
+// the band. Row parity depends on the ratified orientation (D15), and rows
+// alternate identically from either end, so the assertion is flip-agnostic.
+
+#[quanta::fragment]
+fn mod_scanlines_frag() -> Vec4 {
+    let fc = frag_coord();
+    let dim = if (fc.y as u32) % 2u32 == 0u32 {
+        0.7
+    } else {
+        1.0
+    };
+    Vec4::new(dim, dim, dim, 1.0)
+}
+
+#[test]
+fn draw_mod_scanlines() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(&gpu, &[&QUAD_VERTEX_SHADER, &MOD_SCANLINES_FRAG_SHADER]) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &MOD_SCANLINES_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    let w = 8u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // Even rows dim (0.7 → ~179), odd rows white — exact alternation, both
+    // columns' ends sampled so a dropped/duplicated row cannot pass.
+    for y in 0..h {
+        let want = if y % 2 == 0 {
+            (179, 179, 179)
+        } else {
+            (255, 255, 255)
+        };
+        expect_rgb(&px, w, 1, y, want, "scanline row");
+        expect_rgb(&px, w, w - 1, y, want, "scanline row (right)");
+    }
+}
+
+// ─── D17: the full bit-op family in one draw (mirrors `bit_and_shr` and ──────
+// `bit_or_xor_shl_cast`). Channels are computed from bits of the pixel
+// column index: `&` + `>>` extract the 8-wide band bit into red, `^` + `&`
+// invert it into green, `<<` + `&` turn column parity into blue. Bands vary
+// along x only, so the assertion is orientation-agnostic.
+
+#[quanta::fragment]
+fn bit_ops_frag() -> Vec4 {
+    let xi = frag_coord().x as u32;
+    let r = ((xi & 8u32) >> 3u32) as f32;
+    let g = (((xi ^ 8u32) & 8u32) >> 3u32) as f32;
+    let b = ((xi << 1u32) & 2u32) as f32 * 0.5;
+    Vec4::new(r, g, b, 1.0)
+}
+
+#[test]
+fn draw_bit_ops_bands() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(&gpu, &[&QUAD_VERTEX_SHADER, &BIT_OPS_FRAG_SHADER]) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let pipe = pipeline(&gpu, &QUAD_VERTEX_SHADER, &BIT_OPS_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+
+    let w = 16u32;
+    let h = 8u32;
+    let target = gpu.render_target(w, h, Format::RGBA8).unwrap();
+    let mut pulse = gpu
+        .render(&target)
+        .unwrap()
+        .color_targets(vec![
+            ColorTarget::new(&target)
+                .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
+                .with_store_op(StoreOp::Store),
+        ])
+        .viewport(0.0, 0.0, w as f32, h as f32)
+        .pipeline(&pipe)
+        .vertices(0, &vb)
+        .draw(6)
+        .pulse()
+        .unwrap();
+    pulse.wait().unwrap();
+    let px = target.read().unwrap();
+
+    // Column x has xi = x: red = bit3 (0 for x<8, 1 for x>=8), green = its
+    // complement, blue = bit0 (column parity).
+    for &y in &[0u32, h - 1] {
+        for x in 0..w {
+            let band = u8::from(x >= 8);
+            let want = (255 * band, 255 * (1 - band), 255 * (x % 2) as u8);
+            expect_rgb(&px, w, x, y, want, "bit band");
+        }
+    }
+}

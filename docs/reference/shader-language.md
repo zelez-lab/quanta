@@ -51,6 +51,24 @@ for:
 Suffix an integer literal with `u32` (`3u32`) or leave it bare (`2`) where the
 context is unsigned.
 
+### Integer operations and casts
+
+The full integer face of the grammar, on every backend:
+
+| Form | Meaning | Notes |
+|------|---------|-------|
+| `a & b`, `a \| b`, `a ^ b` | bitwise and / or / xor | u32-only: a `u32` on either side makes the op integer and the other side coerces; two float sides are a named error |
+| `a << n`, `a >> n` | logical shifts | u32-only, same rule. An amount ≥ 32 is backend-native behavior (WGSL masks it, Metal/Vulkan do not) — keep amounts < 32 |
+| `a % b` | remainder | `u32 % u32` is the integer modulo; any float side widens to the float remainder with the **dividend's** sign (Rust semantics). Like `/`, there is no zero-guard in shader bodies |
+| `x as u32` | float → uint | truncates toward zero — the same contract as slice-index coercion; negative input is backend-native (WGSL saturates, the natives don't) — keep it nonnegative |
+| `x as f32` | uint → float | exact for values < 2²⁴ |
+
+`as` casts scalars only (`f32` ↔ `u32`); vectors and other targets are
+named errors. Precedence follows Rust: `as` binds tighter than `* / %`,
+and `& ^ |` bind *tighter* than comparisons (`id & 1u32 == 0u32` is
+`(id & 1u32) == 0u32`) — though parenthesizing, as in the examples, reads
+better anyway.
+
 ---
 
 ## Vertex builtins
@@ -83,9 +101,9 @@ fn fullscreen(/* no attributes */) -> Vec4 {
 }
 ```
 
-(The branch spelling is deliberate: it is the portable form. The
-bit-twiddling alternative — `(id & 1u32) as f32` — parses only on the
-Metal frontend today; see the grammar gap under Backend support.)
+(Both spellings compile on every backend — the branch form reads
+clearest here; the bit-twiddling alternative, `(id & 1u32) as f32`,
+uses the [integer operations](#integer-operations-and-casts) below.)
 
 ---
 
@@ -108,10 +126,6 @@ of the varying struct in the fragment -- both follow WGSL semantics. Use
 or the position field when it does.
 
 ```rust
-// METAL-ONLY today: `as` casts and `%` are in the grammar gap below —
-// this shape parses on the Metal frontend but not yet on
-// Vulkan/WebGPU. A portable scanline effect samples a striped texture
-// or passes the parity down as a varying instead.
 #[quanta::fragment]
 fn scanlines() -> Vec4 {
     let fc = frag_coord();
@@ -193,9 +207,11 @@ struct.
 ## Expressions and intrinsics
 
 The body accepts: `let` / `let mut` bindings, assignment to mutable locals,
-arithmetic (`+ - * /`) and negation, comparisons, `VecN::new`, swizzle field
-access, `Mat4 * Vec4` matrix-multiply, uniform deref (`*u`, `(*u).x`), `&[T]`
-slice indexing (`table[i]`, `i` truncates toward zero to an integer), and
+arithmetic (`+ - * / %`) and negation, the [integer operations and
+casts](#integer-operations-and-casts) (`& | ^ << >>`, `as f32` / `as u32`),
+comparisons, `VecN::new`, swizzle field access, `Mat4 * Vec4`
+matrix-multiply, uniform deref (`*u`, `(*u).x`), `&[T]` slice indexing
+(`table[i]`, `i` truncates toward zero to an integer), and
 `sample(texture_param, uv)`. Trailing commas and calls split across lines are
 accepted. Anything outside this surface is a compile error that names the
 construct -- nothing silently miscompiles.
@@ -214,21 +230,17 @@ Math intrinsics (GLSL/WGSL names): `sin`, `cos`, `tan`, `asin`, `acos`,
 
 ## Backend support
 
-Metal, Vulkan, and WebGPU/WGSL emit the grammar on this page — the WGSL
-emitter is at construct parity with the two natives for the stage
+Metal, Vulkan, and WebGPU/WGSL emit the grammar on this page from one
+surface — the three emitters are at construct parity for the stage
 builtins (`frag_coord()` → `@builtin(position)`, `vertex_id()` /
 `instance_id()` → `@builtin(vertex_index)` / `@builtin(instance_index)`),
 `u32` shader params and varyings (`@interpolate(flat)` on both interface
-ends), and bounded `for` loops — **with one known frontend gap**: the
-Vulkan/WebGPU shader parser does not yet accept the bitwise operators
-(`&`, `|`, `^`, `<<`, `>>`), `%`, or `as` casts in shader bodies; those
-constructs currently parse on the Metal frontend only, and a shader
-using them ships without SPIR-V/WGSL output (a build-time note says so).
-Prefer the portable spellings shown in the examples — comparisons and
-branches — where all three backends agree. A construct the grammar
-rejects everywhere (a method call, a `while` loop, a non-constant or
-inclusive loop range, a wrong-stage builtin) rejects identically on all
-three backends. When a gap is hit, the shader ships with `wgsl: None`
-and a build-time note rather than
-invalid WGSL — Metal and Vulkan binaries are unaffected. See
+ends), bounded `for` loops, and the integer operations and casts
+(`& | ^ << >> %`, `as`), and a cross-emitter parity corpus pins that
+agreement construct by construct. The residual semantic edges are the
+two named above: shift amounts ≥ 32 and negative input to `as u32` are
+backend-native rather than uniform. A construct the grammar rejects (a
+method call, a `while` loop, a non-constant or inclusive loop range, a
+wrong-stage builtin, bitwise on two float sides) rejects identically on
+all three backends, by name. See
 [Migration from wgpu](../migration/from-wgpu.md) for the WGSL↔DSL mapping.

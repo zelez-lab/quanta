@@ -866,7 +866,7 @@ impl SpvEmitter {
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
         locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
-        let (left, ty) = self.parse_additive(tokens, pos, params, locals)?;
+        let (left, ty) = self.parse_bit_or(tokens, pos, params, locals)?;
         if *pos < tokens.len() {
             let cmp_op = match &tokens[*pos] {
                 ShaderToken::Cmp(c) => Some(*c),
@@ -874,7 +874,7 @@ impl SpvEmitter {
             };
             if let Some(op) = cmp_op {
                 *pos += 1;
-                let (right, right_ty) = self.parse_additive(tokens, pos, params, locals)?;
+                let (right, right_ty) = self.parse_bit_or(tokens, pos, params, locals)?;
                 // A comparison with a u32 on EITHER side is an integer
                 // comparison: the other side coerces to u32 (a bare literal
                 // RHS arrives f32-typed) and the UNSIGNED opcode family is
@@ -951,6 +951,111 @@ impl SpvEmitter {
         (result, lty)
     }
 
+    /// Emit one u32-only integer op (bitwise / shift). The typing rule
+    /// mirrors the comparison coercion: a u32 on EITHER side makes the op
+    /// integer and the other scalar side coerces with `OpConvertFToU` (bare
+    /// literals arrive f32-typed). BOTH sides float-typed — or any
+    /// non-scalar operand — is a named error: bit patterns of floats are
+    /// never what a shader body means.
+    fn emit_uint_bitop(
+        &mut self,
+        op_name: &str,
+        left: (u32, quanta_ir::ShaderType),
+        right: (u32, quanta_ir::ShaderType),
+        opcode: u16,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        use quanta_ir::ShaderType::{F32, U32};
+        if !matches!(left.1, U32 | F32) || !matches!(right.1, U32 | F32) {
+            return Err(format!(
+                "`{op_name}` needs scalar operands; vectors and matrices have no integer form"
+            ));
+        }
+        if left.1 != U32 && right.1 != U32 {
+            return Err(format!(
+                "`{op_name}` needs a u32 operand on at least one side; suffix a literal with \
+                 `u32` (`3u32`) or cast with `as u32`"
+            ));
+        }
+        let (l, _) = self.coerce_scalar(left.0, left.1, U32);
+        let (r, _) = self.coerce_scalar(right.0, right.1, U32);
+        let ty_id = self.ensure_type_u32();
+        let result = self.alloc_id();
+        Self::emit_op(&mut self.sec_function, opcode, &[ty_id, result, l, r]);
+        Ok((result, U32))
+    }
+
+    pub(crate) fn parse_bit_or(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, mut ty) = self.parse_bit_xor(tokens, pos, params, locals)?;
+        while *pos < tokens.len() && tokens[*pos] == ShaderToken::Op('|') {
+            *pos += 1;
+            let right = self.parse_bit_xor(tokens, pos, params, locals)?;
+            (left, ty) = self.emit_uint_bitop("|", (left, ty), right, OP_BITWISE_OR)?;
+        }
+        Ok((left, ty))
+    }
+
+    fn parse_bit_xor(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, mut ty) = self.parse_bit_and(tokens, pos, params, locals)?;
+        while *pos < tokens.len() && tokens[*pos] == ShaderToken::Op('^') {
+            *pos += 1;
+            let right = self.parse_bit_and(tokens, pos, params, locals)?;
+            (left, ty) = self.emit_uint_bitop("^", (left, ty), right, OP_BITWISE_XOR)?;
+        }
+        Ok((left, ty))
+    }
+
+    fn parse_bit_and(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, mut ty) = self.parse_shift(tokens, pos, params, locals)?;
+        while *pos < tokens.len() && tokens[*pos] == ShaderToken::Op('&') {
+            *pos += 1;
+            let right = self.parse_shift(tokens, pos, params, locals)?;
+            (left, ty) = self.emit_uint_bitop("&", (left, ty), right, OP_BITWISE_AND)?;
+        }
+        Ok((left, ty))
+    }
+
+    /// `<< >>` sit BELOW `+ -` (Rust precedence). Shift amounts are taken
+    /// mod nothing: an amount >= 32 is backend-native behavior (WGSL masks,
+    /// SPIR-V/MSL do not) — the doc pins "keep amounts < 32".
+    fn parse_shift(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        let (mut left, mut ty) = self.parse_additive(tokens, pos, params, locals)?;
+        while *pos < tokens.len() {
+            let (opcode, name) = match tokens[*pos] {
+                ShaderToken::Shl => (OP_SHIFT_LEFT_LOGICAL, "<<"),
+                ShaderToken::Shr => (OP_SHIFT_RIGHT_LOGICAL, ">>"),
+                _ => break,
+            };
+            *pos += 1;
+            let right = self.parse_additive(tokens, pos, params, locals)?;
+            (left, ty) = self.emit_uint_bitop(name, (left, ty), right, opcode)?;
+        }
+        Ok((left, ty))
+    }
+
     pub(crate) fn parse_additive(
         &mut self,
         tokens: &[ShaderToken],
@@ -985,12 +1090,12 @@ impl SpvEmitter {
         params: &[(String, u32, u32, quanta_ir::ShaderType)],
         locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
     ) -> Result<(u32, quanta_ir::ShaderType), String> {
-        let (mut left, mut left_ty) = self.parse_unary(tokens, pos, params, locals)?;
+        let (mut left, mut left_ty) = self.parse_cast(tokens, pos, params, locals)?;
         while *pos < tokens.len() {
             match &tokens[*pos] {
                 ShaderToken::Op('*') => {
                     *pos += 1;
-                    let (right, right_ty) = self.parse_unary(tokens, pos, params, locals)?;
+                    let (right, right_ty) = self.parse_cast(tokens, pos, params, locals)?;
 
                     let is_left_mat = matches!(
                         left_ty,
@@ -1022,15 +1127,59 @@ impl SpvEmitter {
                 }
                 ShaderToken::Op('/') => {
                     *pos += 1;
-                    let right = self.parse_unary(tokens, pos, params, locals)?;
+                    let right = self.parse_cast(tokens, pos, params, locals)?;
                     // u32 / u32 is the UNSIGNED integer division; anything
                     // mixed widens to float division (emit_arith_op).
                     (left, left_ty) = self.emit_arith_op((left, left_ty), right, OP_UDIV, OP_FDIV);
+                }
+                ShaderToken::Op('%') => {
+                    *pos += 1;
+                    let right = self.parse_cast(tokens, pos, params, locals)?;
+                    // u32 % u32 is OpUMod; anything mixed widens to float and
+                    // uses OpFRem — sign of the DIVIDEND, Rust `%` semantics.
+                    // No zero-guard, matching the shader family's `/`.
+                    (left, left_ty) = self.emit_arith_op((left, left_ty), right, OP_UMOD, OP_FREM);
                 }
                 _ => break,
             }
         }
         Ok((left, left_ty))
+    }
+
+    /// `expr as f32` / `expr as u32` — the only cast targets, scalars only.
+    /// Rust precedence: `as` binds tighter than `* / %`, looser than unary
+    /// (`-x as u32` casts the negated value). f32→u32 truncates toward zero
+    /// with `OpConvertFToU` — the same contract slice indexing ships;
+    /// negative input is backend-native (the doc says keep it nonnegative).
+    fn parse_cast(
+        &mut self,
+        tokens: &[ShaderToken],
+        pos: &mut usize,
+        params: &[(String, u32, u32, quanta_ir::ShaderType)],
+        locals: &mut Vec<(String, u32, quanta_ir::ShaderType)>,
+    ) -> Result<(u32, quanta_ir::ShaderType), String> {
+        use quanta_ir::ShaderType::{F32, U32};
+        let (mut id, mut ty) = self.parse_unary(tokens, pos, params, locals)?;
+        while *pos < tokens.len() && matches!(&tokens[*pos], ShaderToken::Ident(s) if s == "as") {
+            *pos += 1;
+            let target = match tokens.get(*pos) {
+                Some(ShaderToken::Ident(t)) if t == "f32" => F32,
+                Some(ShaderToken::Ident(t)) if t == "u32" => U32,
+                other => {
+                    return Err(format!(
+                        "`as` casts to `f32` or `u32` only in shader bodies, got {other:?}"
+                    ));
+                }
+            };
+            *pos += 1;
+            if !matches!(ty, F32 | U32) {
+                return Err(
+                    "`as` casts scalar values only; vectors and matrices do not cast".to_string(),
+                );
+            }
+            (id, ty) = self.coerce_scalar(id, ty, target);
+        }
+        Ok((id, ty))
     }
 
     pub(crate) fn parse_unary(

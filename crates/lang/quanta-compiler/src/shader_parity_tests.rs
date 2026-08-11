@@ -152,6 +152,14 @@ const OP_DPDX: u16 = 207;
 const OP_FWIDTH: u16 = 209;
 const OP_PHI: u16 = 245;
 const OP_LOOP_MERGE: u16 = 246;
+const OP_CONVERT_U_TO_F: u16 = 112;
+const OP_UMOD: u16 = 137;
+const OP_FREM: u16 = 140;
+const OP_SHIFT_RIGHT_LOGICAL: u16 = 194;
+const OP_SHIFT_LEFT_LOGICAL: u16 = 196;
+const OP_BITWISE_OR: u16 = 197;
+const OP_BITWISE_XOR: u16 = 198;
+const OP_BITWISE_AND: u16 = 199;
 
 // ─── Fixture model ───────────────────────────────────────────────────────────
 
@@ -2242,6 +2250,127 @@ fn fixtures() -> Vec<Fixture> {
             // The grammar has no loops; `while` is not a recognized construct.
             wgsl: WgslExpect::Reject {
                 err_contains: "while",
+            },
+        },
+        // ── INTEGER OPS + CASTS ───────────────────────────────────────────
+        // The u32 face of the grammar: bitwise `& | ^`, shifts `<< >>`, `%`,
+        // and `as f32` / `as u32` — one grammar on all three emitters.
+        Fixture {
+            // The doc's bit-twiddling corner math: `&` extracts a bit,
+            // `>>` selects one — both feed integer comparisons.
+            name: "bit_and_shr",
+            stage: Vertex,
+            params: &[],
+            varyings: None,
+            body: "{ let id = vertex_id ( ) ; let x = if ( id & 1u32 ) == 1u32 { 3.0 } else { - 1.0 } ; let y = if ( id >> 1u32 ) == 1u32 { 3.0 } else { - 1.0 } ; Vec4 :: new ( x , y , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_BITWISE_AND, OP_SHIFT_RIGHT_LOGICAL],
+            },
+            msl: MslExpect::Accept {
+                contains: &["(id & 1u)", "(id >> 1u)"],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &["& 1u)", ">> 1u)"],
+            },
+        },
+        Fixture {
+            // `^`, `|`, `<<` compose, and the u32 result enters float math
+            // through `as f32` (ConvertUToF / `(float)` / `f32()`).
+            name: "bit_or_xor_shl_cast",
+            stage: Vertex,
+            params: &[],
+            varyings: None,
+            body: "{ let id = vertex_id ( ) ; let v = ( ( id ^ 3u32 ) | ( id << 1u32 ) ) as f32 ; Vec4 :: new ( v * 0.125 , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[
+                    OP_BITWISE_XOR,
+                    OP_BITWISE_OR,
+                    OP_SHIFT_LEFT_LOGICAL,
+                    OP_CONVERT_U_TO_F,
+                ],
+            },
+            msl: MslExpect::Accept {
+                contains: &["(id ^ 3u)", "(id << 1u)", "(float)("],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &["^ 3u)", "<< 1u)", "f32("],
+            },
+        },
+        Fixture {
+            // The shader-language doc's scanlines example verbatim:
+            // `as u32` truncates (ConvertFToU / `(uint)` / `u32()`), `%` on
+            // two uints is the integer modulo, and the result compares
+            // integer-exactly.
+            name: "mod_scanlines",
+            stage: Fragment,
+            params: &[],
+            varyings: None,
+            body: "{ let fc = frag_coord ( ) ; let dim = if ( fc . y as u32 ) % 2u32 == 0u32 { 0.7 } else { 1.0 } ; Vec4 :: new ( dim , dim , dim , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_CONVERT_F_TO_U, OP_UMOD],
+            },
+            msl: MslExpect::Accept {
+                contains: &["(uint)(fc.y)", "% 2u"],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &["u32(fc.y)", "% 2u"],
+            },
+        },
+        Fixture {
+            // Float `%` is the remainder with the DIVIDEND's sign (Rust
+            // semantics): OpFRem / MSL `fmod` (MSL `%` is integer-only) /
+            // WGSL's float `%`.
+            name: "mod_float",
+            stage: Fragment,
+            params: &[],
+            varyings: sv(&[("uv", Vec2)]),
+            body: "{ let w = s . uv . x % 0.25 ; Vec4 :: new ( w , w , w , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Real {
+                witness: &[OP_FREM],
+            },
+            msl: MslExpect::Accept {
+                contains: &["fmod(s.uv.x, 0.25)"],
+            },
+            wgsl: WgslExpect::Translates {
+                contains: &["% 0.25f"],
+            },
+        },
+        Fixture {
+            // Bitwise on two float-typed sides is a named error on every
+            // emitter — bit patterns of floats are never what a body means.
+            name: "rej_bitand_floats",
+            stage: Fragment,
+            params: &[],
+            varyings: sv(&[("uv", Vec2)]),
+            body: "{ let w = s . uv . x & s . uv . y ; Vec4 :: new ( w , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "needs a u32 operand",
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "needs a u32 operand",
+            },
+        },
+        Fixture {
+            // `as` targets are exactly `f32` and `u32` — the DSL's two
+            // scalar types; anything else rejects by name on all three.
+            name: "rej_cast_target",
+            stage: Fragment,
+            params: &[],
+            varyings: sv(&[("uv", Vec2)]),
+            body: "{ let w = s . uv . x as i32 ; Vec4 :: new ( w , 0.0 , 0.0 , 1.0 ) }",
+            alt: None,
+            spirv: SpirvExpect::Passthrough,
+            msl: MslExpect::Reject {
+                err_contains: "`f32` or `u32`",
+            },
+            wgsl: WgslExpect::Reject {
+                err_contains: "`f32` or `u32`",
             },
         },
     ]

@@ -48,7 +48,9 @@ pub(super) enum ShaderToken {
     /// against a u32 value converts it with a `u32(...)` wrap).
     UInt(u32),
     Ident(String),
-    Op(char),         // + - * /
+    Op(char),         // + - * / % & | ^
+    Shl,              // <<
+    Shr,              // >>
     Cmp(ShaderCmpOp), // < > <= >= == !=
     Dot,              // .
     Colon,            // : (struct-literal field separator)
@@ -96,6 +98,12 @@ fn tokenize_word(w: &str, tokens: &mut Vec<ShaderToken>) {
         "-" => tokens.push(ShaderToken::Op('-')),
         "*" => tokens.push(ShaderToken::Op('*')),
         "/" => tokens.push(ShaderToken::Op('/')),
+        "%" => tokens.push(ShaderToken::Op('%')),
+        "&" => tokens.push(ShaderToken::Op('&')),
+        "|" => tokens.push(ShaderToken::Op('|')),
+        "^" => tokens.push(ShaderToken::Op('^')),
+        "<<" => tokens.push(ShaderToken::Shl),
+        ">>" => tokens.push(ShaderToken::Shr),
         "<" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Lt)),
         ">" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Gt)),
         "<=" => tokens.push(ShaderToken::Cmp(ShaderCmpOp::Le)),

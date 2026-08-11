@@ -828,11 +828,11 @@ fn walk_comparison(
     pad: &str,
     out: &mut String,
 ) -> Result<(String, WType), String> {
-    let (left, ty) = walk_additive(tokens, pos, ctx, pad, out)?;
+    let (left, ty) = walk_bit_or(tokens, pos, ctx, pad, out)?;
     if let Some(ShaderToken::Cmp(op)) = tokens.get(*pos) {
         let op = *op;
         *pos += 1;
-        let (right, right_ty) = walk_additive(tokens, pos, ctx, pad, out)?;
+        let (right, right_ty) = walk_bit_or(tokens, pos, ctx, pad, out)?;
         let (left, right) = if ty == WType::U32 || right_ty == WType::U32 {
             let (l, _) = coerce_scalar(left, ty, WType::U32);
             let (r, _) = coerce_scalar(right, right_ty, WType::U32);
@@ -841,6 +841,105 @@ fn walk_comparison(
             (left, right)
         };
         return Ok((format!("{left} {} {right}", op.wgsl()), WType::F32));
+    }
+    Ok((left, ty))
+}
+
+/// One u32-only integer op (bitwise / shift), the text twin of the SPIR-V
+/// walker's `emit_uint_bitop`: a u32 on EITHER side makes the op integer and
+/// the other scalar side coerces with `u32(...)`; both sides float-typed —
+/// or any non-scalar operand — is the same named error. Output is
+/// PARENTHESIZED: WGSL requires parentheses when bitwise ops mix with other
+/// operators, and Rust's precedence (`& ^ |` above comparisons) differs
+/// from C's anyway.
+fn emit_uint_bitop(
+    op: &str,
+    left: (String, WType),
+    right: (String, WType),
+) -> Result<(String, WType), String> {
+    if !matches!(left.1, WType::U32 | WType::F32) || !matches!(right.1, WType::U32 | WType::F32) {
+        return Err(format!(
+            "`{op}` needs scalar operands; vectors and matrices have no integer form"
+        ));
+    }
+    if left.1 != WType::U32 && right.1 != WType::U32 {
+        return Err(format!(
+            "`{op}` needs a u32 operand on at least one side; suffix a literal with \
+             `u32` (`3u32`) or cast with `as u32`"
+        ));
+    }
+    let (l, _) = coerce_scalar(left.0, left.1, WType::U32);
+    let (r, _) = coerce_scalar(right.0, right.1, WType::U32);
+    Ok((format!("({l} {op} {r})"), WType::U32))
+}
+
+fn walk_bit_or(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(String, WType), String> {
+    let (mut left, mut ty) = walk_bit_xor(tokens, pos, ctx, pad, out)?;
+    while tokens.get(*pos) == Some(&ShaderToken::Op('|')) {
+        *pos += 1;
+        let right = walk_bit_xor(tokens, pos, ctx, pad, out)?;
+        (left, ty) = emit_uint_bitop("|", (left, ty), right)?;
+    }
+    Ok((left, ty))
+}
+
+fn walk_bit_xor(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(String, WType), String> {
+    let (mut left, mut ty) = walk_bit_and(tokens, pos, ctx, pad, out)?;
+    while tokens.get(*pos) == Some(&ShaderToken::Op('^')) {
+        *pos += 1;
+        let right = walk_bit_and(tokens, pos, ctx, pad, out)?;
+        (left, ty) = emit_uint_bitop("^", (left, ty), right)?;
+    }
+    Ok((left, ty))
+}
+
+fn walk_bit_and(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(String, WType), String> {
+    let (mut left, mut ty) = walk_shift(tokens, pos, ctx, pad, out)?;
+    while tokens.get(*pos) == Some(&ShaderToken::Op('&')) {
+        *pos += 1;
+        let right = walk_shift(tokens, pos, ctx, pad, out)?;
+        (left, ty) = emit_uint_bitop("&", (left, ty), right)?;
+    }
+    Ok((left, ty))
+}
+
+/// `<< >>` sit BELOW `+ -` (Rust precedence). WGSL masks shift amounts to
+/// the bit width; the natives do not — the doc pins "keep amounts < 32".
+fn walk_shift(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(String, WType), String> {
+    let (mut left, mut ty) = walk_additive(tokens, pos, ctx, pad, out)?;
+    while let Some(tok) = tokens.get(*pos) {
+        let op = match tok {
+            ShaderToken::Shl => "<<",
+            ShaderToken::Shr => ">>",
+            _ => break,
+        };
+        *pos += 1;
+        let right = walk_additive(tokens, pos, ctx, pad, out)?;
+        (left, ty) = emit_uint_bitop(op, (left, ty), right)?;
     }
     Ok((left, ty))
 }
@@ -879,15 +978,19 @@ fn walk_multiplicative(
     pad: &str,
     out: &mut String,
 ) -> Result<(String, WType), String> {
-    let (mut left, mut ty) = walk_unary(tokens, pos, ctx, pad, out)?;
+    let (mut left, mut ty) = walk_cast(tokens, pos, ctx, pad, out)?;
     while let Some(tok) = tokens.get(*pos) {
         let op = match tok {
             ShaderToken::Op('*') => '*',
             ShaderToken::Op('/') => '/',
+            // u32 % u32 is WGSL's integer `%`; any float involvement widens
+            // (float wins) and uses WGSL's float `%` — sign of the DIVIDEND,
+            // Rust semantics. No zero-guard, matching shader `/`.
+            ShaderToken::Op('%') => '%',
             _ => break,
         };
         *pos += 1;
-        let (right, rty) = walk_unary(tokens, pos, ctx, pad, out)?;
+        let (right, rty) = walk_cast(tokens, pos, ctx, pad, out)?;
         if op == '*' {
             let is_left_mat = matches!(ty, WType::Mat4 | WType::Mat3);
             let is_right_vec = matches!(rty, WType::Vec4 | WType::Vec3);
@@ -942,6 +1045,41 @@ fn coerce_scalar(expr: String, ty: WType, target: WType) -> (String, WType) {
         (WType::U32, WType::F32) => (format!("f32({expr})"), WType::F32),
         _ => (expr, ty),
     }
+}
+
+/// `expr as f32` / `expr as u32` — the only cast targets, scalars only; the
+/// text twin of the SPIR-V walker's `parse_cast`. Rust precedence: tighter
+/// than `* / %`, looser than unary. `u32(x)` truncates toward zero on this
+/// backend (WGSL additionally saturates where the natives are undefined on
+/// negative input — backend-native edge, doc-pinned).
+fn walk_cast(
+    tokens: &[ShaderToken],
+    pos: &mut usize,
+    ctx: &mut Ctx,
+    pad: &str,
+    out: &mut String,
+) -> Result<(String, WType), String> {
+    let (mut expr, mut ty) = walk_unary(tokens, pos, ctx, pad, out)?;
+    while matches!(tokens.get(*pos), Some(ShaderToken::Ident(s)) if s == "as") {
+        *pos += 1;
+        let target = match tokens.get(*pos) {
+            Some(ShaderToken::Ident(t)) if t == "f32" => WType::F32,
+            Some(ShaderToken::Ident(t)) if t == "u32" => WType::U32,
+            other => {
+                return Err(format!(
+                    "`as` casts to `f32` or `u32` only in shader bodies, got {other:?}"
+                ));
+            }
+        };
+        *pos += 1;
+        if !matches!(ty, WType::F32 | WType::U32) {
+            return Err(
+                "`as` casts scalar values only; vectors and matrices do not cast".to_string(),
+            );
+        }
+        (expr, ty) = coerce_scalar(expr, ty, target);
+    }
+    Ok((expr, ty))
 }
 
 /// Unary: leading `-` negation, and the uniform deref `*name`. A `&T` uniform

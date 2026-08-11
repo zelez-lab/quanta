@@ -696,7 +696,8 @@ fn infer_type(expr: &Expr, scope: &Scope) -> MslType {
             .unwrap_or(MslType::Unknown),
         Expr::Paren(p) => infer_type(&p.expr, scope),
         Expr::Group(g) => infer_type(&g.expr, scope),
-        Expr::Cast(c) => infer_type(&c.expr, scope),
+        // A cast's type IS its target (`x as u32` is uint) — see `emit_cast`.
+        Expr::Cast(c) => cast_target(&c.ty).unwrap_or(MslType::Unknown),
         Expr::Unary(u) => match u.op {
             UnOp::Not(_) => MslType::Bool,
             // Deref of a `&Vec2` uniform yields the element type; but we only
@@ -734,6 +735,10 @@ fn infer_binary_type(b: &syn::ExprBinary, scope: &Scope) -> MslType {
         | BinOp::Ne(_)
         | BinOp::And(_)
         | BinOp::Or(_) => MslType::Bool,
+        // Bitwise and shifts are u32-only in the DSL — the result is uint.
+        BinOp::BitAnd(_) | BinOp::BitOr(_) | BinOp::BitXor(_) | BinOp::Shl(_) | BinOp::Shr(_) => {
+            MslType::Uint
+        }
         // Arithmetic: the vector operand wins (scalar·vector = vector);
         // otherwise the left type.
         _ => {
@@ -832,8 +837,7 @@ fn emit_expr(expr: &Expr, scope: &Scope) -> Result<String, String> {
         Expr::Group(g) => emit_expr(&g.expr, scope),
         Expr::Unary(u) => emit_unary(u, scope),
         Expr::Binary(b) => emit_binary(b, scope),
-        // `x as f32` / `as u32` etc. — shaders are float-only, strip the cast.
-        Expr::Cast(c) => emit_expr(&c.expr, scope),
+        Expr::Cast(c) => emit_cast(c, scope),
         Expr::Field(f) => emit_field(f, scope),
         Expr::Index(idx) => emit_index(idx, scope),
         Expr::MethodCall(m) => emit_method_call(m),
@@ -928,6 +932,57 @@ fn emit_path_ident(path: &syn::Path, scope: &Scope) -> Result<String, String> {
     ))
 }
 
+/// The `as` target type: `f32` or `u32` — the DSL's only casts.
+fn cast_target(ty: &syn::Type) -> Result<MslType, String> {
+    if let syn::Type::Path(p) = ty
+        && let Some(id) = p.path.get_ident()
+    {
+        match id.to_string().as_str() {
+            "f32" => return Ok(MslType::Float),
+            "u32" => return Ok(MslType::Uint),
+            _ => {}
+        }
+    }
+    Err("`as` casts to `f32` or `u32` only in shader bodies".to_string())
+}
+
+/// `x as u32` / `x as f32` — a REAL conversion (the float-era emitter
+/// stripped casts, wrong since `u32` params/varyings exist). `(uint)`
+/// truncates toward zero, matching the SPIR-V `OpConvertFToU` and the
+/// slice-index contract; negative input is backend-native behavior.
+fn emit_cast(c: &syn::ExprCast, scope: &Scope) -> Result<String, String> {
+    let target = cast_target(&c.ty)?;
+    if matches!(
+        infer_type(&c.expr, scope),
+        MslType::Vec2 | MslType::Vec3 | MslType::Vec4 | MslType::Bool | MslType::Slice(_)
+    ) {
+        return Err("`as` casts scalar values only; vectors and matrices do not cast".to_string());
+    }
+    let inner = emit_expr(&c.expr, scope)?;
+    Ok(match target {
+        MslType::Float => format!("(float)({inner})"),
+        _ => format!("(uint)({inner})"),
+    })
+}
+
+/// Emit one operand of a u32-only op (bitwise / shift). A bare integer
+/// literal spells as a `uint` literal (`1` → `1u`); an already-uint
+/// expression emits plainly; anything else coerces with `(uint)(...)` —
+/// mirroring the SPIR-V side's `OpConvertFToU`.
+fn emit_uint_operand(expr: &Expr, scope: &Scope) -> Result<String, String> {
+    if let Expr::Lit(lit) = expr
+        && let Lit::Int(i) = &lit.lit
+        && i.suffix().is_empty()
+    {
+        return Ok(format!("{}u", i.base10_digits()));
+    }
+    let s = emit_expr(expr, scope)?;
+    Ok(match infer_type(expr, scope) {
+        MslType::Uint => s,
+        _ => format!("(uint)({s})"),
+    })
+}
+
 fn emit_unary(u: &syn::ExprUnary, scope: &Scope) -> Result<String, String> {
     let inner = emit_expr(&u.expr, scope)?;
     match u.op {
@@ -959,6 +1014,54 @@ fn emit_cmp_operand_against_uint(expr: &Expr, scope: &Scope) -> Result<String, S
 }
 
 fn emit_binary(b: &syn::ExprBinary, scope: &Scope) -> Result<String, String> {
+    // Bitwise and shifts are u32-only: a u32 on either side makes the op
+    // integer and the other side coerces — the SPIR-V frontend's rule, same
+    // named errors. Output is PARENTHESIZED: Rust binds `& ^ |` above
+    // comparisons, C below, so bare text would re-parse wrong in MSL.
+    if let Some(op) = match b.op {
+        BinOp::BitAnd(_) => Some("&"),
+        BinOp::BitOr(_) => Some("|"),
+        BinOp::BitXor(_) => Some("^"),
+        BinOp::Shl(_) => Some("<<"),
+        BinOp::Shr(_) => Some(">>"),
+        _ => None,
+    } {
+        let (lt, rt) = (infer_type(&b.left, scope), infer_type(&b.right, scope));
+        let non_scalar = |t: &MslType| {
+            matches!(
+                t,
+                MslType::Vec2 | MslType::Vec3 | MslType::Vec4 | MslType::Slice(_)
+            )
+        };
+        if non_scalar(&lt) || non_scalar(&rt) {
+            return Err(format!(
+                "`{op}` needs scalar operands; vectors and matrices have no integer form"
+            ));
+        }
+        if lt != MslType::Uint && rt != MslType::Uint {
+            return Err(format!(
+                "`{op}` needs a u32 operand on at least one side; suffix a literal with \
+                 `u32` (`3u32`) or cast with `as u32`"
+            ));
+        }
+        let l = emit_uint_operand(&b.left, scope)?;
+        let r = emit_uint_operand(&b.right, scope)?;
+        return Ok(format!("({l} {op} {r})"));
+    }
+    // `%`: uint % uint is the MSL integer `%`; any float involvement is
+    // `fmod` — MSL's `%` is integer-only, and fmod matches OpFRem (sign of
+    // the dividend, Rust `%` semantics). No zero-guard, like shader `/`.
+    if matches!(b.op, BinOp::Rem(_)) {
+        let l = emit_expr(&b.left, scope)?;
+        let r = emit_expr(&b.right, scope)?;
+        let both_uint = infer_type(&b.left, scope) == MslType::Uint
+            && infer_type(&b.right, scope) == MslType::Uint;
+        return Ok(if both_uint {
+            format!("({l} % {r})")
+        } else {
+            format!("fmod({l}, {r})")
+        });
+    }
     let is_cmp = matches!(
         b.op,
         BinOp::Lt(_) | BinOp::Gt(_) | BinOp::Le(_) | BinOp::Ge(_) | BinOp::Eq(_) | BinOp::Ne(_)
@@ -987,7 +1090,6 @@ fn emit_binary(b: &syn::ExprBinary, scope: &Scope) -> Result<String, String> {
         BinOp::Sub(_) => "-",
         BinOp::Mul(_) => "*",
         BinOp::Div(_) => "/",
-        BinOp::Rem(_) => "%",
         BinOp::Lt(_) => "<",
         BinOp::Gt(_) => ">",
         BinOp::Le(_) => "<=",
