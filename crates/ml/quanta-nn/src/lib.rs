@@ -41,6 +41,7 @@ pub mod layer;
 pub mod loss;
 pub mod norm;
 pub mod optim;
+pub mod quant;
 pub mod rope;
 pub mod safetensors;
 pub mod state;

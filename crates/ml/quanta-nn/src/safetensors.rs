@@ -54,13 +54,25 @@ fn json_escape(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// Serialize named tensors (any [`DiffScalar`] — values travel as
-/// `F32`) plus an optional metadata map. Entries are written in the
-/// given order with ascending contiguous data offsets.
-pub fn save_named<T: DiffScalar + ToF64>(
-    entries: &[(String, Array<T>)],
+/// A tensor entry for the raw writer: a dtype string, a shape, and the
+/// little-endian element bytes. The quantized-checkpoint convention
+/// ([`crate::quant`]) writes its `I8`/`U32` codes tensors through this;
+/// [`save_named`] is the `F32` lift over it.
+pub(crate) struct RawSaveEntry {
+    pub name: String,
+    pub dtype: &'static str,
+    pub shape: Vec<usize>,
+    pub bytes: Vec<u8>,
+}
+
+/// Serialize raw entries plus an optional metadata map into safetensors
+/// bytes. Entries are written in the given order with ascending
+/// contiguous data offsets; metadata keys are sorted (a deterministic
+/// byte stream).
+pub(crate) fn save_raw(
+    entries: &[RawSaveEntry],
     metadata: Option<&HashMap<String, String>>,
-) -> Result<Vec<u8>, AutogradError> {
+) -> Vec<u8> {
     let mut header = String::from("{");
     let mut data: Vec<u8> = Vec::new();
     let mut first = true;
@@ -80,23 +92,18 @@ pub fn save_named<T: DiffScalar + ToF64>(
         header.push('}');
         first = false;
     }
-    for (name, arr) in entries {
+    for entry in entries {
         if !first {
             header.push(',');
         }
         first = false;
-        let host = arr
-            .contiguous()
-            .map_err(AutogradError::from)?
-            .to_vec()
-            .map_err(AutogradError::from)?;
         let start = data.len();
-        for v in &host {
-            data.extend_from_slice(&(v.to_f64() as f32).to_le_bytes());
-        }
-        json_escape(name, &mut header);
-        header.push_str(":{\"dtype\":\"F32\",\"shape\":[");
-        for (i, d) in arr.shape().iter().enumerate() {
+        data.extend_from_slice(&entry.bytes);
+        json_escape(&entry.name, &mut header);
+        header.push_str(":{\"dtype\":\"");
+        header.push_str(entry.dtype);
+        header.push_str("\",\"shape\":[");
+        for (i, d) in entry.shape.iter().enumerate() {
             if i > 0 {
                 header.push(',');
             }
@@ -114,7 +121,35 @@ pub fn save_named<T: DiffScalar + ToF64>(
     out.extend_from_slice(&(header.len() as u64).to_le_bytes());
     out.extend_from_slice(header.as_bytes());
     out.extend_from_slice(&data);
-    Ok(out)
+    out
+}
+
+/// Serialize named tensors (any [`DiffScalar`] — values travel as
+/// `F32`) plus an optional metadata map. Entries are written in the
+/// given order with ascending contiguous data offsets.
+pub fn save_named<T: DiffScalar + ToF64>(
+    entries: &[(String, Array<T>)],
+    metadata: Option<&HashMap<String, String>>,
+) -> Result<Vec<u8>, AutogradError> {
+    let mut raw = Vec::with_capacity(entries.len());
+    for (name, arr) in entries {
+        let host = arr
+            .contiguous()
+            .map_err(AutogradError::from)?
+            .to_vec()
+            .map_err(AutogradError::from)?;
+        let mut bytes = Vec::with_capacity(host.len() * 4);
+        for v in &host {
+            bytes.extend_from_slice(&(v.to_f64() as f32).to_le_bytes());
+        }
+        raw.push(RawSaveEntry {
+            name: name.clone(),
+            dtype: "F32",
+            shape: arr.shape().to_vec(),
+            bytes,
+        });
+    }
+    Ok(save_raw(&raw, metadata))
 }
 
 /// Serialize a [`ParamTree`] under its hierarchical names (the
@@ -337,10 +372,30 @@ fn f16_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
-/// Parse safetensors bytes into named `f32` tensors plus the metadata
-/// map. `F32` loads exactly; `F16`/`BF16` upconvert; anything else is
-/// a loud error naming the tensor.
-pub fn load_named(gpu: &Gpu, bytes: &[u8]) -> Result<LoadedSafetensors, AutogradError> {
+/// One parsed header entry, offsets already validated against the data
+/// section (dtype NOT yet interpreted — [`entry_to_f32`] and the
+/// quantized-checkpoint loader ([`crate::quant`]) each own their dtype
+/// vocabulary).
+pub(crate) struct RawEntry {
+    pub name: String,
+    pub dtype: String,
+    pub shape: Vec<usize>,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A parsed safetensors container: entries in header order, the
+/// metadata map, and the data section the entry offsets index into.
+pub(crate) struct RawFile<'a> {
+    pub entries: Vec<RawEntry>,
+    pub metadata: HashMap<String, String>,
+    pub data: &'a [u8],
+}
+
+/// Parse the container: length prefix, header JSON, per-entry
+/// dtype/shape/offsets, offsets bounds-checked against the data
+/// section. Everything a reader validates BEFORE interpreting dtypes.
+pub(crate) fn parse_raw(bytes: &[u8]) -> Result<RawFile<'_>, AutogradError> {
     if bytes.len() < 8 {
         return Err(bad("safetensors: shorter than the length prefix".into()));
     }
@@ -360,7 +415,7 @@ pub fn load_named(gpu: &Gpu, bytes: &[u8]) -> Result<LoadedSafetensors, Autograd
         unreachable!()
     };
 
-    let mut tensors = Vec::new();
+    let mut raw_entries = Vec::new();
     let mut metadata = HashMap::new();
     for (name, val) in entries {
         if name == "__metadata__" {
@@ -421,57 +476,89 @@ pub fn load_named(gpu: &Gpu, bytes: &[u8]) -> Result<LoadedSafetensors, Autograd
                 "safetensors: {name}: offsets [{start}, {end}] exceed the data section"
             )));
         }
-        let count: usize = shape.iter().product::<usize>().max(1);
-        let raw = &data[start..end];
-        let host: Vec<f32> = match dtype.as_str() {
-            "F32" => {
-                if raw.len() != count * 4 {
-                    return Err(bad(format!(
-                        "safetensors: {name}: F32 needs {} bytes, offsets give {}",
-                        count * 4,
-                        raw.len()
-                    )));
-                }
-                raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                    .collect()
-            }
-            "F16" => {
-                if raw.len() != count * 2 {
-                    return Err(bad(format!(
-                        "safetensors: {name}: F16 needs {} bytes, offsets give {}",
-                        count * 2,
-                        raw.len()
-                    )));
-                }
-                raw.chunks_exact(2)
-                    .map(|c| f16_to_f32(u16::from_le_bytes(c.try_into().unwrap())))
-                    .collect()
-            }
-            "BF16" => {
-                if raw.len() != count * 2 {
-                    return Err(bad(format!(
-                        "safetensors: {name}: BF16 needs {} bytes, offsets give {}",
-                        count * 2,
-                        raw.len()
-                    )));
-                }
-                raw.chunks_exact(2)
-                    .map(|c| {
-                        f32::from_bits((u16::from_le_bytes(c.try_into().unwrap()) as u32) << 16)
-                    })
-                    .collect()
-            }
-            other => {
+        raw_entries.push(RawEntry {
+            name,
+            dtype,
+            shape,
+            start,
+            end,
+        });
+    }
+    Ok(RawFile {
+        entries: raw_entries,
+        metadata,
+        data,
+    })
+}
+
+/// Decode one entry's bytes as host `f32` values: `F32` exact,
+/// `F16`/`BF16` upconverted, anything else a loud error naming the
+/// tensor.
+pub(crate) fn entry_to_f32(entry: &RawEntry, data: &[u8]) -> Result<Vec<f32>, AutogradError> {
+    let name = &entry.name;
+    let count: usize = entry.shape.iter().product::<usize>().max(1);
+    let raw = &data[entry.start..entry.end];
+    match entry.dtype.as_str() {
+        "F32" => {
+            if raw.len() != count * 4 {
                 return Err(bad(format!(
-                    "safetensors: {name}: dtype {other} not supported (F32/F16/BF16)"
+                    "safetensors: {name}: F32 needs {} bytes, offsets give {}",
+                    count * 4,
+                    raw.len()
                 )));
             }
-        };
-        let arr = Array::from_slice(gpu, &host, &shape).map_err(AutogradError::from)?;
-        tensors.push((name, arr));
+            Ok(raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect())
+        }
+        "F16" => {
+            if raw.len() != count * 2 {
+                return Err(bad(format!(
+                    "safetensors: {name}: F16 needs {} bytes, offsets give {}",
+                    count * 2,
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(2)
+                .map(|c| f16_to_f32(u16::from_le_bytes(c.try_into().unwrap())))
+                .collect())
+        }
+        "BF16" => {
+            if raw.len() != count * 2 {
+                return Err(bad(format!(
+                    "safetensors: {name}: BF16 needs {} bytes, offsets give {}",
+                    count * 2,
+                    raw.len()
+                )));
+            }
+            Ok(raw
+                .chunks_exact(2)
+                .map(|c| f32::from_bits((u16::from_le_bytes(c.try_into().unwrap()) as u32) << 16))
+                .collect())
+        }
+        other => Err(bad(format!(
+            "safetensors: {name}: dtype {other} not supported (F32/F16/BF16)"
+        ))),
     }
-    Ok(LoadedSafetensors { tensors, metadata })
+}
+
+/// Parse safetensors bytes into named `f32` tensors plus the metadata
+/// map. `F32` loads exactly; `F16`/`BF16` upconvert; anything else is
+/// a loud error naming the tensor.
+pub fn load_named(gpu: &Gpu, bytes: &[u8]) -> Result<LoadedSafetensors, AutogradError> {
+    let file = parse_raw(bytes)?;
+    let mut tensors = Vec::with_capacity(file.entries.len());
+    for entry in &file.entries {
+        let host = entry_to_f32(entry, file.data)?;
+        let arr = Array::from_slice(gpu, &host, &entry.shape).map_err(AutogradError::from)?;
+        tensors.push((entry.name.clone(), arr));
+    }
+    Ok(LoadedSafetensors {
+        tensors,
+        metadata: file.metadata,
+    })
 }
 
 /// Rebuild a tree of `witness`'s shape from safetensors bytes,
