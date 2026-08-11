@@ -466,7 +466,8 @@ jobs:
 
   # ─── Bench harness build (Linux, no GPU) ─────────────────────────────
   # Validates the bench harness compiles on a machine without Metal/Vulkan.
-  # Actual perf measurement is done in `perf-regression` on macos-14.
+  # Actual perf measurement is done in `perf-regression` on macos-14 and
+  # `perf-regression-linux` on this runner class's lavapipe.
   perf-build:
     runs-on: ubuntu-latest
     steps:
@@ -491,6 +492,66 @@ jobs:
 
       - name: Verify --help runs
         run: cargo run --release -p quanta-bench --no-default-features -- --help
+
+  # ─── Linux perf lane (lavapipe, dispatch-only) ───────────────────────
+  # The linux arm of the perf gate, on the machine class that IS this
+  # project's linux bench box: the ubuntu runner's lavapipe. It records
+  # the current numbers (download the `bench-results-linux` artifact to
+  # refresh `bench/baselines/linux-x86_64.json`) and, once that baseline
+  # is committed, compares against it — so the first dispatch seeds the
+  # gate and every later one runs it. A linux box with a real GPU
+  # intentionally stays unarmed (the device-mismatch gate: llvmpipe is
+  # the recorded device). Same noise posture as the macos lane: 25%
+  # threshold on shared runners, `just bench-check` locally for tighter.
+  perf-regression-linux:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Mesa Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            libvulkan-dev
+
+      - name: Locate lavapipe ICD
+        run: |
+          ICD=$(find /usr/share/vulkan/icd.d/ -name "lvp_icd*.json" | head -1)
+          test -n "$ICD" || { echo "::error::lavapipe ICD not found in /usr/share/vulkan/icd.d/"; ls /usr/share/vulkan/icd.d/ || true; exit 1; }
+          echo "VK_ICD_FILENAMES=$ICD" >> $GITHUB_ENV
+          VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
+
+      - name: Run benchmarks (release, lavapipe)
+        run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- run --out /tmp/quanta-bench-current.json
+
+      - name: Compare against baseline
+        if: ${{ hashFiles('bench/baselines/linux-x86_64.json') != '' }}
+        run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- compare --baseline bench/baselines/linux-x86_64.json --current /tmp/quanta-bench-current.json --threshold 25
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-linux
+          path: /tmp/quanta-bench-current.json
 
   # ─── Clippy + fmt ────────────────────────────────────────────────────
   lint:
