@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss/dropout identities (T9210–T9233) — 37 theorems, 0 axioms |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss/dropout identities (T9210–T9233) — 37 theorems, 0 axioms — plus the quantized-inference round-trip supplement (T9234–T9235: dequantize∘quantize moves an element by at most `s/2`, max-abs scales are clamp-free) |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -94,8 +94,9 @@ The math companion crates carry their own proof obligations, in the same
   autograd forward, and asserts finiteness under ±80 logits. See
   [Fused attention](../computation/tutorials/fused-attention.md) for the tutorial.
   The same recipe now covers the whole stack — norms, rotary, optimizers,
-  activations, losses, dropout (T9210–T9233; details in the
-  [fused attention section](#the-rest-of-the-quanta-nn-proof-foundation-t9210t9230)
+  activations, losses, dropout, and the quantized-inference round-trip
+  bound (T9210–T9235; details in the
+  [fused attention section](#the-rest-of-the-quanta-nn-proof-foundation-t9210t9235)
   below).
 
 ## Verification chain
@@ -405,12 +406,13 @@ differential-tested against an f64 two-pass reference across many shapes
 forward, gradient-checked through `sdpa_var` by finite differences, and
 asserted finite under ±80 logits.
 
-### The rest of the `quanta-nn` proof foundation (T9210–T9233)
+### The rest of the `quanta-nn` proof foundation (T9210–T9235)
 
 Every later fused kernel family in `quanta-nn` follows the same recipe —
 Lean identities first, then the kernels, then differential tests that run
-the theorems empirically. All files under `specs/verify/lean/Quanta/Nn/`;
-**0 sorry, 0 axioms** throughout.
+the theorems empirically. Files under `specs/verify/lean/Quanta/Nn/`
+(the quantization supplement extends the 084.1 foundation under
+`Quanta/Dtype/`); **0 sorry, 0 axioms** throughout.
 
 * **Norm VJPs** (`NormVjp.lean`, T9210–T9215) — the closed-form
   three-term LayerNorm/RMSNorm backwards ARE the adjoints of the
@@ -440,6 +442,17 @@ the theorems empirically. All files under `specs/verify/lean/Quanta/Nn/`;
   self-adjoint, so the backward is the forward kernel run on the
   cotangent with the mask regenerated from the key — never stored; the
   floor threshold undershoots the requested rate by less than 2⁻³².
+* **Quantization round-trip** (`Dtype/QuantRoundTrip.lean`,
+  T9234–T9235) — the quantized-inference supplement over the 084.1
+  foundation: `dequantize ∘ quantize` moves any element by at most
+  half a scale step (`|s·round_te(x/s) − x| ≤ s/2`), with exactness on
+  code multiples; max-abs scales (`s = max|w|/hi`) keep every code in
+  `[−hi, hi]`, so the `quantize_sym` clamp never fires and code
+  `−(hi+1)` is never produced — and the composed theorem carries the
+  bound through the FULL clamped quantize. This is the single
+  tolerance the quantized path carries; everything after quantization
+  is bit-pinned by the op matrix, and the round-trip property tests
+  assert the f32 twin per element.
 
 ## Trusted Computing Base
 

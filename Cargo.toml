@@ -246,6 +246,10 @@ name = "cookbook_transformer"
 required-features = ["nn"]
 
 [[example]]
+name = "cookbook_quantized_inference"
+required-features = ["nn"]
+
+[[example]]
 name = "bench_op_overhead"
 required-features = ["sci"]
 

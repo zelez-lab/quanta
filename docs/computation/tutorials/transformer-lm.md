@@ -168,6 +168,24 @@ Same name-keyed contract, same loud errors. Files written elsewhere
 load too: `F32` exactly, `F16`/`BF16` upconverted — the dtypes real
 checkpoints ship.
 
+## Quantize it for inference
+
+The same named traversal is the quantization seam. Once trained, the
+weight matrices — the attention projections, the FFN, the head — can
+ship as int8/int4 codes plus scales at ÷4/÷8 the size:
+`quant::quantize_named(&params.named_flatten(), policy)` picks the
+leaves, `save_named` writes a still-valid safetensors, and the
+*unmodified* `LmParams` definition reloads it with
+`quant::load(&gpu, &params, &bytes)` (dequantize-on-load — every
+backend). To hold the codes resident instead, swap each `Linear` site
+for a `QuantizedLinear` built from the loaded `QuantizedMatrix` — it
+is a `Layer` with `Params = ()`, so `head.apply(...)` becomes
+`ql.apply(&tape, &(), ...)` and nothing else moves. Each weight
+element moves by at most half a scale step (proven — T9234–T9235);
+everything after that is bitwise the f32 stack. The
+[quantized-checkpoints how-to](../how-to/quantized-checkpoints.md)
+walks the full path.
+
 ## Generate
 
 Inference uses `apply` — the eval forward. Inverted dropout means there

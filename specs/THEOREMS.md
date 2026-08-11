@@ -492,6 +492,20 @@ Philox-mask dropout rests on: the mask is a pure function of
 | T9232 | `t9232_dropout_self_adjoint` — the mask-scale map is diagonal, hence self-adjoint: the VJP is the SAME masked scaling applied to the cotangent — one kernel serves forward and backward | Lean | proven |
 | T9233 | `t9233_threshold_quantization` — `t = ⌊rate·N⌋` gives `t/N ≤ rate < t/N + 1/N`: the implemented drop-rate never exceeds the requested one and undershoots by less than `2⁻³²` | Lean | proven |
 
+## Quantization Round-Trip — dequantize∘quantize (T9234–T9235)
+
+`specs/verify/lean/Quanta/Dtype/QuantRoundTrip.lean` — the
+quantized-inference supplement extending the 084.1 foundation in
+`Quanta.Dtype.Quant`: the two ℝ-level claims about the one place the
+quantized path loses information. `roundTiesEven` is modeled over
+`Int.floor`/`Int.fract` mirroring the pinned rounding mode; the clamp
+is the shipped `Quant.clampCode` model. No new axioms.
+
+| ID | Statement | Arm | Status |
+|----|-----------|-----|--------|
+| T9234 | `t9234_roundtrip_half_scale` + `t9234_exact_at_codes` — dequantize ∘ quantize moves any element by at most half a scale step (`\|s·round_te(x/s) − x\| ≤ s/2`), with ZERO error when the input is a code multiple `s·k`: stored checkpoints re-quantize to themselves | Lean | proven |
+| T9235 | `t9235_maxabs_clamp_free` + `t9234_quantize_dequantize_roundtrip` — max-abs scales `s = max\|w\|/hi` keep every rounded code in `[−hi, hi]`: the `quantize_sym` clamp never fires, code `−(hi+1)` (−128 int8 / −8 int4) is never produced, and the composed theorem carries the s/2 bound through the FULL clamped quantize | Lean | proven |
+
 ## Summary
 
 | Category | Total | Proven | Todo |
@@ -533,7 +547,8 @@ Philox-mask dropout rests on: the mask is a pure function of
 | Activation Identities (Fused Softmax/GeLU/SwiGLU) | 5 | 5 | 0 |
 | Loss Identities (CE/BCE/Huber) | 3 | 3 | 0 |
 | Dropout (Key-Based Mask) | 3 | 3 | 0 |
-| **Total proven theorems** | **229** | **228** | **1** |
+| Quantization Round-Trip (dequantize∘quantize) | 2 | 2 | 0 |
+| **Total proven theorems** | **231** | **230** | **1** |
 | **TCB axioms (A6-A13 + kernel_body_compose)** | **36** | -- | -- |
 
 T410-T416 are the JIT WGSL emitter chain. T414 is the load-bearing

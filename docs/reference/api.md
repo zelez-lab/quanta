@@ -1232,6 +1232,63 @@ kernels are theorem-backed; IDs link into `specs/THEOREMS.md`.
 
 ---
 
+## Quantized inference — `sci::quant` + `nn::quant`
+
+Weight-only, symmetric integer quantization with f32 activations:
+weights travel as int8 or packed-int4 codes plus f32 tile scales, and
+the model otherwise runs the existing f32 stack. Two homes:
+`sci::quant` is the array-level primitive (codes + scales ↔
+`Array<f32>`), `nn::quant` is the checkpoint + layer face (and
+re-exports the array types). Completeness contract (formats, modes,
+every exclusion): `QUANT_CONTRACT.md` at the quanta-nn crate root.
+
+**The correctness contract is a theorem, not a fudge factor.**
+Everything after quantization is exact and bit-pinned (dequantize is
+`scale · f32(q)`, one op-matrix-pinned multiply), so the quantized
+forward is bit-reproducible across backends and `QuantizedLinear`
+equals `Linear` fed the dequantized weight *bitwise*. Quantization
+itself carries the only tolerance, proven in Lean (T9234–T9235):
+`|s · round_te(x/s) − x| ≤ s/2` per element — exact on code
+multiples — and under max-abs scales (`s = max|w|/hi`) the clamp
+never fires, so the bound holds through the full clamped quantize.
+
+### `sci::quant` — the array-level primitive
+
+| Item | Description |
+|------|-------------|
+| `QuantDtype::{Int8, Int4}` | Symmetric int8 (native 1-byte stride) / int4 (8 codes per `u32` word, low nibble first, rows packed independently) |
+| `Granularity::{PerTensor, PerChannel { axis }, Group { axis, size }}` | Every granularity is a tile size `(gr, gc)` over the `[R, C]` leaf; the scales tensor is `[⌈R/gr⌉, ⌈C/gc⌉]`. `PerChannel { axis: 1 }` is Linear's per-out-channel accuracy default; `Group { axis: 0, size: g }` is the int4 grouped form. Invalid spellings are loud errors |
+| `QuantizedMatrix::quantize(&Array<f32>, dtype, gran) -> Result<Self>` | Max-abs per-tile scales + round-ties-even codes (the `dtype.rs` reference arithmetic, never re-spelled), uploaded as the device-resident record. Rank-2 only, loud otherwise |
+| `QuantizedMatrix::from_parts(codes, [R, C], scales, gran) -> Result<Self>` | Assemble the record from already-resident tensors — the checkpoint-reader (and future foreign-importer) seam; codes/scales/grid disagreement is a loud `Grid` error |
+| `QuantizedMatrix::dequantize() -> Result<Array<f32>>` | ONE device dispatch (code load → scale load at the grid index → `Dequantize` → f32 store), bitwise-equal to `dequantize_host` on every backend |
+| accessors | `shape()`, `dtype()`, `granularity()`, `tile()`, `codes()` (the `QuantCodes` enum), `scales()` |
+| `quantize_host` / `dequantize_host` | The host twins over `HostCodes` — the bitwise reference the device path is pinned against, and the engine of the universal (Mode A) load. Fallible: they validate their own dimensions and lengths |
+| `ArrayError::Quant(QuantError)` | The taxonomy: `Rank` / `Granularity` / `Grid` / `Format` / `NotSupported` / `Scale` — every message names the offender and states the rule or the workaround |
+
+### `nn::quant` — quantized checkpoints + `QuantizedLinear`
+
+| Item | Description |
+|------|-------------|
+| `QuantLeaf::{F32, Quantized}` | The mixed-checkpoint vocabulary — norms and biases stay f32 beside quantized matrices; mixed files are the norm |
+| `quantize_named(&[(String, Array<f32>)], policy) -> Result<Vec<(String, QuantLeaf)>>` | Quantize a named tree leaf by leaf under a caller-owned policy `Fn(&str, &Array<f32>) -> Option<(QuantDtype, Granularity)>`; `None` keeps the leaf f32. No magic name-matching |
+| `save_named(&entries, metadata) -> Result<Vec<u8>>` | The quanta quantized-safetensors convention: `x.q` codes + `x.qs` scales + `quant:x` metadata per quantized leaf, versioned (`quanta.quant = "1"`) — and the file stays a VALID safetensors any third-party reader opens. Deterministic bytes; user-metadata keys colliding with the convention are loud |
+| `load_named(gpu, &[u8]) -> Result<LoadedQuant>` | **Mode B**: quantized leaves arrive device-resident as `QuantizedMatrix` (int8 gated on `gpu.supports_narrow_int()` — a loud per-leaf refusal naming the workaround; int4 rides every backend). Total validation before anything uploads |
+| `load_named_f32(gpu, &[u8]) -> Result<LoadedSafetensors>` | **Mode A**: every quantized leaf host-dequantized (bit-identical to the device kernel) before upload — universal, WebGPU included |
+| `load(gpu, &witness, &[u8]) -> Result<P>` | The Mode A tree form: an existing f32 `ParamTree` model definition loads a quantized checkpoint by NAME with zero code changes (the `load_state` missing/extra/shape contract) |
+| `QuantizedLinear::new(w, b)` / `::dequantized(&w, b)` | The frozen quantized dense layer, both modes: `new` holds resident codes (1 byte / ½ byte per element between steps, per-forward dequantize); `dequantized` dequantizes once and holds f32 (each forward costs exactly what `Linear` costs) |
+| `QuantizedLinear: Layer<f32>`, `Params = ()` | Frozen weights ARE configuration: stacks in tuples for free, no optimizer ever sees the codes; `apply` is the declared swap seam for the future fused dequant-GEMM. Gradients flow through `x`, never into the codes |
+| `FORMAT_VERSION` | The quantized-safetensors version this build reads and writes (`"1"`); unknown versions and the reserved affine spellings (`x.qz`, `mode=affine`) are loud errors |
+
+Excluded with loud, reasoned boundaries (`QUANT_CONTRACT.md` has the
+full table): GPTQ/AWQ/GGUF/bitsandbytes import (claim boundaries —
+future readers construct the same `QuantizedMatrix`), affine
+(reserved on IR, format, and API), activation quantization / QAT /
+calibration (different products), int8 resident codes on WebGPU (the
+narrow-dtype ruling — Mode A is WebGPU's complete answer). See the
+[quantized-checkpoints how-to](../computation/how-to/quantized-checkpoints.md).
+
+---
+
 ## `quanta-tokenizers` — run pretrained tokenizers
 
 `tokenizer.json` (the HF `tokenizers` single-file artifact — what every

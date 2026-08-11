@@ -69,6 +69,7 @@
 - [FFT (Fourier Transforms)](computation/how-to/fft.md)
 - [Async Copy and GPU Printf](computation/how-to/async-copy-and-printf.md)
 - [Tokenize Text (run a pretrained tokenizer)](computation/how-to/tokenize-text.md)
+- [Run a Quantized Checkpoint](computation/how-to/quantized-checkpoints.md)
 
 ## Reference
 

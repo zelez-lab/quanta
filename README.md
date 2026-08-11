@@ -59,6 +59,7 @@ Add a backend feature (`metal` / `vulkan` / `software`) alongside for hardware e
 | `quanta::sci::layout` | Proven shape/layout algebra (the substrate the math modules share) | — |
 | `quanta::autograd` | Reverse-mode autodiff — train MLPs and CNNs end to end | PyTorch autograd |
 | `quanta::nn` | Neural stack over the tape — fused attention shipped (`PARITY.md` is the completeness map) | torch.nn / burn |
+| `quanta::nn::quant` (+ `sci::quant`) | Quantized checkpoint inference — weight-only int8/int4 over a 2-D scale grid, saved as still-valid safetensors; dequantize-on-load on every backend or resident codes + `QuantizedLinear`; the s/2 round-trip bound is Lean-proven (`QUANT_CONTRACT.md` is the declared surface) | torch.quantization / GPTQ-class weight-only |
 | `quanta::prims` | Block/device scan, reduce, sort — the parallel building blocks | CUB / thrust |
 | `quanta-tokenizers` | Run pretrained `tokenizer.json` tokenizers — all four HF model families, encode/decode/stream, conformance-pinned against the reference; zero-dep, wasm32-clean (a standalone crate, added next to `quanta` — `TOKENIZER_CONTRACT.md` is the declared surface) | HF tokenizers |
 

@@ -79,6 +79,26 @@ bias correction, weight decay, and the step in a single dispatch. Bias
 correction uses the exact `1/(1−βᵗ)` factors (T9220: exact at every step,
 not just asymptotically).
 
+## Quantization
+
+Torch-side quantization is a zoo of APIs (`torch.quantization`,
+torchao, GPTQ/AWQ toolchains); the quanta shape is one weight-only
+workflow — quantize a named tree under an explicit policy, save, load
+either dequantized (universal) or resident (`QuantizedLinear`).
+`QUANT_CONTRACT.md` at the quanta-nn crate root is the row-by-row
+contract; the [quantized-checkpoints how-to](../computation/how-to/quantized-checkpoints.md)
+walks the path.
+
+| torch ecosystem | quanta |
+|---|---|
+| `torch.quantize_per_channel(w, scales, zp, axis, torch.qint8)` | `QuantizedMatrix::quantize(&w, QuantDtype::Int8, Granularity::PerChannel { axis: 1 })` — scales are computed for you (max-abs per tile, round-ties-even; the s/2 bound is proven, T9234–T9235). Symmetric only: there is no zero-point argument to get wrong |
+| GPTQ-style weight-only workflow (quantize a trained checkpoint offline, ship int4 grouped) | `quant::quantize_named(&params.named_flatten(), policy)` → `quant::save_named` — the policy picks int8 per-channel / int4 grouped (`Group { axis: 0, size: g }`) per leaf; norms and biases stay f32 in the same file |
+| `model.load_state_dict(...)` on a quantized checkpoint | `quant::load(&gpu, &witness, &bytes)` — the **unmodified f32 model definition** loads the quantized file by name (dequantize-on-load, every backend) |
+| Runtime int8 modules (`nn.quantized.Linear`) | `QuantizedLinear::new(w, b)` — resident codes, per-forward dequantize; a `Layer` with `Params = ()`, so it drops into tuple stacks where a `Linear` sat |
+| Loading a GPTQ / AWQ / GGUF artifact | **claim boundary, not a gap**: those are affine, format-packed artifacts; quanta reads its OWN quantized-safetensors convention (a valid safetensors file). A future importer constructs the same `QuantizedMatrix`; today the boundary errors loudly |
+| `torch.quantization.prepare_qat` (quantization-aware training) | **excluded** — a different product entangled with the optimizer; quanta quantizes *trained* weights. The `Tape::custom_vjp` seam exists if a QAT ever wants it |
+| Dynamic/static activation quant, W8A8 | **excluded here** — needs the int8 GEMM (a quanta-blas pillar); weight-only with f32 activations is this surface |
+
 ## Tokenizers
 
 HF `AutoTokenizer` usage maps onto **`quanta-tokenizers`** — a
