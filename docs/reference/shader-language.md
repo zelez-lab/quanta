@@ -77,11 +77,15 @@ drawn with `.draw(3)` and no `.vertices(...)` binding:
 fn fullscreen(/* no attributes */) -> Vec4 {
     let id = vertex_id();
     // Three vertices covering the screen: (-1,-1), (3,-1), (-1,3).
-    let x = ((id & 1u32) as f32) * 4.0 - 1.0;
-    let y = ((id >> 1u32) as f32) * 4.0 - 1.0;
+    let x = if id == 1u32 { 3.0 } else { -1.0 };
+    let y = if id == 2u32 { 3.0 } else { -1.0 };
     Vec4::new(x, y, 0.0, 1.0)
 }
 ```
+
+(The branch spelling is deliberate: it is the portable form. The
+bit-twiddling alternative — `(id & 1u32) as f32` — parses only on the
+Metal frontend today; see the grammar gap under Backend support.)
 
 ---
 
@@ -104,6 +108,10 @@ of the varying struct in the fragment -- both follow WGSL semantics. Use
 or the position field when it does.
 
 ```rust
+// METAL-ONLY today: `as` casts and `%` are in the grammar gap below —
+// this shape parses on the Metal frontend but not yet on
+// Vulkan/WebGPU. A portable scanline effect samples a striped texture
+// or passes the parity down as a varying instead.
 #[quanta::fragment]
 fn scanlines() -> Vec4 {
     let fc = frag_coord();
@@ -206,14 +214,21 @@ Math intrinsics (GLSL/WGSL names): `sin`, `cos`, `tan`, `asin`, `acos`,
 
 ## Backend support
 
-Metal, Vulkan, and WebGPU/WGSL all emit the full grammar on this page — the
-WGSL emitter is at construct parity with the two natives, including the stage
+Metal, Vulkan, and WebGPU/WGSL emit the grammar on this page — the WGSL
+emitter is at construct parity with the two natives for the stage
 builtins (`frag_coord()` → `@builtin(position)`, `vertex_id()` /
 `instance_id()` → `@builtin(vertex_index)` / `@builtin(instance_index)`),
 `u32` shader params and varyings (`@interpolate(flat)` on both interface
-ends), and bounded `for` loops. A construct the grammar rejects (a method
-call, a `while` loop, a non-constant or inclusive loop range, a wrong-stage
-builtin) rejects identically on all three backends. If a future gap ever
-appears, the shader ships with `wgsl: None` and a build-time note rather than
+ends), and bounded `for` loops — **with one known frontend gap**: the
+Vulkan/WebGPU shader parser does not yet accept the bitwise operators
+(`&`, `|`, `^`, `<<`, `>>`), `%`, or `as` casts in shader bodies; those
+constructs currently parse on the Metal frontend only, and a shader
+using them ships without SPIR-V/WGSL output (a build-time note says so).
+Prefer the portable spellings shown in the examples — comparisons and
+branches — where all three backends agree. A construct the grammar
+rejects everywhere (a method call, a `while` loop, a non-constant or
+inclusive loop range, a wrong-stage builtin) rejects identically on all
+three backends. When a gap is hit, the shader ships with `wgsl: None`
+and a build-time note rather than
 invalid WGSL — Metal and Vulkan binaries are unaffected. See
 [Migration from wgpu](../migration/from-wgpu.md) for the WGSL↔DSL mapping.
