@@ -17,6 +17,8 @@ pub enum ArrayError {
     NotContiguous,
     /// An npy / npz interop fault (header, container, or dtype).
     Npy(crate::npy::NpyError),
+    /// A quantization fault (rank, granularity, grid, or checkpoint).
+    Quant(crate::quant::QuantError),
 }
 
 impl fmt::Display for ArrayError {
@@ -34,10 +36,11 @@ impl fmt::Display for ArrayError {
                     "operation requires a contiguous array (call .contiguous())"
                 )
             }
-            // NpyError messages are self-contained per the interop message
-            // contract (entry / offset / workaround always present) — no
-            // wrapper prefix on top.
+            // NpyError / QuantError messages are self-contained per the
+            // interop message contract (offender / workaround always
+            // present) — no wrapper prefix on top.
             ArrayError::Npy(e) => write!(f, "{e}"),
+            ArrayError::Quant(e) => write!(f, "{e}"),
         }
     }
 }
@@ -62,5 +65,10 @@ impl From<quanta_core::QuantaError> for ArrayError {
 impl From<crate::npy::NpyError> for ArrayError {
     fn from(e: crate::npy::NpyError) -> Self {
         ArrayError::Npy(e)
+    }
+}
+impl From<crate::quant::QuantError> for ArrayError {
+    fn from(e: crate::quant::QuantError) -> Self {
+        ArrayError::Quant(e)
     }
 }

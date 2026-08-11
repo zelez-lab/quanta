@@ -85,6 +85,7 @@ mod zip;
 
 pub mod npy;
 pub mod npz;
+pub mod quant;
 
 #[doc(hidden)]
 pub mod format_internals;

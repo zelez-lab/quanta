@@ -155,6 +155,7 @@ import Quanta.Fft.Bluestein
 import Quanta.Dtype.Bf16
 import Quanta.Dtype.Fp8
 import Quanta.Dtype.Quant
+import Quanta.Dtype.QuantRoundTrip
 import Quanta.Dtype.StorageAddressing
 
 -- Conditional-correctness theorems
