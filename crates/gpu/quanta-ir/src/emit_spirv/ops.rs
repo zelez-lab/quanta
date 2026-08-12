@@ -943,9 +943,22 @@ impl SpvEmitter {
                 // Copies the lowering emits for loop-carried / branch-
                 // assigned locals MUST produce a real write. A single-def
                 // dst stays a pure SSA alias.
+                //
+                // The IR types wasm-style — a Cmp result is a U32 0/1 —
+                // but the Cmp arm above keeps the SPIR-V `%bool`, counting
+                // on an explicit Cast op to materialize the int. When the
+                // value flows through a Copy instead (a spilled loop or
+                // branch condition), the label alone is a lie: bridge from
+                // the register's ACTUAL type, so a `%bool` source becomes
+                // 0/1 via `coerce_to` before it lands in a typed slot.
+                // (Storing a raw `%bool` into a uint slot was invalid
+                // SPIR-V that real drivers tolerated and lavapipe's LLVM
+                // crashed on.)
                 let src_val = self.reg_value_id(*src)?;
+                let src_ty = self.reg_type_id(*src)?;
                 let result_ty = self.scalar_type_id(*ty);
-                self.set_reg(*dst, src_val, result_ty);
+                let val = self.coerce_to(src_val, src_ty, result_ty);
+                self.set_reg(*dst, val, result_ty);
             }
 
             // Per-tensor symmetric quantize:
@@ -1021,7 +1034,14 @@ impl SpvEmitter {
                 then_ops,
                 else_ops,
             } => {
+                // A wasm condition is i32 truthiness; OpBranchConditional
+                // demands `%bool`. A cond that comes straight off a Cmp is
+                // already `%bool` (no-op coerce); one loaded from a slot
+                // or produced as an int tests `!= 0` via `coerce_to`.
                 let cond_val = self.reg_value_id(*cond)?;
+                let cond_ty = self.reg_type_id(*cond)?;
+                let bool_ty = self.ensure_type_bool();
+                let cond_val = self.coerce_to(cond_val, cond_ty, bool_ty);
                 let then_label = self.alloc_id();
                 let else_label = self.alloc_id();
                 let merge_label = self.alloc_id();

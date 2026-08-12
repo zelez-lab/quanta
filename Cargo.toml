@@ -228,6 +228,10 @@ quanta-tensor = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"
+# validate_spirv_jit feeds macro-produced KernelDefs straight through the
+# wave_jit SPIR-V emitter and spirv-vals the words — it needs the emitter
+# crate directly, not through the runtime.
+quanta-ir = { workspace = true, features = ["jit"] }
 
 # The differential harnesses import quanta-ir's case generator, which
 # only exists under `jit` (via op-matrix-cases) — a plain

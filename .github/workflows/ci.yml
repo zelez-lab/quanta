@@ -384,6 +384,13 @@ jobs:
       - name: SPIR-V validation via spirv-val
         run: cargo test --test validate_spirv
 
+      # The JIT twin: macro-produced KernelDefs through the wave_jit
+      # SPIR-V emitter, spirv-val'd. Control-flow kernels shipped
+      # invalid modules for years (real drivers tolerated them,
+      # lavapipe's LLVM segfaulted) — this pins the fixed seam.
+      - name: JIT SPIR-V validation via spirv-val
+        run: cargo test --test validate_spirv_jit
+
   # ─── PTX validation via ptxas (Linux + CUDA) ─────────────────────────
   ptx-validation:
     runs-on: ubuntu-latest
