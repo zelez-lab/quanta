@@ -539,8 +539,24 @@ jobs:
           echo "VK_ICD_FILENAMES=$ICD" >> $GITHUB_ENV
           VK_ICD_FILENAMES="$ICD" vulkaninfo --summary
 
+      # Dev first, then release — the wave-probe discipline: the first
+      # release-profile contact with this driver segfaulted once before
+      # (the limits-struct overflow), and running both profiles in one
+      # log bisects release-only breakage from a plain runtime bug.
+      # quanta-bench is also the first thing to RUN the software+vulkan
+      # feature combo on linux (check-combos only proves it compiles).
+      - name: Bench smoke (dev profile, lavapipe)
+        run: cargo run -p quanta-bench --no-default-features --features vulkan -- run --smoke
+
       - name: Run benchmarks (release, lavapipe)
         run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- run --out /tmp/quanta-bench-current.json
+
+      - name: Backtrace on failure
+        if: failure()
+        run: |
+          sudo apt-get install -y gdb
+          gdb -batch -ex run -ex bt -ex 'info registers' \
+            --args target/release/quanta-bench run --smoke 2>&1 | tail -60
 
       - name: Compare against baseline
         if: ${{ hashFiles('bench/baselines/linux-x86_64.json') != '' }}
