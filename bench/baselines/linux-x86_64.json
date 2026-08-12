@@ -1,0 +1,12 @@
+{
+  "platform": "linux-x86_64",
+  "gpu": "llvmpipe (LLVM 20.1.2, 256 bits)",
+  "results": [
+    {"name": "heavy_compute", "workload": "1000_elements", "elements": 1000, "gpu_ms": 1.4389, "cpu_ms": 22.1732},
+    {"name": "heavy_compute", "workload": "10000_elements", "elements": 10000, "gpu_ms": 11.6645, "cpu_ms": 221.8789},
+    {"name": "heavy_compute", "workload": "100000_elements", "elements": 100000, "gpu_ms": 72.4320, "cpu_ms": 2213.5021},
+    {"name": "heavy_compute", "workload": "1000000_elements", "elements": 1000000, "gpu_ms": 729.8569, "cpu_ms": 22139.0495},
+    {"name": "add_one_dispatch", "workload": "64x_dispatch_1048576_elements", "elements": 1048576, "gpu_ms": 1.3304},
+    {"name": "mandelbrot", "workload": "3840x2160", "elements": 8294400, "gpu_ms": 1893.3607}
+  ]
+}
