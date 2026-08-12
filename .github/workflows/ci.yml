@@ -551,12 +551,16 @@ jobs:
       - name: Run benchmarks (release, lavapipe)
         run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- run --out /tmp/quanta-bench-current.json
 
+      # Debug the DEV binary the smoke step just built with the SAME
+      # features — target/ is cache-shared with perf-build, whose
+      # software-only release binary is a decoy under gdb.
       - name: Backtrace on failure
         if: failure()
         run: |
           sudo apt-get install -y gdb
+          cargo build -p quanta-bench --no-default-features --features vulkan
           gdb -batch -ex run -ex bt -ex 'info registers' \
-            --args target/release/quanta-bench run --smoke 2>&1 | tail -60
+            --args target/debug/quanta-bench run --smoke 2>&1 | tail -80
 
       - name: Compare against baseline
         if: ${{ hashFiles('bench/baselines/linux-x86_64.json') != '' }}
