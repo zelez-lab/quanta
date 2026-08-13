@@ -48,6 +48,31 @@ pub(crate) fn expand_vertex_derive(
         ));
     }
 
+    // Optional stepping attribute: `#[quanta(instance)]` on the struct makes
+    // the layout step per-INSTANCE (every backend already lowers
+    // StepMode::Instance — this closes the derive-side gap that forced
+    // hand-built layouts for instanced attributes). Default stays
+    // per-vertex; any other argument is a named error.
+    let mut step_instance = false;
+    for a in &input.attrs {
+        if a.path().is_ident("quanta") {
+            let arg: syn::Ident = a.parse_args()?;
+            if arg == "instance" {
+                step_instance = true;
+            } else {
+                return Err(syn::Error::new_spanned(
+                    a,
+                    "unknown #[quanta(..)] argument; the only stepping form is #[quanta(instance)]",
+                ));
+            }
+        }
+    }
+    let step_mode = if step_instance {
+        quote::quote! { Instance }
+    } else {
+        quote::quote! { Vertex }
+    };
+
     let struct_name = &input.ident;
 
     // Parse each field into an attribute descriptor
@@ -89,12 +114,14 @@ pub(crate) fn expand_vertex_derive(
 
             /// Build a `VertexLayout` for this vertex struct.
             ///
-            /// Returns a layout with stride = `size_of::<Self>()`, per-vertex stepping,
-            /// and attribute descriptors derived from the struct fields.
+            /// Returns a layout with stride = `size_of::<Self>()`, stepping from
+            /// the struct's `#[quanta(..)]` attribute (per-vertex unless
+            /// `#[quanta(instance)]`), and attribute descriptors derived from
+            /// the struct fields.
             pub fn vertex_layout() -> #krate::VertexLayout {
                 #krate::VertexLayout {
                     stride: core::mem::size_of::<Self>() as u32,
-                    step: #krate::StepMode::Vertex,
+                    step: #krate::StepMode::#step_mode,
                     attributes: Self::ATTRIBUTES.to_vec(),
                 }
             }

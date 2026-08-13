@@ -240,3 +240,39 @@ fn gpu_type_struct_is_copy() {
     let _copy = v;
     let _also = v; // Only works if Copy is derived
 }
+
+// ===========================================================================
+// #[derive(quanta::Vertex)] stepping — #[quanta(instance)] steps per-instance
+// ===========================================================================
+
+#[derive(quanta::Vertex)]
+#[repr(C)]
+struct PerVertexAttrs {
+    position: [f32; 3],
+    uv: [f32; 2],
+}
+
+#[derive(quanta::Vertex)]
+#[repr(C)]
+#[quanta(instance)]
+struct PerInstanceAttrs {
+    offset: [f32; 2],
+    tint: [f32; 4],
+}
+
+#[test]
+fn vertex_derive_default_steps_per_vertex() {
+    let layout = PerVertexAttrs::vertex_layout();
+    assert_eq!(layout.step, quanta::StepMode::Vertex);
+    assert_eq!(layout.stride, 20);
+}
+
+#[test]
+fn vertex_derive_instance_attr_steps_per_instance() {
+    let layout = PerInstanceAttrs::vertex_layout();
+    assert_eq!(layout.step, quanta::StepMode::Instance);
+    assert_eq!(layout.stride, 24);
+    // Attributes are unaffected by stepping: locations stay field-ordered.
+    assert_eq!(layout.attributes[0].location, 0);
+    assert_eq!(layout.attributes[1].location, 1);
+}

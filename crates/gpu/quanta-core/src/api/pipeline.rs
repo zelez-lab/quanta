@@ -510,6 +510,7 @@ pub enum StepMode {
 }
 
 /// A single vertex attribute within a layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VertexAttribute {
     /// Shader location (attribute index).
     pub location: u32,
