@@ -975,12 +975,12 @@ rates the device exposes.
 ## `ShaderBinary`
 
 Compiled shader output from `#[quanta::vertex]` or `#[quanta::fragment]`.
-Contains native binaries (SPIR-V + metallib), not text sources.
+Contains the native artifacts (SPIR-V + metallib; on a build host without the Apple toolchain the metallib field carries the MSL source, which the Metal driver compiles at pipeline creation).
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `spirv` | `Option<&'static [u8]>` | SPIR-V binary |
-| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib |
+| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib, or MSL source bytes when built off-Apple (driver-compiled at pipeline creation) |
 | `wgsl` | `Option<&'static str>` | WGSL source (WebGPU) |
 | `entry_point` | `&'static str` | Shader entry point name |
 | `stage` | `ShaderStage` | Pipeline stage |
@@ -1002,7 +1002,7 @@ binaries -- no text sources (MSL/WGSL) are included in the build path.
 | `amd` | `Option<&'static [u8]>` | AMD GCN ELF binary |
 | `nvidia` | `Option<&'static [u8]>` | NVIDIA PTX binary |
 | `spirv` | `Option<&'static [u8]>` | SPIR-V binary (Vulkan) |
-| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib (Apple) |
+| `metallib` | `Option<&'static [u8]>` | Pre-compiled metallib (Apple), or MSL source bytes when built off-Apple |
 | `llvm_ir` | `Option<&'static [u8]>` | LLVM IR fallback |
 
 ---

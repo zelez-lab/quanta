@@ -64,11 +64,7 @@ pub fn compile_shader(stage: &str) {
         }
     };
     match metallib::compile_msl_to_metallib_variants(&msl) {
-        Ok(variants) => {
-            output.metallib = variants.macos;
-            output.metallib_ios = variants.ios;
-            output.metallib_ios_sim = variants.ios_sim;
-        }
+        Ok(variants) => attach_metal_artifacts(&mut output, variants, msl),
         Err(e) => {
             eprintln!("[quanta] metallib error: {}", e);
             std::process::exit(1);
@@ -91,4 +87,69 @@ pub fn compile_shader(stage: &str) {
 
     let out_bytes = quanta_ir::serialize_shader_output(&output);
     std::io::Write::write_all(&mut std::io::stdout(), &out_bytes).unwrap();
+}
+
+/// Attach the Metal artifacts to the output. A host WITH the Apple
+/// toolchain ships real metallibs; a host WITHOUT one (ToolAbsent →
+/// every variant `None`) ships the MSL SOURCE as the Metal artifact
+/// instead — the Metal driver's binary loader sniffs the `MTLB` magic
+/// and compiles non-MTLB bytes as source at pipeline creation, so a
+/// bundle built on any host runs on Apple targets (first pipeline
+/// creation pays a one-time driver compile; `apple_metallib`'s
+/// iOS→macOS field fallback makes the source serve every Apple
+/// platform). A toolchain FAILURE on an Apple host never reaches here
+/// — that path stays `Err`/Fatal, not a silent source fallback.
+fn attach_metal_artifacts(
+    output: &mut quanta_ir::ShaderOutput,
+    variants: metallib::MetallibVariants,
+    msl: String,
+) {
+    output.metallib = variants.macos.or_else(|| Some(msl.into_bytes()));
+    output.metallib_ios = variants.ios;
+    output.metallib_ios_sim = variants.ios_sim;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_output() -> quanta_ir::ShaderOutput {
+        quanta_ir::ShaderOutput {
+            spirv: None,
+            metallib: None,
+            metallib_ios: None,
+            metallib_ios_sim: None,
+            wgsl: None,
+        }
+    }
+
+    #[test]
+    fn toolchain_absent_ships_msl_source_as_the_metal_artifact() {
+        let mut out = empty_output();
+        let variants = metallib::MetallibVariants {
+            macos: None,
+            ios: None,
+            ios_sim: None,
+        };
+        attach_metal_artifacts(&mut out, variants, "using namespace metal;".into());
+        // The source rides the metallib field; the driver sniffs MTLB
+        // magic and compiles non-MTLB bytes as source.
+        assert_eq!(
+            out.metallib.as_deref(),
+            Some(b"using namespace metal;" as &[u8])
+        );
+        assert!(out.metallib_ios.is_none() && out.metallib_ios_sim.is_none());
+    }
+
+    #[test]
+    fn real_metallib_wins_over_the_source_fallback() {
+        let mut out = empty_output();
+        let variants = metallib::MetallibVariants {
+            macos: Some(b"MTLB\x01".to_vec()),
+            ios: None,
+            ios_sim: None,
+        };
+        attach_metal_artifacts(&mut out, variants, "using namespace metal;".into());
+        assert_eq!(out.metallib.as_deref(), Some(b"MTLB\x01" as &[u8]));
+    }
 }

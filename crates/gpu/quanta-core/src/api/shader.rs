@@ -84,7 +84,11 @@ pub enum ShaderStage {
 pub struct ShaderBinary {
     /// Pre-compiled SPIR-V binary.
     pub spirv: Option<&'static [u8]>,
-    /// Pre-compiled Metal library binary (macOS platform).
+    /// Metal artifact: a pre-compiled metallib (`MTLB` magic) when the
+    /// build host had the Apple toolchain, or MSL SOURCE bytes when it
+    /// did not — the Metal driver sniffs the magic and compiles source
+    /// at pipeline creation, so bundles built on any host run on Apple
+    /// targets (first creation pays a one-time driver compile).
     pub metallib: Option<&'static [u8]>,
     /// Pre-compiled Metal library binary (iOS device).
     pub metallib_ios: Option<&'static [u8]>,
