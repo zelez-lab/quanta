@@ -36,6 +36,9 @@ use crate::api::gpu::{DeviceContext, Gpu};
 /// Which driver produced a device. Part of the registry key, so
 /// `QUANTA_BACKEND` forcing composes for free: forcing only decides
 /// which backends are PROBED; identity within a backend is untouched.
+// The whole registry is native-only: wasm32 builds the WebGPU driver
+// alone, and that never registers (see the module docs).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendKind {
     #[cfg_attr(
@@ -65,8 +68,10 @@ pub(crate) enum BackendKind {
 
 /// One registry row: the key — backend plus index in that backend's
 /// stable discovery order — and a weak ref to the live context.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 type Entry = ((BackendKind, usize), Weak<DeviceContext>);
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 /// Return this backend's devices, reusing live contexts and running
@@ -79,6 +84,8 @@ static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 /// drops immediately; rare, and cheap now that the Vulkan instance is
 /// process-shared). The lock is held across `discover` on purpose —
 /// two racing initializations must not both build the same device.
+// Called from `devices()`, `init_cpu()` — native entry points only.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_or_discover(
     kind: BackendKind,
     discover: impl FnOnce() -> Vec<Box<dyn GpuDevice>>,

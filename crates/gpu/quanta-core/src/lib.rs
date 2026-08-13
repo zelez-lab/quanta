@@ -40,7 +40,9 @@ pub use api::*;
 pub use raw_window_handle as rwh;
 
 /// Returns true if the `QUANTA_VALIDATE` env var is set to "1".
+// Reached only through `maybe_validate` — see its note.
 #[cfg(feature = "std")]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn validation_enabled() -> bool {
     std::env::var("QUANTA_VALIDATE")
         .map(|v| v == "1")
@@ -50,7 +52,11 @@ fn validation_enabled() -> bool {
 /// Optionally wrap a device in the validation layer, then hand the
 /// device a weak reference to its own `Arc` so the pulses it mints can
 /// keep it alive (see `GpuDevice::install_self_ref`).
+// Every call site is a native one — `init_isolated`'s metal/vulkan/
+// software arms, `init_cpu_isolated`, and the registry's device build;
+// wasm32 reaches its device through the WebGPU async handshake instead.
 #[cfg(feature = "std")]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn maybe_validate(dev: alloc::boxed::Box<dyn GpuDevice>) -> alloc::sync::Arc<dyn GpuDevice> {
     let arc: alloc::sync::Arc<dyn GpuDevice> = if validation_enabled() {
         alloc::sync::Arc::from(driver::validation::ValidationDevice::wrap(dev))
@@ -148,6 +154,8 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
     // only the metal/vulkan/software cfgs below mutate the vector, and
     // feature combinations may disable all of them (e.g. wasm32 +
     // webgpu).
+    // The import goes unused for that same reason.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
     use api::registry::{BackendKind, get_or_discover};
     #[allow(unused_mut)]
     let mut devs: alloc::vec::Vec<Gpu> = alloc::vec::Vec::new();

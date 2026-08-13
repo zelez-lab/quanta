@@ -261,3 +261,27 @@ required-features = ["sci"]
 [[example]]
 name = "probe_wave_creation"
 required-features = ["jit", "compute"]
+
+# The smoke examples drive a kernel through `quanta::init_cpu()`, which only
+# exists under `software` — a build without it must skip these targets, not
+# fail on them. `software` already implies `jit` + `compute`, so naming it
+# alone is the minimal accurate set.
+[[example]]
+name = "smoke_device_call"
+required-features = ["software"]
+
+[[example]]
+name = "smoke_i64_mul"
+required-features = ["software"]
+
+[[example]]
+name = "smoke_philox_kernel"
+required-features = ["software"]
+
+[[example]]
+name = "smoke_push_const"
+required-features = ["software"]
+
+[[example]]
+name = "smoke_u64"
+required-features = ["software"]

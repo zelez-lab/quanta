@@ -10,7 +10,7 @@
 use quanta::RenderGpu;
 use quanta::render_pass::ColorTarget;
 use quanta::{Color, FieldUsage, Format, LoadOp, StoreOp};
-use quanta::{Vec2, Vec3, Vec4};
+use quanta::{Vec2, Vec4};
 
 fn try_gpu() -> Option<quanta::Gpu> {
     quanta::init().ok()
@@ -85,7 +85,7 @@ struct GroupVary {
 }
 
 #[quanta::vertex]
-fn group_quad_vertex(pos: Vec3, uv: Vec2) -> GroupVary {
+fn group_quad_vertex(pos: quanta::Vec3, uv: Vec2) -> GroupVary {
     GroupVary {
         clip: Vec4::new(pos.x, pos.y, 0.0, 1.0),
         uv,

@@ -30,6 +30,9 @@ use std::sync::Mutex;
 ///
 /// Tracks allocated handles and checks for misuse before forwarding
 /// calls to the underlying driver.
+// Only `crate::maybe_validate` constructs one, and that sits on the
+// native init paths; wasm32 never wraps its WebGPU device.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct ValidationDevice {
     inner: Box<dyn GpuDevice + Send + Sync>,
     live_fields: Mutex<HashSet<u64>>,
@@ -37,6 +40,7 @@ pub struct ValidationDevice {
 }
 
 impl ValidationDevice {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn wrap(inner: Box<dyn GpuDevice>) -> Box<dyn GpuDevice> {
         Box::new(Self {
             inner,
