@@ -25,17 +25,11 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use quanta::webgpu::spawn_local;
+use quanta::webgpu::{complete_bytes, complete_err, spawn_local};
 use quanta::{
     Color, Filter, Format, GpuDevice as _, PipelineDesc, RenderPass, SamplerDesc, ShaderSource,
     TextureDesc, TextureUsage,
 };
-
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
-    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
-}
 
 const TEXTURED_WGSL: &str = r#"
 struct VsOut {
@@ -135,17 +129,13 @@ async fn run() -> Result<Vec<u8>, String> {
 
 /// Smoke-test entry. JS-side harness calls
 /// `wasm.web_textured_run(task)`; result delivered via
-/// `quanta_complete_bytes` / `quanta_complete_err`.
+/// `complete_bytes` / `complete_err`.
 #[unsafe(no_mangle)]
 pub extern "C" fn web_textured_run(task: u32) {
     spawn_local(async move {
         match run().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }

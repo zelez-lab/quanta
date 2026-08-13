@@ -7,50 +7,53 @@
 //
 // Internally:
 //
-//   1. `instantiate` fetches and instantiates the wasm module, providing
-//      `makeImports` from `webgpu.ts` as the `env` namespace.
-//   2. The wasm module's `quanta_resolve` / `quanta_reject` exports are
-//      stitched into `state.exports` so async imports can wake the Rust
-//      executor.
-//   3. Smoke tests export a function like `web_add_one_run(task: u32)`
-//      that runs the test and eventually calls back into JS via
-//      `quanta_complete_bytes(task, ptr, len)` or
-//      `quanta_complete_err(task, msg_ptr, msg_len)`.
-//   4. `runReturningBytes` allocates a fresh top-level task id, calls
-//      the export, and returns a Promise the imports above resolve.
+//   1. `instantiate` fetches and instantiates the wasm module with NO
+//      imports at all (dija R10): the module talks to the browser
+//      through the command tape, never through `env:*`.
+//   2. The environment the driver used to query synchronously —
+//      `navigator.gpu` and the preferred canvas format — is PUSHED into
+//      wasm right after instantiation via `__quanta_env_init`.
+//   3. Every call into wasm goes through `state.enter`, which drains the
+//      tape (`tape.ts`) the moment the call returns: that is where the
+//      WebGPU work actually happens.
+//   4. Smoke tests export a function like `web_add_one_run(task: u32)`
+//      that runs the test and eventually appends a `CompleteBytes` /
+//      `CompleteErr` op naming the task.
+//   5. `runReturningBytes` allocates a fresh top-level task id, calls
+//      the export, and returns a Promise those ops settle at drain time.
 
 import { HandleTable } from "./handles.js";
-import { readBytes, readUtf8 } from "./strings.js";
-import { makeImports, type GlueState } from "./webgpu.js";
-import type { WasmExports } from "./tasks.js";
+import { drainTape, type GlueState, type TapeExports } from "./tape.js";
 
 /**
  * The wasm exports used by the glue. Smoke tests add their own exports
  * (e.g. `web_add_one_run`) on top of this base.
  */
-interface BaseExports extends WasmExports {
+interface BaseExports extends TapeExports {
   memory: WebAssembly.Memory;
 }
 
-/**
- * Top-level (JS-initiated) tasks waiting on a wasm-driven Promise.
- *
- * Distinct from the `pending_promises` table in the Rust executor: this
- * table tracks the *outermost* JS Promise the host returned from
- * `runReturningBytes`; the Rust table tracks intermediate `await`
- * points. The two namespaces never interleave — both sides only mint
- * ids in their own namespace.
- */
-interface TopLevelTask {
-  resolve: (bytes: Uint8Array) => void;
-  reject: (err: Error) => void;
-}
-
 export interface QuantaModule {
-  /** Raw access for callers that need to invoke other exports directly. */
+  /**
+   * Raw access for callers that need to invoke other exports directly —
+   * a host-driven frame loop calling its own entry, say. Wrap every such
+   * call in [`enter`]: an export that returns without a drain leaves its
+   * WebGPU work queued on the tape.
+   */
   exports: WebAssembly.Exports;
+  /**
+   * Invoke a wasm entry and perform the commands it appended. Every call
+   * this module makes into wasm goes through here; an embedder driving
+   * `exports` itself must do the same.
+   */
+  enter(call: () => void): void;
   /** Diagnostic accessor to inspect handle pressure. */
   liveHandles(): number;
+  /**
+   * Diagnostic accessor: how many drains actually carried commands —
+   * the wasm↔JS crossing count a frame loop wants to keep flat.
+   */
+  drains(): number;
   /**
    * Register a canvas for presentation (step 096). The returned id is
    * what `SurfaceTarget::Canvas { canvas }` names on the Rust side —
@@ -62,11 +65,22 @@ export interface QuantaModule {
   /**
    * Invoke a wasm export of the form
    * `extern "C" fn run(task: u32, ...)` and resolve with the bytes the
-   * Rust side hands back via `quanta_complete_bytes`. Reject if the
-   * Rust side calls `quanta_complete_err`. Trailing `args` are passed
-   * after the task id (e.g. a registered canvas handle).
+   * Rust side hands back through the tape's `CompleteBytes` op. Reject
+   * on `CompleteErr`. Trailing `args` are passed after the task id
+   * (e.g. a registered canvas handle).
    */
   runReturningBytes(exportName: string, ...args: number[]): Promise<Uint8Array>;
+}
+
+/**
+ * `navigator.gpu` presence and its preferred canvas format, as the
+ * `(available, format_code)` pair `__quanta_env_init` takes. Format
+ * codes mirror ffi.rs `format`: rgba8unorm = 0, bgra8unorm = 1.
+ */
+function environment(): [number, number] {
+  const gpu = typeof navigator === "undefined" ? undefined : navigator.gpu;
+  if (gpu === undefined) return [0, 0];
+  return [1, gpu.getPreferredCanvasFormat() === "rgba8unorm" ? 0 : 1];
 }
 
 export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
@@ -78,38 +92,22 @@ export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
     memory: new WebAssembly.Memory({ initial: 0 }),
     exports: null,
     handles,
-    syncCalls: 0,
+    drains: 0,
+    topLevelTasks: new Map(),
+    enter(call: () => void): void {
+      try {
+        call();
+      } finally {
+        drainTape(state);
+      }
+    },
   };
 
-  const topLevelTasks = new Map<number, TopLevelTask>();
   let nextTopLevelTask = 1;
 
-  const baseImports = makeImports(state);
-
-  const completionImports: WebAssembly.ModuleImports = {
-    quanta_complete_bytes(task: number, ptr: number, len: number): void {
-      const t = topLevelTasks.get(task);
-      if (t === undefined) {
-        console.error(`quanta glue: unknown top-level task ${task}`);
-        return;
-      }
-      topLevelTasks.delete(task);
-      t.resolve(readBytes(state.memory, ptr, len));
-    },
-    quanta_complete_err(task: number, ptr: number, len: number): void {
-      const t = topLevelTasks.get(task);
-      if (t === undefined) {
-        console.error(`quanta glue: unknown top-level task ${task}`);
-        return;
-      }
-      topLevelTasks.delete(task);
-      t.reject(new Error(readUtf8(state.memory, ptr, len)));
-    },
-  };
-
-  const imports: WebAssembly.Imports = {
-    env: { ...baseImports, ...completionImports },
-  };
+  // No imports: the module is self-contained, and everything it wants
+  // from the host rides the tape it fills in.
+  const imports: WebAssembly.Imports = {};
 
   const response = fetch(wasmUrl);
   let result: WebAssembly.WebAssemblyInstantiatedSource;
@@ -125,10 +123,23 @@ export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
   state.memory = exports.memory;
   state.exports = exports;
 
+  // Push what the driver can no longer ask for synchronously.
+  const [available, preferredFormat] = environment();
+  exports.__quanta_env_init(available, preferredFormat);
+
   return {
     exports: instance.exports,
+    enter: (call) => state.enter(call),
     liveHandles: () => handles.size(),
-    registerCanvas: (canvas) => handles.alloc(canvas),
+    drains: () => state.drains,
+    registerCanvas: (canvas) => {
+      const id = handles.alloc(canvas);
+      // The embedder owns this canvas' backing size until a surface
+      // configures it, so the driver's first read of the extent has to
+      // come from here.
+      exports.__quanta_canvas_dims(id, canvas.width, canvas.height);
+      return id;
+    },
     runReturningBytes(exportName: string, ...args: number[]): Promise<Uint8Array> {
       const fn = (instance.exports as Record<string, unknown>)[exportName];
       if (typeof fn !== "function") {
@@ -138,11 +149,11 @@ export async function instantiate(wasmUrl: string): Promise<QuantaModule> {
       }
       return new Promise<Uint8Array>((resolve, reject) => {
         const task = nextTopLevelTask++;
-        topLevelTasks.set(task, { resolve, reject });
+        state.topLevelTasks.set(task, { resolve, reject });
         try {
-          (fn as (t: number, ...rest: number[]) => void)(task, ...args);
+          state.enter(() => (fn as (t: number, ...rest: number[]) => void)(task, ...args));
         } catch (e) {
-          topLevelTasks.delete(task);
+          state.topLevelTasks.delete(task);
           reject(e instanceof Error ? e : new Error(String(e)));
         }
       });

@@ -7,20 +7,33 @@
 //
 // Internally:
 //
-//   1. `instantiate` fetches and instantiates the wasm module, providing
-//      `makeImports` from `webgpu.ts` as the `env` namespace.
-//   2. The wasm module's `quanta_resolve` / `quanta_reject` exports are
-//      stitched into `state.exports` so async imports can wake the Rust
-//      executor.
-//   3. Smoke tests export a function like `web_add_one_run(task: u32)`
-//      that runs the test and eventually calls back into JS via
-//      `quanta_complete_bytes(task, ptr, len)` or
-//      `quanta_complete_err(task, msg_ptr, msg_len)`.
-//   4. `runReturningBytes` allocates a fresh top-level task id, calls
-//      the export, and returns a Promise the imports above resolve.
+//   1. `instantiate` fetches and instantiates the wasm module with NO
+//      imports at all (dija R10): the module talks to the browser
+//      through the command tape, never through `env:*`.
+//   2. The environment the driver used to query synchronously —
+//      `navigator.gpu` and the preferred canvas format — is PUSHED into
+//      wasm right after instantiation via `__quanta_env_init`.
+//   3. Every call into wasm goes through `state.enter`, which drains the
+//      tape (`tape.ts`) the moment the call returns: that is where the
+//      WebGPU work actually happens.
+//   4. Smoke tests export a function like `web_add_one_run(task: u32)`
+//      that runs the test and eventually appends a `CompleteBytes` /
+//      `CompleteErr` op naming the task.
+//   5. `runReturningBytes` allocates a fresh top-level task id, calls
+//      the export, and returns a Promise those ops settle at drain time.
 import { HandleTable } from "./handles.js";
-import { readBytes, readUtf8 } from "./strings.js";
-import { makeImports } from "./webgpu.js";
+import { drainTape } from "./tape.js";
+/**
+ * `navigator.gpu` presence and its preferred canvas format, as the
+ * `(available, format_code)` pair `__quanta_env_init` takes. Format
+ * codes mirror ffi.rs `format`: rgba8unorm = 0, bgra8unorm = 1.
+ */
+function environment() {
+    const gpu = typeof navigator === "undefined" ? undefined : navigator.gpu;
+    if (gpu === undefined)
+        return [0, 0];
+    return [1, gpu.getPreferredCanvasFormat() === "rgba8unorm" ? 0 : 1];
+}
 export async function instantiate(wasmUrl) {
     const handles = new HandleTable();
     const state = {
@@ -30,34 +43,21 @@ export async function instantiate(wasmUrl) {
         memory: new WebAssembly.Memory({ initial: 0 }),
         exports: null,
         handles,
-        syncCalls: 0,
+        drains: 0,
+        topLevelTasks: new Map(),
+        enter(call) {
+            try {
+                call();
+            }
+            finally {
+                drainTape(state);
+            }
+        },
     };
-    const topLevelTasks = new Map();
     let nextTopLevelTask = 1;
-    const baseImports = makeImports(state);
-    const completionImports = {
-        quanta_complete_bytes(task, ptr, len) {
-            const t = topLevelTasks.get(task);
-            if (t === undefined) {
-                console.error(`quanta glue: unknown top-level task ${task}`);
-                return;
-            }
-            topLevelTasks.delete(task);
-            t.resolve(readBytes(state.memory, ptr, len));
-        },
-        quanta_complete_err(task, ptr, len) {
-            const t = topLevelTasks.get(task);
-            if (t === undefined) {
-                console.error(`quanta glue: unknown top-level task ${task}`);
-                return;
-            }
-            topLevelTasks.delete(task);
-            t.reject(new Error(readUtf8(state.memory, ptr, len)));
-        },
-    };
-    const imports = {
-        env: { ...baseImports, ...completionImports },
-    };
+    // No imports: the module is self-contained, and everything it wants
+    // from the host rides the tape it fills in.
+    const imports = {};
     const response = fetch(wasmUrl);
     let result;
     if (typeof WebAssembly.instantiateStreaming === "function") {
@@ -71,10 +71,22 @@ export async function instantiate(wasmUrl) {
     const exports = instance.exports;
     state.memory = exports.memory;
     state.exports = exports;
+    // Push what the driver can no longer ask for synchronously.
+    const [available, preferredFormat] = environment();
+    exports.__quanta_env_init(available, preferredFormat);
     return {
         exports: instance.exports,
+        enter: (call) => state.enter(call),
         liveHandles: () => handles.size(),
-        registerCanvas: (canvas) => handles.alloc(canvas),
+        drains: () => state.drains,
+        registerCanvas: (canvas) => {
+            const id = handles.alloc(canvas);
+            // The embedder owns this canvas' backing size until a surface
+            // configures it, so the driver's first read of the extent has to
+            // come from here.
+            exports.__quanta_canvas_dims(id, canvas.width, canvas.height);
+            return id;
+        },
         runReturningBytes(exportName, ...args) {
             const fn = instance.exports[exportName];
             if (typeof fn !== "function") {
@@ -82,12 +94,12 @@ export async function instantiate(wasmUrl) {
             }
             return new Promise((resolve, reject) => {
                 const task = nextTopLevelTask++;
-                topLevelTasks.set(task, { resolve, reject });
+                state.topLevelTasks.set(task, { resolve, reject });
                 try {
-                    fn(task, ...args);
+                    state.enter(() => fn(task, ...args));
                 }
                 catch (e) {
-                    topLevelTasks.delete(task);
+                    state.topLevelTasks.delete(task);
                     reject(e instanceof Error ? e : new Error(String(e)));
                 }
             });

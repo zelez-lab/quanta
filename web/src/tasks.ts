@@ -33,12 +33,17 @@ export interface WasmExports {
  * Most async ops resolve to a JS object; we allocate a handle for the
  * object inside `mapHandle` (using the closure's captured handle table).
  * Some resolve to `undefined` (e.g. `mapAsync`); those use `() => 0`.
+ *
+ * `enter` wraps the re-entry into wasm: waking the executor runs Rust
+ * code that appends to the command tape, and that tape has to be
+ * drained before control returns to the event loop.
  */
 export function bindTask<T>(
   exports: WasmExports,
   task: number,
   promise: Promise<T>,
   mapHandle: (value: T) => number,
+  enter: (call: () => void) => void,
 ): void {
   promise.then(
     (value) => {
@@ -47,14 +52,14 @@ export function bindTask<T>(
         handle = mapHandle(value);
       } catch (e) {
         console.error("quanta glue: mapHandle threw", e);
-        exports.quanta_reject(task);
+        enter(() => exports.quanta_reject(task));
         return;
       }
-      exports.quanta_resolve(task, handle);
+      enter(() => exports.quanta_resolve(task, handle));
     },
     (err) => {
       console.error("quanta glue: task rejected", err);
-      exports.quanta_reject(task);
+      enter(() => exports.quanta_reject(task));
     },
   );
 }

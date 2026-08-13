@@ -58,18 +58,15 @@ impl WebgpuDevice {
             unsafe { ffi::quanta_queue_submit(device, cmd) };
         }
 
-        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task) })
+        // The destination exists BEFORE the request: the glue copies the
+        // mapped range into it and unmaps before resolving the task.
+        let mut out = alloc::vec![0u8; size];
+        let dst = out.as_mut_ptr();
+        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task, dst, size) })
             .await
             .map_err(|_| Self::err("mapAsync rejected"))?;
 
-        let mut out = alloc::vec![0u8; size];
-        unsafe {
-            ffi::quanta_get_mapped_range_copy(staging, out.as_mut_ptr(), size);
-        }
-        unsafe {
-            ffi::quanta_unmap_buffer(staging);
-            ffi::quanta_destroy_buffer(staging);
-        }
+        unsafe { ffi::quanta_destroy_buffer(staging) };
         Ok(out)
     }
 
@@ -111,17 +108,14 @@ impl WebgpuDevice {
         let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
         unsafe { ffi::quanta_queue_submit(device, cmd) };
 
-        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task) })
+        let size = bytes as usize;
+        let mut raw = alloc::vec![0u8; size];
+        let dst = raw.as_mut_ptr();
+        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task, dst, size) })
             .await
             .map_err(|_| Self::err("occlusion query mapAsync rejected"))?;
 
-        let size = bytes as usize;
-        let mut raw = alloc::vec![0u8; size];
-        unsafe {
-            ffi::quanta_get_mapped_range_copy(staging, raw.as_mut_ptr(), size);
-            ffi::quanta_unmap_buffer(staging);
-            ffi::quanta_destroy_buffer(staging);
-        }
+        unsafe { ffi::quanta_destroy_buffer(staging) };
 
         // Each slot is a little-endian u64.
         let mut out = alloc::vec::Vec::with_capacity(count as usize);
@@ -187,19 +181,14 @@ impl WebgpuDevice {
         let cmd = unsafe { ffi::quanta_encoder_finish(encoder) };
         unsafe { ffi::quanta_queue_submit(device, cmd) };
 
-        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task) })
+        let total = (bytes_per_row as usize) * (height as usize);
+        let mut padded = alloc::vec![0u8; total];
+        let dst = padded.as_mut_ptr();
+        Promise::register(|task| unsafe { ffi::quanta_map_async_read(staging, task, dst, total) })
             .await
             .map_err(|_| Self::err("texture mapAsync rejected"))?;
 
-        let total = (bytes_per_row as usize) * (height as usize);
-        let mut padded = alloc::vec![0u8; total];
-        unsafe {
-            ffi::quanta_get_mapped_range_copy(staging, padded.as_mut_ptr(), total);
-        }
-        unsafe {
-            ffi::quanta_unmap_buffer(staging);
-            ffi::quanta_destroy_buffer(staging);
-        }
+        unsafe { ffi::quanta_destroy_buffer(staging) };
 
         if bytes_per_row == tight_row {
             Ok(padded)

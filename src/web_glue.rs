@@ -1,9 +1,10 @@
 //! The browser glue, embedded in the crate.
 //!
-//! The wasm32/WebGPU face imports ~80 `env` functions that only the JS glue
-//! provides (`web/src/*.ts`, compiled to `web/dist/*.js` — Quanta's
-//! hand-rolled ABI; no wasm-bindgen, no wgpu). A consumer that depends on
-//! Quanta through cargo alone — no repo checkout, no `quanta-cli`, no Node —
+//! The wasm32/WebGPU face imports nothing at all: it writes a command tape
+//! that only the JS glue knows how to drain (`web/src/*.ts`, compiled to
+//! `web/dist/*.js` — Quanta's hand-rolled ABI; no wasm-bindgen, no wgpu). A
+//! consumer that depends on Quanta through cargo alone — no repo checkout, no
+//! `quanta-cli`, no Node —
 //! still needs those files to serve a page, so the compiled glue is COMMITTED
 //! (`web/dist/` is tracked; web-smoke CI rebuilds it from the TypeScript and
 //! fails on drift) and embedded here.
@@ -29,6 +30,7 @@
 /// exact bytes `quanta build web` stages next to each example's wasm.
 pub const FILES: &[(&str, &str)] = &[
     ("quanta.js", include_str!("../web/dist/quanta.js")),
+    ("tape.js", include_str!("../web/dist/tape.js")),
     ("webgpu.js", include_str!("../web/dist/webgpu.js")),
     (
         "webgpu-types.js",
@@ -45,8 +47,8 @@ pub const FILES: &[(&str, &str)] = &[
 ];
 
 /// The entry module's relative path within [`FILES`] — what the page
-/// imports (`instantiate`, `registerCanvas`, `makeImports` live there or
-/// are re-exported through it).
+/// imports (`instantiate`, `registerCanvas` live there or are re-exported
+/// through it).
 pub const ENTRY: &str = "quanta.js";
 
 #[cfg(test)]

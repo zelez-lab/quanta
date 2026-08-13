@@ -6,10 +6,14 @@
 //!
 //! ## Architecture
 //!
-//! - `ffi.rs` — bare `extern "C"` imports defining Quanta's WebGPU ABI.
-//!   ~300 lines we own and audit, with no `wasm-bindgen` runtime
-//!   dependency. Strings cross as `(*const u8, usize)`; long-lived JS
-//!   objects cross as `u32` handles into a JS-side handle table.
+//! - `ffi.rs` — Quanta's WebGPU ABI. ~300 lines we own and audit, with
+//!   no `wasm-bindgen` runtime dependency. Strings cross as
+//!   `(*const u8, usize)`; long-lived JS objects cross as `u32` handles
+//!   into a JS-side handle table.
+//! - `tape.rs` — the command tape every `ffi.rs` fn writes to, and the
+//!   push-state the sync queries read. The module imports NOTHING from
+//!   the host (dija's R10); the glue drains the tape after every wasm
+//!   entry returns.
 //! - `executor.rs` — minimal Rust async executor. Replaces
 //!   `wasm-bindgen-futures::JsFuture` with a thread-local promise table
 //!   driven by JS-callable `quanta_resolve` / `quanta_reject` exports.
@@ -55,6 +59,7 @@ mod render;
 mod state;
 #[cfg(feature = "render")]
 mod surface;
+mod tape;
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -77,6 +82,7 @@ use ffi::{NULL_HANDLE, buffer_usage};
 use state::{SendCell, State};
 
 pub use executor::{Promise, spawn_local};
+pub use tape::{complete_bytes, complete_err};
 
 /// WebGPU device — sits behind `target_arch = "wasm32"` and the
 /// `webgpu` feature.

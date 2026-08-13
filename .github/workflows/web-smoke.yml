@@ -8,7 +8,8 @@ name: Web smoke (B‴)
 #
 # The matching local invocation:
 #   cargo run -p quanta-cli -- build web
-#   cd web && npm install && npm run smoke:install && npm run smoke
+#   cd web && npm install && npm run conformance
+#   npm run smoke:install && npm run smoke
 #
 # Each smoke test asserts the page-side PASS banner — same
 # contract a human would eyeball when running `quanta serve`.
@@ -70,6 +71,13 @@ jobs:
       # changed without recommitting the compiled glue.
       - name: Committed glue matches the TypeScript (web/dist drift)
         run: git diff --exit-code web/dist
+
+      # The command tape is a published byte contract (dija R10): no
+      # browser needed to check it, and a re-appearing `env` import
+      # fails here before Playwright ever launches.
+      - name: Command-tape conformance (zero imports + golden bytes)
+        working-directory: web
+        run: npm run conformance
 
       - name: Run headless WebGPU smoke harness
         working-directory: web

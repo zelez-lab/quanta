@@ -19,17 +19,11 @@
 #![cfg(target_arch = "wasm32")]
 
 use quanta::GpuDevice;
-use quanta::webgpu::spawn_local;
+use quanta::webgpu::{complete_bytes, complete_err, spawn_local};
 use quanta_ir::{
     AtomicOp, BinOp, CmpOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType,
     serialize_kernel,
 };
-
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
-    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
-}
 
 const A: f32 = 2.5;
 const N: usize = 1024;
@@ -158,12 +152,8 @@ async fn run() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_saxpy_run(task: u32) {
     spawn_local(async move {
         match run().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }
@@ -323,12 +313,8 @@ async fn run_reduce_sum() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_reduce_sum_run(task: u32) {
     spawn_local(async move {
         match run_reduce_sum().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }
@@ -420,12 +406,8 @@ async fn run_counter() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_counter_run(task: u32) {
     spawn_local(async move {
         match run_counter().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }
@@ -536,12 +518,8 @@ async fn run_race() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_race_run(task: u32) {
     spawn_local(async move {
         match run_race().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }
@@ -791,12 +769,8 @@ async fn run_op_matrix() -> Result<Vec<u8>, String> {
 pub extern "C" fn web_diff_op_matrix_run(task: u32) {
     spawn_local(async move {
         match run_op_matrix().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }

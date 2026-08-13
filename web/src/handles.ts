@@ -27,6 +27,19 @@ export class HandleTable {
   }
 
   /**
+   * Bind `value` to a handle the DRIVER minted (`tape::mint_id`, high
+   * bit set). Driver ids are monotonic and never recycled, so a
+   * collision means a tape was interpreted twice — throw rather than
+   * silently aliasing a live resource.
+   */
+  bind(handle: number, value: unknown): void {
+    if (this.slots.has(handle)) {
+      throw new Error(`quanta glue: handle ${handle} is already bound`);
+    }
+    this.slots.set(handle, value);
+  }
+
+  /**
    * Resolve `handle` to its underlying object. Throws if the handle is
    * null or unknown — the wasm side is supposed to track liveness and a
    * lookup miss indicates a real bug worth surfacing.

@@ -94,6 +94,7 @@
 - [Architecture](internals/architecture.md)
 - [Compiler](internals/compiler.md)
 - [Drivers](internals/drivers.md)
+- [The Web Command Tape](internals/web-tape.md)
 - [Testing](internals/testing.md)
 - [Theorem Dashboard](verification/index.md)
 - [Verification Scope](verification/scope.md)

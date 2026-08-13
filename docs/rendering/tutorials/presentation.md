@@ -163,18 +163,21 @@ obtain it, both carrying the SAME files:
 The glue's JS API is **stable, documented surface**:
 
 - `instantiate(wasmUrl: string): Promise<QuantaModule>` (module
-  `quanta.js`) — fetches and instantiates the wasm, wiring the full
-  import object and the executor callbacks.
+  `quanta.js`) — fetches and instantiates the wasm with NO imports at
+  all, then pushes the environment (WebGPU availability, preferred
+  canvas format) into it. The module reaches the browser by appending
+  commands to a tape the glue drains after every entry returns.
 - `QuantaModule.registerCanvas(canvas: HTMLCanvasElement |
   OffscreenCanvas): number` — registers a canvas for presentation and
   returns the id that `SurfaceTarget::Canvas { canvas }` names on the
   Rust side. The registration stays live until the page drops the
   module; the embedder owns the canvas, Quanta drives only its backing
   size.
-- `makeImports(state: GlueState): WebAssembly.ModuleImports` (module
-  `webgpu.js`) — the raw import object, for embedders that instantiate
-  the wasm themselves instead of going through `instantiate` (a bundler
-  that composes Quanta's imports with its own `env` entries does this).
+- `QuantaModule.enter(call: () => void): void` — invoke a wasm entry and
+  perform the commands it appended. An embedder that drives
+  `QuantaModule.exports` directly (a host-owned frame loop calling its
+  own entry) must wrap the call in this; an export that returns without
+  a drain leaves its WebGPU work queued.
 
 ### The frame loop
 

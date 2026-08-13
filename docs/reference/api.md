@@ -639,15 +639,16 @@ than failing.
 | `format()` | `Result<Format>` | The **negotiated** frame format (see below). Call after create, before building pipelines; pass to `with_color_formats` |
 | `width()` / `height()` | `u32` | Current frame extent |
 
-**The browser glue, from the crate.** The wasm32/WebGPU face needs
-Quanta's JS glue (the `env` import object plus `instantiate` /
-`registerCanvas` on the page side). `quanta::web_glue::FILES` embeds
+**The browser glue, from the crate.** The wasm32/WebGPU face imports
+nothing, but it still needs Quanta's JS glue: the page side
+(`instantiate` / `registerCanvas`) and the interpreter that drains the
+command tape the wasm writes. `quanta::web_glue::FILES` embeds
 every glue file as a `(relative path, contents)` pair —
 `quanta::web_glue::ENTRY` names the entry module — so a build tool that
 depends on Quanta through cargo alone can stage the glue with no repo
 checkout, no `quanta-cli`, and no Node. Ungated, target-independent
 constants. The glue's JS surface (`instantiate`, `registerCanvas`,
-`makeImports`) is documented in the
+`enter`) is documented in the
 [presentation tutorial](../rendering/tutorials/presentation.md).
 
 **Format negotiation.** `SurfaceConfig::format` is a *preference* on

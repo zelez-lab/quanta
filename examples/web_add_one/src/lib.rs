@@ -19,23 +19,17 @@
 //! - After dispatching `add_one` with one workgroup of size 64,
 //!   the buffer must equal `[1, 2, 3, …, 64]`.
 //!
-//! Result is handed back to JS via the wasm imports
-//! `quanta_complete_bytes` (success) or `quanta_complete_err` (failure).
-//! No `wasm-bindgen` runtime is involved.
+//! Result is handed back to JS through the command tape —
+//! `complete_bytes` (success) or `complete_err` (failure). No
+//! `wasm-bindgen` runtime is involved.
 
 #![cfg(target_arch = "wasm32")]
 
 use quanta::GpuDevice;
-use quanta::webgpu::spawn_local;
+use quanta::webgpu::{complete_bytes, complete_err, spawn_local};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, Reg, ScalarType, serialize_kernel,
 };
-
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
-    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
-}
 
 fn build_add_one_kernel() -> KernelDef {
     KernelDef {
@@ -120,17 +114,13 @@ async fn run() -> Result<Vec<u8>, String> {
 /// Smoke-test entry. JS-side harness calls
 /// `wasm.web_add_one_run(task)` with a freshly minted task id; this
 /// function spawns the async test and replies via
-/// `quanta_complete_bytes` / `quanta_complete_err`.
+/// `complete_bytes` / `complete_err`.
 #[unsafe(no_mangle)]
 pub extern "C" fn web_add_one_run(task: u32) {
     spawn_local(async move {
         match run().await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }

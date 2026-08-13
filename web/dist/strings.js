@@ -18,6 +18,13 @@ export function readUtf8(memory, ptr, len) {
     return decoder.decode(bytes);
 }
 /**
+ * Decode a UTF-8 string from bytes already outside wasm memory — the
+ * inline payload of a tape op, which the drain has copied out.
+ */
+export function decodeUtf8(bytes) {
+    return decoder.decode(bytes);
+}
+/**
  * Read a Uint8Array copy from wasm memory. Used for buffer write data
  * paths where we need a fresh array independent of the wasm memory.
  */

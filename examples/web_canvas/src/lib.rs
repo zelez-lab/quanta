@@ -27,17 +27,11 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use quanta::webgpu::spawn_local;
+use quanta::webgpu::{complete_bytes, complete_err, spawn_local};
 use quanta::{
     AttributeFormat, Color, Format, PipelineDesc, RenderGpu as _, ShaderSource, StepMode,
     SurfaceConfig, SurfaceTarget, TextureDesc, TextureUsage, VertexAttribute, VertexLayout,
 };
-
-#[link(wasm_import_module = "env")]
-unsafe extern "C" {
-    fn quanta_complete_bytes(task: u32, ptr: *const u8, len: usize);
-    fn quanta_complete_err(task: u32, ptr: *const u8, len: usize);
-}
 
 const TRIANGLE_WGSL: &str = r#"
 struct VsOut {
@@ -344,17 +338,13 @@ fn emit_dsl_textured_pair() -> Result<(String, String), String> {
 
 /// Smoke-test entry. The page registers its canvas with the glue and
 /// calls `wasm.web_canvas_run(task, canvasHandle)`; the result string
-/// (the negotiated format) is delivered via `quanta_complete_bytes`.
+/// (the negotiated format) is delivered via `complete_bytes`.
 #[unsafe(no_mangle)]
 pub extern "C" fn web_canvas_run(task: u32, canvas: u32) {
     spawn_local(async move {
         match run(canvas).await {
-            Ok(bytes) => unsafe {
-                quanta_complete_bytes(task, bytes.as_ptr(), bytes.len());
-            },
-            Err(msg) => unsafe {
-                quanta_complete_err(task, msg.as_ptr(), msg.len());
-            },
+            Ok(bytes) => complete_bytes(task, &bytes),
+            Err(msg) => complete_err(task, &msg),
         }
     });
 }
