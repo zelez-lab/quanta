@@ -434,19 +434,11 @@ struct MeshVertex {
 
 #[repr(C)]
 #[derive(Copy, Clone, quanta::Vertex)]
+#[quanta(instance)] // this layout steps per-INSTANCE
 struct InstanceData {
     offset: [f32; 4],
 }
-
-// Override the step mode for the instance buffer layout:
-let layouts = vec![
-    MeshVertex::vertex_layout(),
-    {
-        let mut layout = InstanceData::vertex_layout();
-        layout.step = StepMode::Instance;
-        layout
-    },
-];
+let layouts = vec![MeshVertex::vertex_layout(), InstanceData::vertex_layout()];
 
 gpu.render(&target)?
     .pipeline(&pipeline)

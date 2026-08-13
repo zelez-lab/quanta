@@ -138,7 +138,8 @@ cooperatively.
 > **Advanced — depending on individual crates.** Each umbrella module is
 > a standalone crate underneath (`quanta-array`, `quanta-blas`,
 > `quanta-fft`, `quanta-rand`, `quanta-tensor`, `quanta-prims`,
-> `quanta-autograd`), grouped under `crates/{sci,ml}/` in the repo. They
+> `quanta-autograd`, `quanta-nn`, `quanta-tokenizers`), grouped under
+> `crates/{sci,ml}/` in the repo. They
 > exist so a **minimal-dependency consumer** — one that wants exactly one
 > brick and none of the facade — can depend on it directly (its own
 > feature spelling is `gpu-metal` / `gpu-vulkan` / `gpu` rather than the

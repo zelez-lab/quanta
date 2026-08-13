@@ -1,5 +1,10 @@
 # Deferred Rendering
 
+> For plain offscreen COMPOSITING (UI layers, post-processing chains)
+> the pooled [render groups](render-groups.md) are the structural fast
+> path; this page is the manual multi-target G-buffer pipeline, where
+> you own every attachment.
+
 Decouple geometry from lighting: a **G-buffer** pass records per-pixel material
 data into off-screen textures, then a **fullscreen lighting** pass reads them
 back and shades. This page shows the parts of that pipeline that are

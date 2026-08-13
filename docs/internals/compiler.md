@@ -196,6 +196,17 @@ each:
 | iOS device | `-sdk iphoneos metal … -target air64-apple-ios17.0` | `metallib_ios` |
 | iOS simulator | `-sdk iphonesimulator metal … -target air64-apple-ios17.0-simulator` | `metallib_ios_sim` |
 
+**Hosts without the Apple toolchain** (Linux/Windows, or
+`QUANTA_SKIP_METALLIB=1`): the variants come back empty and the
+SHADER pipeline ships the emitted **MSL source** as the Metal artifact
+instead — the Metal driver's binary loader sniffs the `MTLB` magic and
+compiles non-MTLB bytes with `newLibraryWithSource` at pipeline
+creation, so a bundle built on any host runs on Apple targets (first
+creation pays a one-time driver compile). On macOS a missing `xcrun`
+stays a hard error (axiom A1 — never a silent fallback where the real
+toolchain should exist). Compute kernels need none of this: a missing
+metallib there falls back to the embedded-IR JIT at dispatch.
+
 The `metal3.1` std pairs with the iOS 17.0 deployment floor (both named
 consts in `metallib.rs`). SDK availability is probed once per process
 (`xcrun -sdk <name> --show-sdk-path`, cached); an absent iOS SDK — a

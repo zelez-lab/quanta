@@ -65,8 +65,8 @@ BinOp { dst: Reg, a: Reg, b: Reg, op: BinOp, ty: ScalarType }
 | `Add` | `a + b` |
 | `Sub` | `a - b` |
 | `Mul` | `a * b` |
-| `Div` | `a / b` |
-| `Rem` | `a % b` |
+| `Div` | `a / b` (integer: `x / 0 = 0` — guarded on every lane, every width) |
+| `Rem` | `a % b` (integer: `x % 0 = 0` — same guarantee; the differential matrix enforces both) |
 | `BitAnd` | `a & b` |
 | `BitOr` | `a \| b` |
 | `BitXor` | `a ^ b` |

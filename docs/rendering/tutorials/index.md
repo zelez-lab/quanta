@@ -12,7 +12,7 @@ methods (`gpu.render(...)`, `gpu.pipeline(...)`, …) come from the sealed
 `RenderGpu` extension trait — `use quanta::*;` brings it into scope. A
 render-only consumer (a UI toolkit, a compositor) can depend on
 `quanta-render` directly and never pull in the compute stack. See
-[Getting Started](../../getting-started.md#compute-only-or-compute--rendering).
+[Getting Started](../../getting-started.md#compute-rendering-or-both).
 
 ## The path
 

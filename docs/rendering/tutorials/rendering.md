@@ -14,7 +14,7 @@ for shader authoring.
 > or add `use quanta::RenderGpu;` explicitly. A render-only consumer
 > can depend on `quanta-render` directly (no compute stack in its
 > graph). See
-> [Getting Started](../../getting-started.md#compute-only-or-compute--rendering).
+> [Getting Started](../../getting-started.md#compute-rendering-or-both).
 
 ## The render pipeline
 

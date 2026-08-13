@@ -111,7 +111,10 @@ guarantees the field layout matches GPU expectations.
 
 The `VertexLayout` returned by `vertex_layout()` contains:
 - `stride`: `size_of::<Self>()` (total bytes per vertex)
-- `step`: `StepMode::Vertex` (per-vertex, not per-instance)
+- `step`: `StepMode::Vertex` by default; add `#[quanta(instance)]` on the
+  struct and the layout steps per-INSTANCE — the derive-side form of
+  instanced attribute streams (any other `#[quanta(..)]` argument is a
+  compile error)
 - `attributes`: all attribute descriptors with location, offset, and format
 
 #### Supported attribute types

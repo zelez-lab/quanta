@@ -67,7 +67,8 @@ Add a backend feature (`metal` / `vulkan` / `software`) alongside for hardware e
 
 > **Advanced — depending on individual crates.** Each umbrella module is a
 > standalone crate underneath (`quanta-array`, `quanta-blas`, `quanta-fft`,
-> `quanta-rand`, `quanta-tensor`, `quanta-prims`, `quanta-autograd`), grouped
+> `quanta-rand`, `quanta-tensor`, `quanta-prims`, `quanta-autograd`, `quanta-nn`,
+> `quanta-tokenizers`), grouped
 > under `crates/{sci,ml}/` in the repo. A minimal-dependency consumer that wants
 > exactly one brick — and none of the facade — can depend on it directly; the
 > per-crate READMEs (linked from
@@ -234,7 +235,7 @@ Nightly with `dom.webgpu.enabled`).
 | Linux x86_64 + AMD/Intel | ✅ Vulkan | ✅ Vulkan | ✅ x86_64 |
 | Linux aarch64 (Pi 5, Graviton) | ✅ Vulkan | ✅ Vulkan | ✅ aarch64 |
 | Android aarch64 | ✅ Vulkan | ✅ Vulkan | n/a (`SurfaceTarget::AndroidWindow` over `VK_KHR_android_surface`; the per-draw descriptor path is proven by `two_textured_draws_rebind_their_own_texture` on the lavapipe lane; validated end-to-end downstream) |
-| Windows x86_64 | ⚠️ code-complete, untested | ⚠️ Vulkan (`SurfaceTarget::Win32` over `VK_KHR_win32_surface`, code-complete; builds held green by an `x86_64-pc-windows-msvc` cross-check; live validation pending a Windows rig) | ✅ x86_64 |
+| Windows x86_64 | ✅ Vulkan (validated on Intel Iris Xe) | ✅ Vulkan (`SurfaceTarget::Win32` over `VK_KHR_win32_surface`; nine suites run zero-VUID under armed validation layers on the Iris Xe rig) | ✅ x86_64 |
 | Web | ✅ WebGPU | ✅ WebGPU | n/a |
 
 JIT fallback: when a kernel runs on a Vulkan driver Quanta doesn't
@@ -381,8 +382,9 @@ NVIDIA and AMD targets do not need a separate backend feature — they consume t
 - Multi-queue (`gpu.queue_families()`, `Queue`, signal/wait across queues)
 - Instanced draw, index buffers, depth testing, texture sampling
 - `draw_indirect` / `draw_indexed_indirect` / `execute_bundle`
-- Presentation: `Surface` frame loop (acquire → render → present, Metal today)
-  and `Texture::native_handle()` zero-copy export for external compositors
+- Presentation: `Surface` frame loop (acquire → render → present) on Metal,
+  Vulkan (X11 / Win32 / Android), and WebGPU canvases, plus
+  `Texture::native_handle()` zero-copy export for external compositors
   (Metal + Vulkan)
 
 ---
