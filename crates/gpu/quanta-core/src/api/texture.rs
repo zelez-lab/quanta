@@ -75,8 +75,7 @@ impl Texture {
     /// and `size` its (width, height) in texels; `data` holds exactly
     /// `size.0 * size.1` texels in the texture's format, tightly packed
     /// row-major. Incremental uploads (e.g. a growing glyph atlas) avoid
-    /// re-sending the whole texture. Backends without support return
-    /// `NotSupported` — query `Gpu::supports_texture_write_region`.
+    /// re-sending the whole texture. Available on every backend.
     pub fn write_region(
         &self,
         origin: (u32, u32),

@@ -127,9 +127,8 @@ tex.write_region((x, y), (8, 8), &glyph_bytes)?;
 
 `origin` and `size` are in texels; `data` holds exactly `size.0 * size.1`
 texels, tightly packed row-major. Out-of-bounds regions and mis-sized data
-are rejected with `InvalidParam`. Backends that can't do sub-region uploads
-return `NotSupported` — check `gpu.supports_texture_write_region()` and fall
-back to a whole-texture `write`.
+are rejected with `InvalidParam`. Sub-region uploads are available on every
+backend.
 
 ## Sampling in shaders
 

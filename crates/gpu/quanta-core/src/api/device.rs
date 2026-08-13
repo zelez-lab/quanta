@@ -259,11 +259,6 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError>;
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
 
-    /// Whether `texture_write_region` is implemented on this backend.
-    fn supports_texture_write_region(&self) -> bool {
-        false
-    }
-
     /// Whether compute kernels can bind textures (`&Sampled2D` /
     /// `&Texture2D` / `&mut Texture2D` params) on this backend. True on
     /// Metal, CPU, and native Vulkan; false on WebGPU.

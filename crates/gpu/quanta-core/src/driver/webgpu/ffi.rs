@@ -413,6 +413,8 @@ unsafe extern "C" {
     pub fn quanta_queue_write_texture(
         device: u32,
         texture: u32,
+        origin_x: u32,
+        origin_y: u32,
         data_ptr: *const u8,
         data_len: usize,
         bytes_per_row: u32,

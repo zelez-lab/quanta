@@ -15,11 +15,6 @@ fn try_gpu() -> Option<quanta::Gpu> {
 
 /// Full round-trip on any backend: base fill, region write, readback.
 fn region_roundtrip(gpu: &quanta::Gpu) {
-    if !gpu.supports_texture_write_region() {
-        eprintln!("skipping: write_region not supported on this backend");
-        return;
-    }
-
     let w = 8u32;
     let h = 8u32;
     let tex = gpu
@@ -75,10 +70,6 @@ fn write_region_r8_atlas_shape() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    if !gpu.supports_texture_write_region() {
-        eprintln!("skipping: write_region not supported on this backend");
-        return;
-    }
 
     let w = 16u32;
     let h = 16u32;

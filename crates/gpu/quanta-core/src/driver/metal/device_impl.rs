@@ -151,10 +151,6 @@ impl GpuDevice for MetalDevice {
         self.texture_write_impl(texture, data)
     }
 
-    fn supports_texture_write_region(&self) -> bool {
-        true
-    }
-
     fn supports_compute_textures(&self) -> bool {
         true
     }

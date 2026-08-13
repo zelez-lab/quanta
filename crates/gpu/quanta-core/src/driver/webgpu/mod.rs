@@ -548,22 +548,39 @@ impl QGpuDevice for WebgpuDevice {
     }
 
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError> {
+        self.texture_write_region(texture, (0, 0), (texture.width(), texture.height()), data)
+    }
+
+    fn texture_write_region(
+        &self,
+        texture: &Texture,
+        origin: (u32, u32),
+        size: (u32, u32),
+        data: &[u8],
+    ) -> Result<(), QuantaError> {
         let device = self.dev()?;
         let textures = self.state.textures.0.borrow();
         let entry = textures
             .get(&texture.handle)
             .ok_or_else(|| Self::err("unknown texture handle"))?;
-        let row = entry.width * entry.format.bytes_per_pixel() as u32;
+        // bytesPerRow describes the SOURCE data: one tightly packed
+        // region row. Unlike `copyBufferToTexture`, `writeTexture` puts
+        // no 256-byte alignment requirement on it, so the entry's
+        // padded `bytes_per_row` (which serves the readback path) is
+        // deliberately not used here.
+        let row = size.0 * entry.format.bytes_per_pixel() as u32;
         unsafe {
             ffi::quanta_queue_write_texture(
                 device,
                 entry.texture,
+                origin.0,
+                origin.1,
                 data.as_ptr(),
                 data.len(),
                 row,
-                entry.height,
-                entry.width,
-                entry.height,
+                size.1,
+                size.0,
+                size.1,
                 1,
             );
         }

@@ -504,10 +504,6 @@ impl GpuDevice for CpuDevice {
         self.field_write_bytes(texture.handle(), data)
     }
 
-    fn supports_texture_write_region(&self) -> bool {
-        true
-    }
-
     fn supports_compute_textures(&self) -> bool {
         true
     }

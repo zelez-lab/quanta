@@ -142,10 +142,6 @@ impl GpuDevice for ValidationDevice {
         Ok(tex)
     }
 
-    fn supports_texture_write_region(&self) -> bool {
-        self.inner.supports_texture_write_region()
-    }
-
     fn texture_write_region(
         &self,
         texture: &Texture,

@@ -281,14 +281,6 @@ impl Gpu {
         self.ctx.device.supports_surface_present()
     }
 
-    /// Whether the active backend implements sub-region texture uploads
-    /// (`Texture::write_region`). Backends without support return
-    /// `NotSupported` from `write_region`; callers can fall back to a
-    /// whole-texture `Texture::write`.
-    pub fn supports_texture_write_region(&self) -> bool {
-        self.ctx.device.supports_texture_write_region()
-    }
-
     /// Whether compute kernels can bind textures on the active backend
     /// (`&Texture2D` sampled reads / `&mut Texture2D<f32>` storage writes).
     /// True on Metal, CPU, and native Vulkan; false on WebGPU. Tests skip the

@@ -60,7 +60,6 @@ path without throwing.
 | `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Sampled2D` sampled reads, `&Texture2D` read-only texel access, `&mut Texture2D` read-write texel access). True on Metal, the software driver, and native Vulkan; false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` and `Field::native_handle()` return a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain, and on WebGPU (canvas presentation) |
-| `supports_texture_write_region()` | `bool` | Sub-region texture uploads (`Texture::write_region`). True on Metal, Vulkan, and the software driver; false on WebGPU |
 | `supports_host_import()` | `bool` | Zero-copy host-memory import (`field_from_host`). True on Metal, the software driver, and Vulkan with `VK_EXT_external_memory_host`; false on WebGPU — the call still succeeds there via one staged copy |
 | `host_import_alignment()` | `Option<usize>` | Granularity the import contract checks pointers and lengths against (Metal: VM page size, 16 KiB on Apple silicon; Vulkan: `minImportedHostPointerAlignment`; software: 1). `None` when no import path exists |
 | `narrow_storage_u32_slot()` | `bool` | Whether bf16/fp8 buffers use the portable u32-slot layout (one element per 32-bit word) instead of native 2-/1-byte stride. True only on WebGPU — WGSL storage buffers cannot hold 16-/8-bit array elements; the host must repack tight data one-element-per-word before binding |
@@ -88,7 +87,6 @@ device-family- and extension-dependent within a backend.
 | `supports_compute_textures` | ✓ | ✓ | ✓ | ✗ |
 | `supports_native_handle_export` | ✓ | ✓ | ✗ | ✗ |
 | `supports_surface_present` | ✓ | WSI | ✗ | ✓ |
-| `supports_texture_write_region` | ✓ | ✓ | ✓ | ✗ |
 | `narrow_storage_u32_slot` | ✗ | ✗ | ✗ | ✓ |
 
 ### Fields (typed GPU memory)
@@ -291,7 +289,7 @@ driver resource (exactly once) — the same holds for `TextureView`,
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `write(&data)` | `Result<()>` | Upload pixel data |
-| `write_region(origin, size, &data)` | `Result<()>` | Upload a sub-region: `origin`/`size` in texels, `data` tightly packed region rows (gated on `supports_texture_write_region`) |
+| `write_region(origin, size, &data)` | `Result<()>` | Upload a sub-region: `origin`/`size` in texels, `data` tightly packed region rows. Available on every backend |
 | `read()` | `Result<Vec<u8>>` | Download pixel data |
 | `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain |
 | `native_handle()` | `Result<NativeTextureHandle>` | Export the backend-native object for zero-copy interop (see below) |

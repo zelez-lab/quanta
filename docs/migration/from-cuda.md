@@ -106,7 +106,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `surf2Dread(&v, surf, x, y)` | `texture_load_2d(tex, x, y)` (texel read; `&Texture2D` for a read-only surface, `&mut` if the kernel also writes it) |
 | `surf2Dwrite(uchar4_v, surf, x, y)` | `texture_write_2d(tex, x, y, packed)` (param `&mut Texture2D<u32>`, RGBA8 texel as one packed `0xAABBGGRR` u32) |
 | `tex2D(tex, u, v)` | `texture_sample_2d(tex, x, y)` (param `&Sampled2D<f32>` — nearest/clamp sampled access) |
-| `cudaMemcpy2D` (to a texture sub-region) | `texture.write_region(origin, size, &data)` (texel offset + extent, tightly packed rows; gated on `supports_texture_write_region`) |
+| `cudaMemcpy2D` (to a texture sub-region) | `texture.write_region(origin, size, &data)` (texel offset + extent, tightly packed rows; available on every backend) |
 | `cudaMalloc` + `cudaMemcpy` | `gpu.field::<T>(n)` + `field.write(&data)` |
 | `cudaMallocManaged` | `gpu.field_mapped::<T>(n)` |
 | `cudaHostRegister` + `cudaHostGetDevicePointer` | `gpu.field_from_host(&data)` (zero-copy import of caller-owned page-aligned memory, read-only; staged-copy fallback is queryable via `is_imported()`) |

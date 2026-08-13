@@ -501,10 +501,10 @@ export function makeImports(state) {
             t.destroy();
             state.handles.release(texture);
         },
-        quanta_queue_write_texture(device, texture, data_ptr, data_len, bytes_per_row, rows_per_image, width, height, depth) {
+        quanta_queue_write_texture(device, texture, origin_x, origin_y, data_ptr, data_len, bytes_per_row, rows_per_image, width, height, depth) {
             const dev = state.handles.get(device);
             const t = state.handles.get(texture);
-            dev.queue.writeTexture({ texture: t }, viewBytes(state.memory, data_ptr, data_len), { offset: 0, bytesPerRow: bytes_per_row, rowsPerImage: rows_per_image }, { width, height, depthOrArrayLayers: depth });
+            dev.queue.writeTexture({ texture: t, origin: { x: origin_x, y: origin_y, z: 0 } }, viewBytes(state.memory, data_ptr, data_len), { offset: 0, bytesPerRow: bytes_per_row, rowsPerImage: rows_per_image }, { width, height, depthOrArrayLayers: depth });
         },
         quanta_create_sampler(device, mag_filter, min_filter, mipmap_filter, address_u, address_v, address_w, max_anisotropy, compare_code) {
             const dev = state.handles.get(device);

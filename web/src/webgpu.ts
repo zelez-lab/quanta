@@ -856,6 +856,8 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
     quanta_queue_write_texture(
       device: number,
       texture: number,
+      origin_x: number,
+      origin_y: number,
       data_ptr: number,
       data_len: number,
       bytes_per_row: number,
@@ -867,7 +869,7 @@ export function makeImports(state: GlueState): WebAssembly.ModuleImports {
       const dev = state.handles.get<GPUDevice>(device);
       const t = state.handles.get<GPUTexture>(texture);
       dev.queue.writeTexture(
-        { texture: t },
+        { texture: t, origin: { x: origin_x, y: origin_y, z: 0 } },
         viewBytes(state.memory, data_ptr, data_len),
         { offset: 0, bytesPerRow: bytes_per_row, rowsPerImage: rows_per_image },
         { width, height, depthOrArrayLayers: depth },
