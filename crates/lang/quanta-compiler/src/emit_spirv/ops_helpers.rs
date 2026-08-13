@@ -90,12 +90,12 @@ impl SpvEmitter {
             // int4 PackedU32: word = idx/8, nibble = idx%8. Load the word,
             // extract and sign-extend the nibble (canonical `%uint` SSA
             // value carrying the i32 bit pattern).
-            let idx = self.reg_value_id(index)?;
+            let idx = self.index_as_uint(index)?;
             let val = self.i4_load_nibble(var_id, idx);
             self.set_reg(dst, val, result_ty);
         } else {
             // Array access: struct member 0, then index into runtime array
-            let idx = self.reg_value_id(index)?;
+            let idx = self.index_as_uint(index)?;
             let zero = self.emit_constant_u32(0);
             let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, elem_ty);
             let chain = self.alloc_id();
@@ -141,8 +141,17 @@ impl SpvEmitter {
             .get(&field)
             .ok_or_else(|| format!("field {} not declared", field))?;
 
-        let idx = self.reg_value_id(index)?;
-        let mut val = self.reg_value_id(src)?;
+        let idx = self.index_as_uint(index)?;
+        // Bridge from the ACTUAL register type into the BODY type first
+        // (wasm-cell reuse: the register may carry the other 32-bit
+        // family); the bool and narrow-packing paths below then operate
+        // on a correctly typed value.
+        let body_ty = self.scalar_type_id(ty);
+        let mut val = if self.bool_vals.contains(&self.reg_ids.get(&src.0).copied().unwrap_or(u32::MAX)) {
+            self.reg_value_id(src)?
+        } else {
+            self.value_as(src, body_ty)?
+        };
         // The stored value must match the buffer element type. A bool value
         // (e.g. a compare result flowing into `out[i] = (a < b) as u32`) must be
         // materialized as an int first — OpStore is strictly typed and there is

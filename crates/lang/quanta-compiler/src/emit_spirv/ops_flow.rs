@@ -236,7 +236,7 @@ impl SpvEmitter {
             .shared_vars
             .get(&id)
             .ok_or_else(|| format!("shared memory {} not declared", id))?;
-        let idx = self.reg_value_id(index)?;
+        let idx = self.index_as_uint(index)?;
         let result_ty = self.scalar_type_id(ty);
 
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, elem_ty);
@@ -262,8 +262,11 @@ impl SpvEmitter {
             .shared_vars
             .get(&id)
             .ok_or_else(|| format!("shared memory {} not declared", id))?;
-        let idx = self.reg_value_id(index)?;
-        let val = self.reg_value_id(src)?;
+        let idx = self.index_as_uint(index)?;
+        // Bridge the value from its ACTUAL register type: the wasm route
+        // reuses locals across f32/u32, and a shared array's element type
+        // is strict.
+        let val = self.value_as(src, elem_ty)?;
 
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, elem_ty);
         let chain = self.alloc_id();

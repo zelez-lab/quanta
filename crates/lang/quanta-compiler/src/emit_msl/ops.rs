@@ -27,6 +27,81 @@ fn fp8_dims(ty: &ScalarType) -> Option<(u32, u32)> {
 /// function entry (see `kernel::emit`), so every write is a plain
 /// assignment; re-emitting `<type> rN = ...` would be a C++ redefinition.
 /// Single-def registers keep the inline typed declaration — pure SSA.
+/// The MSL 32-bit family a register was DECLARED with. The wasm route
+/// reuses one register across families (rustc's locals are typeless
+/// cells), so operand reads must REINTERPRET (`as_type`) when the
+/// consuming op expects the other family — a converting assignment
+/// (`int r = float_r;`) would change the bits, which is exactly the
+/// silent-miscompile class. Bools are VALUES (0/1), never bit
+/// patterns: they convert (`uint(b)`), and int-to-bool is `!= 0`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Fam {
+    F32,
+    Int,
+    Bool,
+}
+
+pub(crate) fn fam_of(t: &ScalarType) -> Fam {
+    match t {
+        ScalarType::F64 | ScalarType::F32 | ScalarType::F16 | ScalarType::BF16 => Fam::F32,
+        ScalarType::Bool => Fam::Bool,
+        _ => Fam::Int,
+    }
+}
+
+/// Format a register READ for a context expecting `want`. Same or
+/// unknown family reads bare; float↔int reinterprets; bool converts.
+fn rv(fams: &HashMap<u32, Fam>, reg: u32, want: Fam) -> String {
+    let Some(&declared) = fams.get(&reg) else {
+        return format!("r{reg}");
+    };
+    match (declared, want) {
+        (f, w) if f == w => format!("r{reg}"),
+        (Fam::F32, Fam::Int) => format!("as_type<uint>(r{reg})"),
+        (Fam::Int, Fam::F32) => format!("as_type<float>(r{reg})"),
+        (Fam::Bool, Fam::Int) => format!("uint(r{reg})"),
+        (Fam::Bool, Fam::F32) => format!("float(r{reg})"),
+        (_, Fam::Bool) => format!("(r{reg} != 0)"),
+        _ => format!("r{reg}"),
+    }
+}
+
+/// Emit one assignment: declares an SSA dst inline (recording its
+/// family), keeps a mutable dst's entry declaration, and wraps the
+/// produced expression in `as_type` when its family differs from the
+/// DECLARED family of a mutable dst (bits move; values don't convert).
+#[allow(clippy::too_many_arguments)]
+fn assign(
+    out: &mut String,
+    pad: &str,
+    mutable: &BTreeMap<u32, ScalarType>,
+    fams: &mut HashMap<u32, Fam>,
+    dst: u32,
+    produced: Fam,
+    ty_str: &str,
+    expr: &str,
+) {
+    if let Some(decl_ty) = mutable.get(&dst) {
+        let declared = fam_of(decl_ty);
+        fams.entry(dst).or_insert(declared);
+        let expr = match (produced, declared) {
+            (p, d) if p == d => expr.to_string(),
+            (Fam::F32, Fam::Int) => format!("as_type<uint>({expr})"),
+            (Fam::Int, Fam::F32) => format!("as_type<float>({expr})"),
+            (Fam::Bool, Fam::Int) => format!("uint({expr})"),
+            (Fam::Bool, Fam::F32) => format!("float({expr})"),
+            (_, Fam::Bool) => format!("(({expr}) != 0)"),
+            _ => expr.to_string(),
+        };
+        out.push_str(&format!("{pad}r{dst} = {expr};
+"));
+    } else {
+        fams.insert(dst, produced);
+        out.push_str(&format!("{pad}{ty_str} r{dst} = {expr};
+"));
+    }
+}
+
 fn dst_lv(mutable: &BTreeMap<u32, ScalarType>, ty: &str, reg: u32) -> String {
     if mutable.contains_key(&reg) {
         format!("r{}", reg)
@@ -42,6 +117,7 @@ pub(crate) fn emit_op(
     names: &HashMap<u32, String>,
     int_consts: &HashMap<u32, i64>,
     mutable: &BTreeMap<u32, ScalarType>,
+    fams: &mut HashMap<u32, Fam>,
 ) {
     let pad = "    ".repeat(indent);
     match op {
@@ -295,16 +371,10 @@ pub(crate) fn emit_op(
                 // source language's signedness, so this case is common.
                 let o = binop_str(op);
                 let t = ty.msl_name();
-                out.push_str(&format!(
-                    "{}{} = ({})r{} {} ({})r{};\n",
-                    pad,
-                    dst_lv(mutable, t, dst.0),
-                    t,
-                    a.0,
-                    o,
-                    t,
-                    b.0
-                ));
+                let fam = fam_of(ty);
+                let (ra, rb) = (rv(fams, a.0, fam), rv(fams, b.0, fam));
+                let expr = format!("({t}){ra} {o} ({t}){rb}");
+                assign(out, &pad, mutable, fams, dst.0, fam, t, &expr);
             } else if matches!(op, BinOp::Div | BinOp::Rem)
                 && !matches!(
                     ty,
@@ -336,14 +406,10 @@ pub(crate) fn emit_op(
                 ));
             } else {
                 let o = binop_str(op);
-                out.push_str(&format!(
-                    "{}{} = r{} {} r{};\n",
-                    pad,
-                    dst_lv(mutable, ty.msl_name(), dst.0),
-                    a.0,
-                    o,
-                    b.0
-                ));
+                let fam = fam_of(ty);
+                let (ra, rb) = (rv(fams, a.0, fam), rv(fams, b.0, fam));
+                let expr = format!("{ra} {o} {rb}");
+                assign(out, &pad, mutable, fams, dst.0, fam, ty.msl_name(), &expr);
             }
         }
         KernelOp::Cmp { dst, a, b, op, ty } => {
@@ -367,26 +433,15 @@ pub(crate) fn emit_op(
                 | ScalarType::U32
                 | ScalarType::U64 => {
                     let c = ty.msl_name();
-                    out.push_str(&format!(
-                        "{}{} = (({})r{} {} ({})r{});\n",
-                        pad,
-                        dst_lv(mutable, "bool", dst.0),
-                        c,
-                        a.0,
-                        o,
-                        c,
-                        b.0
-                    ));
+                    let (ra, rb) = (rv(fams, a.0, Fam::Int), rv(fams, b.0, Fam::Int));
+                    let expr = format!("(({c}){ra} {o} ({c}){rb})");
+                    assign(out, &pad, mutable, fams, dst.0, Fam::Bool, "bool", &expr);
                 }
                 _ => {
-                    out.push_str(&format!(
-                        "{}{} = (r{} {} r{});\n",
-                        pad,
-                        dst_lv(mutable, "bool", dst.0),
-                        a.0,
-                        o,
-                        b.0
-                    ));
+                    let fam = fam_of(ty);
+                    let (ra, rb) = (rv(fams, a.0, fam), rv(fams, b.0, fam));
+                    let expr = format!("({ra} {o} {rb})");
+                    assign(out, &pad, mutable, fams, dst.0, Fam::Bool, "bool", &expr);
                 }
             }
         }
@@ -436,12 +491,12 @@ pub(crate) fn emit_op(
         } => {
             out.push_str(&format!("{}if (r{}) {{\n", pad, cond.0));
             for op in then_ops {
-                emit_op(out, op, indent + 1, names, int_consts, mutable);
+                emit_op(out, op, indent + 1, names, int_consts, mutable, fams);
             }
             if !else_ops.is_empty() {
                 out.push_str(&format!("{}}} else {{\n", pad));
                 for op in else_ops {
-                    emit_op(out, op, indent + 1, names, int_consts, mutable);
+                    emit_op(out, op, indent + 1, names, int_consts, mutable, fams);
                 }
             }
             out.push_str(&format!("{}}}\n", pad));
@@ -472,7 +527,7 @@ pub(crate) fn emit_op(
                 ));
             }
             for op in body {
-                emit_op(out, op, indent + 1, names, int_consts, mutable);
+                emit_op(out, op, indent + 1, names, int_consts, mutable, fams);
             }
             out.push_str(&format!("{}}}\n", pad));
         }
@@ -481,12 +536,9 @@ pub(crate) fn emit_op(
             // lowering's local.set): its dst is usually a hoisted mutable
             // register (plain assignment). A single-def Copy dst still
             // needs its typed declaration.
-            out.push_str(&format!(
-                "{}{} = r{};\n",
-                pad,
-                dst_lv(mutable, ty.msl_name(), dst.0),
-                src.0
-            ));
+            let want = fam_of(ty);
+            let expr = rv(fams, src.0, want);
+            assign(out, &pad, mutable, fams, dst.0, want, ty.msl_name(), &expr);
         }
         // Quantization affine map — lowering lands in Phase B.
         KernelOp::Quantize { .. } | KernelOp::Dequantize { .. } => {
@@ -521,18 +573,17 @@ pub(crate) fn emit_op(
             ));
         }
         KernelOp::SharedLoad { dst, id, index, ty } => {
-            out.push_str(&format!(
-                "{}{} = shared_{}[r{}];\n",
-                pad,
-                dst_lv(mutable, ty.msl_name(), dst.0),
-                id,
-                index.0
-            ));
+            let want = fam_of(ty);
+            let expr = format!("shared_{}[{}]", id, rv(fams, index.0, Fam::Int));
+            assign(out, &pad, mutable, fams, dst.0, want, ty.msl_name(), &expr);
         }
-        KernelOp::SharedStore { id, index, src, .. } => {
+        KernelOp::SharedStore { id, index, src, ty } => {
             out.push_str(&format!(
-                "{}shared_{}[r{}] = r{};\n",
-                pad, id, index.0, src.0
+                "{}shared_{}[{}] = {};\n",
+                pad,
+                id,
+                rv(fams, index.0, Fam::Int),
+                rv(fams, src.0, fam_of(ty))
             ));
         }
         KernelOp::AtomicOp {

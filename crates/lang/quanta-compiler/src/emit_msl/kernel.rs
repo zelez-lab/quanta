@@ -166,8 +166,14 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         out.push_str(&format!("    {} r{} = ({})0;\n", t, reg, t));
     }
 
+    // Register-family tracker for the wasm-cell reuse bridging (see
+    // `Fam` in ops.rs) — seeded with the mutable slots' declared types.
+    let mut fams: std::collections::HashMap<u32, crate::emit_msl::ops::Fam> = mutable
+        .iter()
+        .map(|(reg, ty)| (*reg, crate::emit_msl::ops::fam_of(ty)))
+        .collect();
     for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names, &int_consts, &mutable);
+        emit_op(&mut out, op, 1, &slot_names, &int_consts, &mutable, &mut fams);
     }
 
     out.push_str("}\n");

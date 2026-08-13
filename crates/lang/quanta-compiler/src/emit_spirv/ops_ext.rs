@@ -21,7 +21,7 @@ impl SpvEmitter {
             .field_vars
             .get(&field)
             .ok_or_else(|| format!("field {} not declared", field))?;
-        let idx = self.reg_value_id(index)?;
+        let idx = self.index_as_uint(index)?;
         let val_id = self.reg_value_id(val)?;
         let result_ty = self.scalar_type_id(ty);
         let zero = self.emit_constant_u32(0);
@@ -115,7 +115,7 @@ impl SpvEmitter {
             .shared_vars
             .get(&slot)
             .ok_or_else(|| format!("shared memory {} not declared", slot))?;
-        let idx = self.reg_value_id(index)?;
+        let idx = self.index_as_uint(index)?;
         let val_id = self.reg_value_id(val)?;
         let result_ty = self.scalar_type_id(ty);
         let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_WORKGROUP, elem_ty);
@@ -204,7 +204,7 @@ impl SpvEmitter {
             .field_vars
             .get(&field)
             .ok_or_else(|| format!("field {} not declared", field))?;
-        let idx = self.reg_value_id(index)?;
+        let idx = self.index_as_uint(index)?;
         let exp_val = self.reg_value_id(expected)?;
         let des_val = self.reg_value_id(desired)?;
         let result_ty = self.scalar_type_id(ty);

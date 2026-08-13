@@ -397,6 +397,38 @@ impl SpvEmitter {
         out
     }
 
+    /// Read a register as a `%uint` INDEX — for `OpAccessChain` operands,
+    /// which must be integers. Bridges from the register's ACTUAL type
+    /// (wasm locals are typeless cells the route reuses across
+    /// f32/u32/bool; a slot declared `%float` can carry an index).
+    pub(crate) fn index_as_uint(&mut self, reg: quanta_ir::Reg) -> Result<u32, String> {
+        let val = self.reg_value_id(reg)?;
+        let ty = if self.bool_vals.contains(&val) {
+            self.ensure_type_bool()
+        } else {
+            self.reg_type_id(reg)?
+        };
+        let uint_ty = self.ensure_type_u32();
+        Ok(self.coerce_to(val, ty, uint_ty))
+    }
+
+    /// Read a register bridged to `want_ty` from its ACTUAL type (same
+    /// wasm-cell rationale as [`Self::index_as_uint`]) — for strictly
+    /// typed sinks (shared/buffer stores) fed by reused registers.
+    pub(crate) fn value_as(
+        &mut self,
+        reg: quanta_ir::Reg,
+        want_ty: u32,
+    ) -> Result<u32, String> {
+        let val = self.reg_value_id(reg)?;
+        let ty = if self.bool_vals.contains(&val) {
+            self.ensure_type_bool()
+        } else {
+            self.reg_type_id(reg)?
+        };
+        Ok(self.coerce_to(val, ty, want_ty))
+    }
+
     /// Materialize a `%bool` value as a `%uint` (`bool ? 1 : 0`) — for when the
     /// wasm route feeds a compare result into an integer op.
     pub(crate) fn bool_to_int(&mut self, val: u32) -> u32 {

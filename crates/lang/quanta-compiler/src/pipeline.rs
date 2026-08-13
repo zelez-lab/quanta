@@ -48,6 +48,13 @@ fn spirv_val_gate(kernel_name: &str, spirv: &[u8]) {
              (spirv-val):\n{}",
             msg.trim()
         );
+        // Leave the corpse where a human can autopsy it: the whole point
+        // of catching an emitter bug at build time is being able to
+        // disassemble the exact module that failed.
+        let dump = std::env::temp_dir().join(format!("quanta-invalid-{kernel_name}.spv"));
+        if std::fs::write(&dump, spirv).is_ok() {
+            eprintln!("[quanta] invalid module dumped to {}", dump.display());
+        }
         if std::env::var("QUANTA_SPIRV_VAL_STRICT").as_deref() == Ok("1") {
             eprintln!("[quanta] QUANTA_SPIRV_VAL_STRICT=1 → aborting build.");
             std::process::exit(1);

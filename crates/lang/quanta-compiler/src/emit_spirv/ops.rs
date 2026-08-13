@@ -192,9 +192,23 @@ impl SpvEmitter {
                 // Copies the lowering emits for loop-carried / branch-
                 // assigned locals MUST produce a real write. A single-def
                 // dst stays a pure SSA alias.
+                //
+                // Bridge from the register's ACTUAL type, never the IR
+                // label alone: wasm locals are typeless 32-bit cells the
+                // route reuses across f32/u32/bool, so a Copy labeled F32
+                // can carry a uint-emitted value (and vice versa). Trusting
+                // the label made set_reg's coercion a no-op and stored raw
+                // uints into %float slots — invalid SPIR-V the JIT twin
+                // fixed the same way (the wasm-bool seam, generalized).
                 let src_val = self.reg_value_id(*src)?;
+                let src_ty = if self.bool_vals.contains(&src_val) {
+                    self.ensure_type_bool()
+                } else {
+                    self.reg_type_id(*src)?
+                };
                 let result_ty = self.scalar_type_id(*ty);
-                self.set_reg(*dst, src_val, result_ty);
+                let val = self.coerce_to(src_val, src_ty, result_ty);
+                self.set_reg(*dst, val, result_ty);
             }
 
             // Quantization affine map — lowering lands in Phase B.
