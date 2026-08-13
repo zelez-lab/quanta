@@ -151,6 +151,7 @@ let pipe = gpu.pipeline(&desc)?;
 | `pipeline(&desc)` | `Result<Pipeline>` | Create render pipeline (`PipelineDesc::new(shader).with_*(…)`) |
 | `render(&target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
 | `render_into(&target, f)` | `Result<R>` | Closure form of `render`: hands the builder to `f`, releasing the target borrow when it returns — for call sites where `&self.target` collides with other `&mut self` state |
+| `render_group((w, h), fmt, f)` | `Result<GroupTexture>` | Offscreen compositing, pooled: `f` draws a pass into a device-pooled layer texture (must end in `.pulse()`); the returned handle derefs to `Texture`, binds in any LATER pass with no host wait, nests freely, and returns its texture to the pool on drop — see [Render Groups](../rendering/how-to/render-groups.md) |
 | `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
 | `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target (manual MSAA path; the builder path is `.msaa(n)` below) |
 | `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample; `dst` may be an acquired surface frame (on Vulkan this needs the surface to offer transfer-dst usage — checked, `NotSupported` when it doesn't) |

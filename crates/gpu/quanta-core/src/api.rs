@@ -81,6 +81,8 @@ pub mod icb;
 // needs `std` for its lock; every backend feature implies `std`, so
 // the gate only prunes the pure type-check no_std configuration.
 #[cfg(all(feature = "render", feature = "std"))]
+pub mod group_pool;
+#[cfg(all(feature = "render", feature = "std"))]
 pub mod msaa_pool;
 #[cfg(feature = "render")]
 pub mod pipeline;
@@ -120,6 +122,8 @@ pub use multi_queue::Queue;
 pub use wave::Wave;
 
 // Render data-model re-exports — gated with the `render` feature.
+#[cfg(all(feature = "render", feature = "std"))]
+pub use group_pool::GroupPool;
 #[cfg(feature = "render")]
 pub use icb::IndirectRenderBundle;
 #[cfg(all(feature = "render", feature = "std"))]

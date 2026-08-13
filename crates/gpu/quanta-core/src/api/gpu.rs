@@ -63,6 +63,11 @@ pub(crate) struct DeviceContext {
     /// for the keying/lifetime story.
     #[cfg(all(feature = "render", feature = "std"))]
     pub(crate) msaa_pool: Arc<crate::MsaaPool>,
+    /// The render-group intermediate pool — same lifetime story as
+    /// `msaa_pool` (dies with the last `Gpu` clone; see
+    /// [`crate::group_pool`]).
+    #[cfg(all(feature = "render", feature = "std"))]
+    pub(crate) group_pool: Arc<crate::GroupPool>,
     pub(crate) device: Arc<dyn GpuDevice>,
 }
 
@@ -77,6 +82,8 @@ impl Gpu {
                 wave_cache: crate::api::wave_cache::WaveCache::default(),
                 #[cfg(all(feature = "render", feature = "std"))]
                 msaa_pool: Arc::new(crate::MsaaPool::default()),
+                #[cfg(all(feature = "render", feature = "std"))]
+                group_pool: Arc::new(crate::GroupPool::default()),
                 device: inner,
             }),
         }
@@ -99,6 +106,15 @@ impl Gpu {
     #[doc(hidden)]
     pub fn __msaa_pool(&self) -> &Arc<crate::MsaaPool> {
         &self.ctx.msaa_pool
+    }
+
+    /// Internal accessor for the render-group intermediate pool, for
+    /// the `quanta-render` extension crate. Not part of the stable
+    /// public surface.
+    #[cfg(all(feature = "render", feature = "std"))]
+    #[doc(hidden)]
+    pub fn __group_pool(&self) -> &Arc<crate::GroupPool> {
+        &self.ctx.group_pool
     }
 
     /// Test-support: snapshot of the driver's resource-registry sizes.

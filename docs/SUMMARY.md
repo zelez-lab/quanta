@@ -121,6 +121,7 @@
 
 - [Shadow Mapping](rendering/how-to/shadow-mapping.md)
 - [Deferred Rendering](rendering/how-to/deferred-rendering.md)
+- [Render Groups](rendering/how-to/render-groups.md)
 - [Tessellation](rendering/how-to/tessellation.md)
 - [Mesh Shaders](rendering/how-to/mesh-shaders.md)
 - [Ray Tracing](rendering/how-to/ray-tracing.md)

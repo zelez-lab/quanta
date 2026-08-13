@@ -67,6 +67,8 @@ pub use quanta_render_dsl::{
 pub use quanta_core::*;
 
 mod gpu_ext;
+#[cfg(feature = "std")]
+mod group;
 mod mesh_shader;
 mod ray_tracing_wrap;
 mod render_builder;
@@ -75,6 +77,8 @@ mod tessellation;
 mod vrs_wrap;
 
 pub use gpu_ext::RenderGpu;
+#[cfg(feature = "std")]
+pub use group::GroupTexture;
 pub use mesh_shader::{
     MAX_GROUP_COUNT, MAX_MESH_PRIMITIVES, MAX_MESH_VERTICES, MAX_TASK_THREADS, MeshPipeline,
     MeshPipelineDesc,

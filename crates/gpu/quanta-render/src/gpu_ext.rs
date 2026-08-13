@@ -113,6 +113,34 @@ pub trait RenderGpu: sealed::Sealed {
         f(self.render(target)?)
     }
 
+    /// Render an offscreen GROUP — a pooled layer texture the closure
+    /// draws into — and return it ready to bind in a later pass.
+    ///
+    /// The structural form of offscreen compositing (UI layer trees,
+    /// post-processing, cached backdrops): the pooled intermediate is
+    /// checked out for the closure, which builds the pass and must end
+    /// it with [`RenderBuilder::pulse`]; the returned
+    /// [`GroupTexture`](crate::GroupTexture) derefs to [`Texture`] and
+    /// binds anywhere a texture does. Submission order plus the
+    /// render-then-sample transition make the contents visible to any
+    /// LATER pass on this `Gpu` — no host wait needed (wait inside the
+    /// closure only to read the layer back on the host). Nest freely:
+    /// a group drawn inside another group's closure is simply an
+    /// earlier pass. Dropping the handle returns the texture to the
+    /// device's pool.
+    ///
+    /// `.msaa(n)` composes: call it on the group's builder and the
+    /// multisampled pass resolves into the pooled layer.
+    #[cfg(feature = "std")]
+    fn render_group(
+        &self,
+        size: (u32, u32),
+        format: Format,
+        f: impl FnOnce(RenderBuilder) -> Result<quanta_core::Pulse, QuantaError>,
+    ) -> Result<crate::GroupTexture, QuantaError>
+    where
+        Self: Sized;
+
     /// Create a render target texture (can be drawn to and read from
     /// shaders).
     fn render_target(
@@ -239,6 +267,29 @@ impl RenderGpu for quanta_core::Gpu {
         // it holds on this path AND for consumers driving the raw
         // `GpuDevice` trait.
         Ok(pipeline)
+    }
+
+    #[cfg(feature = "std")]
+    fn render_group(
+        &self,
+        size: (u32, u32),
+        format: Format,
+        f: impl FnOnce(RenderBuilder) -> Result<quanta_core::Pulse, QuantaError>,
+    ) -> Result<crate::GroupTexture, QuantaError> {
+        let pool = self.__group_pool().clone();
+        let texture = pool.checkout(self.device_handle(), size.0, size.1, format, 1)?;
+        // Pulse proof: the closure returns the pass's Pulse, so an
+        // unpulsed group cannot typecheck. The pulse itself is dropped
+        // — ordering is by submission, not host sync.
+        match f(self.render(&texture)?) {
+            Ok(_pulse) => Ok(crate::GroupTexture::new(texture, pool)),
+            Err(e) => {
+                // The pass never pulsed (or failed) — return the
+                // intermediate to the pool rather than leaking it.
+                pool.give_back(texture);
+                Err(e)
+            }
+        }
     }
 
     fn render(&self, target: &Texture) -> Result<RenderBuilder, QuantaError> {
