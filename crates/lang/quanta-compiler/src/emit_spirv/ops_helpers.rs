@@ -147,7 +147,10 @@ impl SpvEmitter {
         // family); the bool and narrow-packing paths below then operate
         // on a correctly typed value.
         let body_ty = self.scalar_type_id(ty);
-        let mut val = if self.bool_vals.contains(&self.reg_ids.get(&src.0).copied().unwrap_or(u32::MAX)) {
+        let mut val = if self
+            .bool_vals
+            .contains(&self.reg_ids.get(&src.0).copied().unwrap_or(u32::MAX))
+        {
             self.reg_value_id(src)?
         } else {
             self.value_as(src, body_ty)?

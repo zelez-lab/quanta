@@ -884,9 +884,33 @@ pub(super) fn execute_ops(
                 ctx.regs.insert(dst_h.0, Value::U32(h));
             }
             // Bit manipulation
-            KernelOp::Bitcast { dst, src, .. } => {
+            KernelOp::Bitcast { dst, src, to, .. } => {
+                // A bitcast REINTERPRETS: the register's raw bits re-tagged
+                // as the target type. The old variant-copy was a silent
+                // no-op — a later `as_u32()` on a still-F32 value then
+                // VALUE-converted (126.5 → 126), which is exactly the
+                // wrong-bits class the emitters guard against.
                 let v = reg(ctx, src)?;
-                ctx.regs.insert(dst.0, v);
+                let bits64: u64 = match v {
+                    Value::F32(x) => x.to_bits() as u64,
+                    Value::F64(x) => x.to_bits(),
+                    Value::U32(x) => x as u64,
+                    Value::I32(x) => x as u32 as u64,
+                    Value::U64(x) => x,
+                    Value::I64(x) => x as u64,
+                    // Bools are VALUES, not bit patterns — 0/1, the wasm
+                    // materialization.
+                    Value::Bool(b) => b as u64,
+                };
+                let out = match to {
+                    ScalarType::F32 => Value::F32(f32::from_bits(bits64 as u32)),
+                    ScalarType::F64 => Value::F64(f64::from_bits(bits64)),
+                    ScalarType::U64 => Value::U64(bits64),
+                    ScalarType::I64 => Value::I64(bits64 as i64),
+                    ScalarType::I32 => Value::I32(bits64 as u32 as i32),
+                    _ => Value::U32(bits64 as u32),
+                };
+                ctx.regs.insert(dst.0, out);
             }
             KernelOp::CountTrailingZeros { dst, src, ty } => {
                 let v = reg(ctx, src)?;

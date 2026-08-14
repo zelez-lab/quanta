@@ -17,14 +17,23 @@ pub(super) enum Value {
 }
 
 impl Value {
+    // ── The typeless-cell contract ──────────────────────────────────
+    // Registers are wasm LOCALS: typeless 32-/64-bit cells. rustc
+    // ELIDES float↔int reinterprets (they are label changes on a
+    // cell), so a cross-family read here must return the BITS
+    // re-tagged, never a value conversion — `as_u32` on F32(126.5)
+    // is to_bits() = 0x42FD0000, not 126. Value conversions exist
+    // ONLY as explicit `Cast` ops (exec.rs implements them there).
+    // Int↔int as-casts keep Rust semantics (truncate/extend — those
+    // ARE the wasm wrap/extend bit behaviors); bools are 0/1 VALUES.
     pub(super) fn as_u32(self) -> u32 {
         match self {
             Self::U32(v) => v,
             Self::I32(v) => v as u32,
             Self::U64(v) => v as u32,
             Self::I64(v) => v as u32,
-            Self::F32(v) => v as u32,
-            Self::F64(v) => v as u32,
+            Self::F32(v) => v.to_bits(),
+            Self::F64(v) => v.to_bits() as u32,
             Self::Bool(v) => v as u32,
         }
     }
@@ -35,8 +44,8 @@ impl Value {
             Self::U32(v) => v as u64,
             Self::I32(v) => v as u64,
             Self::I64(v) => v as u64,
-            Self::F32(v) => v as u64,
-            Self::F64(v) => v as u64,
+            Self::F32(v) => v.to_bits() as u64,
+            Self::F64(v) => v.to_bits(),
             Self::Bool(v) => v as u64,
         }
     }
@@ -47,8 +56,8 @@ impl Value {
             Self::U32(v) => v as i32,
             Self::U64(v) => v as i32,
             Self::I64(v) => v as i32,
-            Self::F32(v) => v as i32,
-            Self::F64(v) => v as i32,
+            Self::F32(v) => v.to_bits() as i32,
+            Self::F64(v) => v.to_bits() as u32 as i32,
             Self::Bool(v) => v as i32,
         }
     }
@@ -59,8 +68,8 @@ impl Value {
             Self::I32(v) => v as i64,
             Self::U32(v) => v as i64,
             Self::U64(v) => v as i64,
-            Self::F32(v) => v as i64,
-            Self::F64(v) => v as i64,
+            Self::F32(v) => v.to_bits() as i64,
+            Self::F64(v) => v.to_bits() as i64,
             Self::Bool(v) => v as i64,
         }
     }
@@ -69,10 +78,10 @@ impl Value {
         match self {
             Self::F32(v) => v,
             Self::F64(v) => v as f32,
-            Self::U32(v) => v as f32,
-            Self::I32(v) => v as f32,
-            Self::U64(v) => v as f32,
-            Self::I64(v) => v as f32,
+            Self::U32(v) => f32::from_bits(v),
+            Self::I32(v) => f32::from_bits(v as u32),
+            Self::U64(v) => f32::from_bits(v as u32),
+            Self::I64(v) => f32::from_bits(v as u32),
             Self::Bool(v) => {
                 if v {
                     1.0
@@ -87,10 +96,10 @@ impl Value {
         match self {
             Self::F64(v) => v,
             Self::F32(v) => v as f64,
-            Self::U32(v) => v as f64,
-            Self::I32(v) => v as f64,
-            Self::U64(v) => v as f64,
-            Self::I64(v) => v as f64,
+            Self::U32(v) => f64::from_bits(v as u64),
+            Self::I32(v) => f64::from_bits(v as u32 as u64),
+            Self::U64(v) => f64::from_bits(v),
+            Self::I64(v) => f64::from_bits(v as u64),
             Self::Bool(v) => {
                 if v {
                     1.0

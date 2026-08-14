@@ -425,28 +425,85 @@ pub(super) fn eval_cast(val: Value, from: &ScalarType, to: &ScalarType) -> Value
         ScalarType::I32 => val.as_i32() as i64,
         _ => val.as_i64(),
     };
+    // The register is a typeless CELL and the as_* accessors are
+    // REINTERPRET-semantics — so a float `from` must first materialize
+    // the source as its float VALUE (bits re-tagged), and only then
+    // value-convert toward `to`. Int sources ride the extended paths
+    // above (whose as_u32/as_i32 reads are bit-reads — correct cell
+    // semantics — then masked to the declared width).
+    let from_is_float = matches!(
+        from,
+        ScalarType::F32
+            | ScalarType::F64
+            | ScalarType::F16
+            | ScalarType::BF16
+            | ScalarType::FP8E5M2
+            | ScalarType::FP8E4M3
+    );
+    let float_val: f64 = if from_is_float {
+        match from {
+            ScalarType::F64 => val.as_f64(),
+            _ => val.as_f32() as f64,
+        }
+    } else {
+        0.0
+    };
     match to {
         ScalarType::F32
         | ScalarType::F16
         | ScalarType::BF16
         | ScalarType::FP8E5M2
-        | ScalarType::FP8E4M3 => Value::F32(val.as_f32()),
-        ScalarType::F64 => Value::F64(val.as_f64()),
-        ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(val.as_u32()),
+        | ScalarType::FP8E4M3 => Value::F32(if from_is_float {
+            float_val as f32
+        } else if matches!(
+            from,
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 | ScalarType::I64
+        ) {
+            sign_extended_i64 as f32
+        } else {
+            zero_extended_u64 as f32
+        }),
+        ScalarType::F64 => Value::F64(if from_is_float {
+            float_val
+        } else if matches!(
+            from,
+            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 | ScalarType::I64
+        ) {
+            sign_extended_i64 as f64
+        } else {
+            zero_extended_u64 as f64
+        }),
+        ScalarType::U32 | ScalarType::U16 | ScalarType::U8 => Value::U32(if from_is_float {
+            float_val as u32
+        } else {
+            zero_extended_u64 as u32
+        }),
         ScalarType::I32 | ScalarType::I16 | ScalarType::I8 | ScalarType::I4 => {
-            Value::I32(val.as_i32())
+            Value::I32(if from_is_float {
+                float_val as i32
+            } else {
+                sign_extended_i64 as i32
+            })
         }
         // For widening to u64: the source's signedness decides —
         // signed sources sign-extend (C semantics), unsigned sources
         // zero-extend from their width.
-        ScalarType::U64 => Value::U64(match from {
-            ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
-                sign_extended_i64 as u64
+        ScalarType::U64 => Value::U64(if from_is_float {
+            float_val as u64
+        } else {
+            match from {
+                ScalarType::I8 | ScalarType::I16 | ScalarType::I32 | ScalarType::I4 => {
+                    sign_extended_i64 as u64
+                }
+                _ => zero_extended_u64,
             }
-            _ => zero_extended_u64,
         }),
         // For widening to i64: sign-extend honouring `from`.
-        ScalarType::I64 => Value::I64(sign_extended_i64),
+        ScalarType::I64 => Value::I64(if from_is_float {
+            float_val as i64
+        } else {
+            sign_extended_i64
+        }),
         ScalarType::Bool => Value::Bool(val.as_bool()),
     }
 }

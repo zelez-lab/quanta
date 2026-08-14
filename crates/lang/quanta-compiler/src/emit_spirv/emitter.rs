@@ -415,11 +415,7 @@ impl SpvEmitter {
     /// Read a register bridged to `want_ty` from its ACTUAL type (same
     /// wasm-cell rationale as [`Self::index_as_uint`]) — for strictly
     /// typed sinks (shared/buffer stores) fed by reused registers.
-    pub(crate) fn value_as(
-        &mut self,
-        reg: quanta_ir::Reg,
-        want_ty: u32,
-    ) -> Result<u32, String> {
+    pub(crate) fn value_as(&mut self, reg: quanta_ir::Reg, want_ty: u32) -> Result<u32, String> {
         let val = self.reg_value_id(reg)?;
         let ty = if self.bool_vals.contains(&val) {
             self.ensure_type_bool()

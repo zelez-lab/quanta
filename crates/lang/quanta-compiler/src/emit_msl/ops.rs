@@ -93,12 +93,16 @@ fn assign(
             (_, Fam::Bool) => format!("(({expr}) != 0)"),
             _ => expr.to_string(),
         };
-        out.push_str(&format!("{pad}r{dst} = {expr};
-"));
+        out.push_str(&format!(
+            "{pad}r{dst} = {expr};
+"
+        ));
     } else {
         fams.insert(dst, produced);
-        out.push_str(&format!("{pad}{ty_str} r{dst} = {expr};
-"));
+        out.push_str(&format!(
+            "{pad}{ty_str} r{dst} = {expr};
+"
+        ));
     }
 }
 
@@ -165,7 +169,7 @@ pub(crate) fn emit_op(
             let elem = if index.0 == u32::MAX {
                 n.to_string()
             } else {
-                format!("{}[r{}]", n, index.0)
+                format!("{}[{}]", n, rv(fams, index.0, Fam::Int))
             };
             if matches!(ty, ScalarType::BF16) {
                 // bf16 storage is `ushort` (native 2-byte stride, matching
@@ -211,12 +215,16 @@ pub(crate) fn emit_op(
                     lv = dst_lv(mutable, "int", dst.0)
                 ));
             } else {
-                out.push_str(&format!(
-                    "{}{} = {};\n",
-                    pad,
-                    dst_lv(mutable, ty.msl_name(), dst.0),
-                    elem
-                ));
+                assign(
+                    out,
+                    &pad,
+                    mutable,
+                    fams,
+                    dst.0,
+                    fam_of(ty),
+                    ty.msl_name(),
+                    &elem,
+                );
             }
         }
         KernelOp::Store {
@@ -256,7 +264,16 @@ pub(crate) fn emit_op(
                     n = n
                 ));
             } else {
-                out.push_str(&format!("{}{}[r{}] = r{};\n", pad, n, index.0, src.0));
+                // Bridge the stored value from its ACTUAL register family:
+                // C++ would otherwise VALUE-convert a uint register into a
+                // float buffer silently (no compile error — wrong bits).
+                out.push_str(&format!(
+                    "{}{}[{}] = {};\n",
+                    pad,
+                    n,
+                    rv(fams, index.0, Fam::Int),
+                    rv(fams, src.0, fam_of(ty))
+                ));
             }
         }
         KernelOp::BinOp { dst, a, b, op, ty } => {

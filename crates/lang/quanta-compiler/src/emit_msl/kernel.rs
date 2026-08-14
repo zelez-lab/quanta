@@ -173,7 +173,15 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
         .map(|(reg, ty)| (*reg, crate::emit_msl::ops::fam_of(ty)))
         .collect();
     for op in &kernel.body {
-        emit_op(&mut out, op, 1, &slot_names, &int_consts, &mutable, &mut fams);
+        emit_op(
+            &mut out,
+            op,
+            1,
+            &slot_names,
+            &int_consts,
+            &mutable,
+            &mut fams,
+        );
     }
 
     out.push_str("}\n");
