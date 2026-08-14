@@ -1563,7 +1563,6 @@ impl<'a> LowerCtx<'a> {
                 "local {idx} has no stable register — buffer-pointer params can't be set"
             ))
         })?;
-        let stable_ty = self.locals[idx].stable_ty;
 
         // Allocate a fresh per-set register. This becomes the
         // post-set binding for the local. The old behaviour
