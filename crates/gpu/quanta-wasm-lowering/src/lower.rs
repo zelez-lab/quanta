@@ -1550,7 +1550,14 @@ impl<'a> LowerCtx<'a> {
         idx: usize,
         v: SymVal,
     ) -> Result<(Reg, ScalarType), LoweringError> {
-        let (src, _src_ty) = self.commit(v)?;
+        // The value's ACTUAL type — the honest label. The slot keeps its
+        // frozen `stable_ty` (one declared type for the demotion pass),
+        // but every Copy carries the VALUE's type: rustc recycles locals
+        // across f32/u32 freely, and a first-write-frozen label on the
+        // Copy is the lie every executor downstream then has to guess
+        // around (registers are typeless wasm cells; the emitters bridge
+        // label-vs-slot crossings bit-exactly when the labels are true).
+        let (src, src_ty) = self.commit(v)?;
         let stable_reg = self.locals[idx].stable_reg.ok_or_else(|| {
             LoweringError::ShapeMismatch(format!(
                 "local {idx} has no stable register — buffer-pointer params can't be set"
@@ -1568,7 +1575,7 @@ impl<'a> LowerCtx<'a> {
         // 0u;` declaration that the later `KernelOp::Copy` (which
         // emits `rN = rM;`, assignment-only) depends on. Mirrors
         // the `ensure_stable_reg_for` pattern for stable regs.
-        let init = match stable_ty {
+        let init = match src_ty {
             ScalarType::F16
             | ScalarType::BF16
             | ScalarType::FP8E5M2
@@ -1594,7 +1601,7 @@ impl<'a> LowerCtx<'a> {
         self.emit(KernelOp::Copy {
             dst: fresh,
             src,
-            ty: stable_ty,
+            ty: src_ty,
         });
         // Also keep stable_reg in sync — it remains the merge
         // anchor used by post-frame-close reads. The two copies
@@ -1602,15 +1609,15 @@ impl<'a> LowerCtx<'a> {
         self.emit(KernelOp::Copy {
             dst: stable_reg,
             src: fresh,
-            ty: stable_ty,
+            ty: src_ty,
         });
 
         // Reads of this local now see the fresh register.
         // post-merge code (after a branch closes) will see
         // stable_reg via the frame-close fixup; that fixup
         // re-points locals[idx].val to stable_reg.
-        self.locals[idx].val = Some(SymVal::Reg(fresh, stable_ty));
-        Ok((fresh, stable_ty))
+        self.locals[idx].val = Some(SymVal::Reg(fresh, src_ty));
+        Ok((fresh, src_ty))
     }
 
     fn lower_instr(&mut self, instr: &RawInstr) -> Result<(), LoweringError> {
