@@ -282,6 +282,29 @@ gpu.dispatch(&wave, n as u32)?.wait()?;
 `top_k_out[b * k + i]` is the i-th-largest value of block `b`,
 with i=0 the maximum. `k <= 256`.
 
+### `block_top_k_f32_buffer` — float keys, totalOrder
+
+Same shape with f32 keys (distances, scores): ordering is IEEE
+totalOrder (−0.0 < +0.0; positive NaNs surface FIRST in the
+descending output, negative NaNs last — deterministic, never UB):
+
+```rust,ignore
+use quanta_prims::block_top_k_f32_buffer;
+
+let mut wave = block_top_k_f32_buffer(&gpu)?;
+wave.bind(0, &distances);   // [f32; n]
+wave.bind(1, &top_k_out);   // [f32; n / 256 * k]
+wave.set_value(2, k);
+gpu.dispatch(&wave, n as u32)?.wait()?;
+```
+
+For the batched shape (B segments × N keys per block row, k per
+segment — the kNN batch regime) use
+`block_segmented_top_k_f32_buffer`; for ranked (key, index) results
+use `block_radix_sort_kv_f32u32_buffer`. The end-to-end pipeline
+(`cdist_sq` → segmented top-k, no host round-trip) is
+`examples/knn_batch_top_k.rs`.
+
 ### `block_sort_kv_u32_buffer`
 
 Sort (key, value) pairs by key within each 256-element block —

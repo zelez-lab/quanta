@@ -32,9 +32,16 @@ the same Rust source.
 | `block_sort_kv_u32` (bitonic, unstable)    | ✅ verified (Tier 2)       |
 | `block_radix_sort_kv_u32` (stable LSD)     | ✅ verified (Tier 2)       |
 | `block_segmented_sort_u32` (stable)        | ✅ verified (Tier 2)       |
+| `block_top_k_f32_buffer` (totalOrder)      | ✅ verified (Tier 2)       |
+| `block_radix_sort_kv_f32u32` (stable LSD)  | ✅ verified (Tier 2)       |
+| `block_segmented_top_k_f32` (batch kNN)    | ✅ verified (Tier 2)       |
+| `device_{sort,top_k}_f32` (totalOrder)     | ✅ verified (Tier 3)       |
 
-22 GPU kernels + 10 device-wide host wrappers. 95 differential
-tests on Metal. 8 Lean correctness theorems + 12 Verus
+25 GPU kernels + 12 device-wide host wrappers. The f32 ordering
+family rides the u32 machinery through a proven monotone bijection
+(IEEE totalOrder: −0.0 < +0.0, NaNs ordered deterministically at the
+ends — `Quanta/Prims/FloatOrder.lean`). 157 tests green on Metal
+and software. 8 Lean correctness theorems + 12 Verus
 operational invariants. **Tier 2 is complete.** See
 [CHANGELOG.md](CHANGELOG.md) for the release history.
 

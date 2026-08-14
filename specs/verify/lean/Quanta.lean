@@ -100,6 +100,7 @@ import Quanta.Tensor.Layout
 import Quanta.Tensor.Bridge
 
 -- Block-cooperative primitives (companion crate quanta-prims)
+import Quanta.Prims.FloatOrder
 import Quanta.Prims.Reference
 
 -- Online (FlashAttention-style) softmax equivalence (companion crate quanta-nn)

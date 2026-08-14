@@ -40,6 +40,13 @@
 //! [`global_bitonic_pass_u32`] launch per (k, j) pass, log²(n)
 //! launches total. Inputs that fit one 256-key tile short-circuit
 //! to a single [`block_radix_sort_u32_buffer`] launch.
+//!
+//! `device_sort_f32` and `device_top_k_f32` are that same pass
+//! structure with the monotone f32 → u32 bijection applied at the
+//! host boundary (Tier 3 round-trips anyway), so they inherit the
+//! short-circuit, the padding, and the subgroup refusal unchanged.
+//! Their ordering is IEEE totalOrder — see [`device_sort_f32`] for
+//! the ±0.0 / NaN policy.
 
 use crate::gpu_kernel::{
     block_radix_sort_u32_buffer, block_reduce_add_f32_buffer, block_reduce_add_f32_tree_buffer,
@@ -50,8 +57,8 @@ use crate::gpu_kernel::{
     block_reduce_max_u32_tree_buffer, block_reduce_min_f32_buffer,
     block_reduce_min_f32_tree_buffer, block_reduce_min_i32_buffer,
     block_reduce_min_i32_tree_buffer, block_reduce_min_u32_buffer,
-    block_reduce_min_u32_tree_buffer, global_bitonic_pass_u32, pad_copy_f32, pad_copy_i32,
-    pad_copy_u32,
+    block_reduce_min_u32_tree_buffer, f32_ordered_key, f32_ordered_unkey, global_bitonic_pass_u32,
+    pad_copy_f32, pad_copy_i32, pad_copy_u32,
 };
 use quanta_core::{Field, Gpu, QuantaError};
 
@@ -348,4 +355,42 @@ pub fn device_sort_u32(gpu: &Gpu, data: &[u32]) -> Result<Vec<u32>, QuantaError>
     let mut out = data_field.read()?;
     out.truncate(n);
     Ok(out)
+}
+
+/// Sort `data` ascending on the GPU under IEEE totalOrder and return
+/// the sorted copy.
+///
+/// The monotone bijection at the host boundary over
+/// [`device_sort_u32`]: Tier 3 already round-trips host ↔ GPU, so
+/// keying there costs nothing extra and the whole device-wide
+/// orchestration (single-tile short-circuit, power-of-two padding,
+/// the bitonic launch chain) is inherited unchanged — including the
+/// `u32::MAX` padding, which IS the keyed totalOrder maximum, so the
+/// padding still sorts to the truncated tail.
+///
+/// Ordering is `f32::total_cmp`: −0.0 sorts below +0.0, negative NaNs
+/// below −inf, positive NaNs above +inf. Every element comes back
+/// bit-for-bit — the transform is a bijection on bit patterns.
+pub fn device_sort_f32(gpu: &Gpu, data: &[f32]) -> Result<Vec<f32>, QuantaError> {
+    let keys: Vec<u32> = data.iter().map(|&x| f32_ordered_key(x)).collect();
+    let sorted = device_sort_u32(gpu, &keys)?;
+    Ok(sorted.into_iter().map(f32_ordered_unkey).collect())
+}
+
+/// The `k` largest values of `data` under IEEE totalOrder, in
+/// descending order (the distance / score shape).
+///
+/// Device-wide counterpart of [`crate::block_top_k_f32_buffer`], and
+/// the same composition as [`device_sort_f32`]: sort the whole buffer,
+/// take the tail. Errors when `k` exceeds the input length. NaN
+/// policy is totalOrder's — a positive NaN in the input surfaces
+/// first.
+pub fn device_top_k_f32(gpu: &Gpu, data: &[f32], k: usize) -> Result<Vec<f32>, QuantaError> {
+    if k > data.len() {
+        return Err(QuantaError::invalid_param(
+            "device-wide top-k requires k <= the input length",
+        ));
+    }
+    let sorted = device_sort_f32(gpu, data)?;
+    Ok(sorted[data.len() - k..].iter().rev().copied().collect())
 }

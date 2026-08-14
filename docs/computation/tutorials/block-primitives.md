@@ -71,16 +71,60 @@ key-value sort), and `block_segmented_sort_u32_buffer` (stable
 per-segment sort). All results are **per-block**: each
 256-element block is processed independently.
 
+## f32 keys — the ordering bijection
+
+Sorting and selection over **f32** keys needs no separate machinery.
+IEEE-754 binary32 admits a monotone bijection into `u32` — set the sign
+bit for non-negatives, invert every bit for negatives — under which
+unsigned integer order *is* IEEE totalOrder. The f32 primitives are the
+u32 network with that transform applied at load and inverted at store
+(`f32_ordered_key` / `f32_ordered_unkey`, both `#[quanta::device]`
+callables you can use in your own kernels):
+
+```rust,ignore
+use quanta::prims::{block_top_k_f32_buffer, block_segmented_top_k_f32_buffer};
+
+// k largest of every 256-key block, descending.
+let mut wave = block_top_k_f32_buffer(&gpu)?;
+wave.bind(0, &distances);   // [f32; 256 * num_blocks]
+wave.bind(1, &top_k);       // [f32; num_blocks * k]
+wave.set_value(2, k);
+
+// The batch shape: B segments of `seg_len` keys, k per segment.
+// out[seg * k + i] is the (i+1)-th largest of segment `seg`.
+let mut wave = block_segmented_top_k_f32_buffer(&gpu)?;
+wave.bind(0, &distances);   // [f32; B * seg_len]
+wave.bind(1, &top_k);       // [f32; B * k]
+wave.set_value(2, seg_len); // must divide 256
+wave.set_value(3, k);       // <= seg_len
+```
+
+`block_radix_sort_kv_f32u32_buffer` is the stable key-value sort with
+f32 keys and u32 payloads (row indices, in the kNN shape), and
+`device_sort_f32` / `device_top_k_f32` are the Tier-3 spellings.
+
+**NaN policy.** The order is `f32::total_cmp`'s totalOrder: −0.0 ranks
+below +0.0, negative NaNs below −inf, positive NaNs above +inf — so a
+descending top-k surfaces positive NaNs **first**. Every input is
+ordered deterministically; NaN is never UB and never silently dropped.
+Nearest-neighbour selection wants the *smallest* distances, so negate
+before selecting: the k largest of `−d` are the k smallest of `d`.
+
+The bijection's order theorem — `x ≤ y ⟺ key(x) ≤ key(y)` over
+totalOrder, plus injectivity and `unkey ∘ key = id` — is machine-checked
+in `specs/verify/lean/Quanta/Prims/FloatOrder.lean`.
+
 ## Device-wide one-liners
 
 For "I have a slice and want the whole-buffer answer", the Tier-3
 wrappers handle upload, padding, multi-pass orchestration, and readback:
 
 ```rust,ignore
-use quanta::prims::{device_reduce_add_u32, device_sort_u32};
+use quanta::prims::{device_reduce_add_u32, device_sort_u32, device_top_k_f32};
 
 let total: u32 = device_reduce_add_u32(&gpu, &data)?;   // any length ≥ 1
 let sorted: Vec<u32> = device_sort_u32(&gpu, &data)?;   // any length
+let best: Vec<f32> = device_top_k_f32(&gpu, &scores, 10)?; // descending
 ```
 
 Reduce runs multi-pass block reduces until one value remains; sort runs a

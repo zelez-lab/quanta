@@ -8,6 +8,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The f32 ordering family — every u32 ordering primitive composed
+  with the proven monotone bijection (IEEE totalOrder; NaN policy
+  deterministic, proof: `specs/verify/lean/Quanta/Prims/FloatOrder.lean`):
+  `block_top_k_f32_buffer`, `block_radix_sort_kv_f32u32_buffer`,
+  `block_segmented_top_k_f32_buffer` (the batch-kNN shape), and the
+  Tier-3 `device_sort_f32` / `device_top_k_f32` wrappers.
+- `examples/knn_batch_top_k.rs` — cdist² → segmented top-k, one
+  dispatch, no host round-trip.
+
+### Added
+
 - **Tier 2 — `block_radix_sort_kv_u32_buffer`** — stable
   key-value block sort: the keys-only LSD-radix algorithm with a
   payload carried to the same scatter slot each pass. Stable

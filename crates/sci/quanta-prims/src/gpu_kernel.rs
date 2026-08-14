@@ -1953,3 +1953,319 @@ pub fn global_bitonic_pass_u32(data: &mut [u32], k: u32, j: u32) {
         }
     }
 }
+
+// ── Tier 2 — f32 ordering (the monotone-bijection composition) ───
+//
+// IEEE-754 binary32 admits a monotone bijection into u32 — set the
+// sign bit for non-negatives, invert all bits for negatives — under
+// which unsigned integer order IS totalOrder (IEEE 754-2019 §5.10,
+// Rust's `f32::total_cmp`): −0.0 < +0.0, negative NaNs below −inf,
+// positive NaNs above +inf, all deterministic. Proven:
+// `Quanta.Prims.FloatOrder` (key_monotone_iff / key_injective /
+// unkey_key). Every u32 ordering primitive becomes an f32 primitive
+// by keying through the transform at load and inverting at store —
+// no new sorting machinery.
+
+/// The monotone f32 → u32 key (order-preserving under totalOrder).
+#[allow(dead_code, unused_unsafe)]
+#[quanta_compute_dsl::device(crate = quanta_core)]
+pub fn f32_ordered_key(x: f32) -> u32 {
+    let bits = x.to_bits();
+    if (bits >> 31u32) == 1u32 {
+        !bits
+    } else {
+        bits | 0x8000_0000u32
+    }
+}
+
+/// The inverse of [`f32_ordered_key`] (read keys back as floats).
+#[allow(dead_code, unused_unsafe)]
+#[quanta_compute_dsl::device(crate = quanta_core)]
+pub fn f32_ordered_unkey(k: u32) -> f32 {
+    if (k >> 31u32) == 1u32 {
+        f32::from_bits(k & 0x7fff_ffffu32)
+    } else {
+        f32::from_bits(!k)
+    }
+}
+
+/// Per-block top-k over f32 keys (totalOrder, descending — the
+/// distance/score shape). Same bitonic network and caller contract as
+/// [`block_top_k_u32_buffer`]: one 256-lane workgroup per block,
+/// `top_k_out.len() >= num_blocks * k`, lane `i` of each block writes
+/// the (i+1)-th LARGEST value. NaN policy is totalOrder's: positive
+/// NaNs rank above +inf (they surface FIRST in a descending top-k),
+/// negative NaNs below −inf — deterministic, never UB.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn block_top_k_f32_buffer(data: &[f32], top_k_out: &mut [f32], k: u32) {
+    #[quanta_compute_dsl::shared]
+    let buf: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    // Key through the monotone bijection; the network below is the
+    // unchanged u32 bitonic body from block_top_k_u32_buffer.
+    buf[lane] = f32_ordered_key(data[i as usize]);
+    barrier();
+
+    let mut outer: u32 = 2u32;
+    while outer <= 256u32 {
+        let mut inner: u32 = outer / 2u32;
+        while inner > 0u32 {
+            let partner = lane ^ inner;
+            let my_key = buf[lane];
+            let partner_key = buf[partner];
+
+            let bit_k = if (lane & outer) == 0u32 { 0u32 } else { 1u32 };
+            let bit_j = if (lane & inner) == 0u32 { 0u32 } else { 1u32 };
+            let take_partner = if bit_k == bit_j {
+                partner_key < my_key
+            } else {
+                partner_key > my_key
+            };
+            let new_key = if take_partner { partner_key } else { my_key };
+            barrier();
+            buf[lane] = new_key;
+            barrier();
+
+            inner = inner / 2u32;
+        }
+        outer = outer * 2u32;
+    }
+
+    if lane < k {
+        top_k_out[(block * k + lane) as usize] = f32_ordered_unkey(buf[(255u32 - lane) as usize]);
+    }
+}
+
+// ── Tier 2 — f32 key-value sort (bijection over the LSD radix) ───
+//
+// `block_radix_sort_kv_u32_buffer` with the key routed through the
+// monotone bijection at load and inverted at store; the payload is
+// untouched by the transform and rides along as before. Stability
+// survives the composition — the transform is injective, so equal
+// f32 keys stay equal u32 keys and the radix keeps their input
+// order.
+
+/// Convenience kernel: stable sort of each 256-element block of
+/// (f32 key, u32 value) pairs ascending by key under IEEE
+/// totalOrder — the [`block_radix_sort_kv_u32_buffer`] radix with
+/// keys carried through the monotone bijection. Same dispatch
+/// contract and slot layout as the u32 kv sort: payload buffers at
+/// slots 1 (in) and 3 (out).
+///
+/// **Block-local and stable**: each block sorts independently, and
+/// equal keys (identical bit patterns) keep their input relative
+/// order, values included. NaN policy is totalOrder's: negative
+/// NaNs sort below −inf and positive NaNs above +inf — deterministic,
+/// never UB.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn block_radix_sort_kv_f32u32_buffer(
+    keys: &[f32],
+    vals: &[u32],
+    keys_out: &mut [f32],
+    vals_out: &mut [u32],
+) {
+    #[quanta_compute_dsl::shared]
+    let kbuf: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let vbuf: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let s01: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let s23: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+
+    // Key through the monotone bijection; everything below is the
+    // unchanged u32 radix body from block_radix_sort_kv_u32_buffer.
+    kbuf[lane] = f32_ordered_key(keys[i as usize]);
+    vbuf[lane] = vals[i as usize];
+    barrier();
+
+    let mut shift: u32 = 0u32;
+    while shift < 32u32 {
+        let my_key = kbuf[lane];
+        let my_val = vbuf[lane];
+        let digit = (my_key >> shift) & 3u32;
+
+        let s_0 = if digit == 0u32 { 1u32 } else { 0u32 };
+        let s_1 = if digit == 1u32 { 1u32 } else { 0u32 };
+        let s_2 = if digit == 2u32 { 1u32 } else { 0u32 };
+        let s_3 = if digit == 3u32 { 1u32 } else { 0u32 };
+        s01[lane] = s_0 + s_1 * 65536u32;
+        s23[lane] = s_2 + s_3 * 65536u32;
+        barrier();
+
+        let mut d: u32 = 1u32;
+        while d < 256u32 {
+            let mut v01: u32 = s01[lane];
+            let mut v23: u32 = s23[lane];
+            if lane >= d {
+                v01 = v01 + s01[lane - d];
+                v23 = v23 + s23[lane - d];
+            }
+            barrier();
+            s01[lane] = v01;
+            s23[lane] = v23;
+            barrier();
+            d = d * 2u32;
+        }
+
+        let t01 = s01[255u32];
+        let t23 = s23[255u32];
+        let total0 = t01 & 65535u32;
+        let total1 = t01 >> 16u32;
+        let total2 = t23 & 65535u32;
+        let base1 = total0;
+        let base2 = base1 + total1;
+        let base3 = base2 + total2;
+        let inc01 = s01[lane];
+        let inc23 = s23[lane];
+        let rank0 = (inc01 & 65535u32).wrapping_sub(1u32);
+        let rank1 = base1 + (inc01 >> 16u32).wrapping_sub(1u32);
+        let rank2 = base2 + (inc23 & 65535u32).wrapping_sub(1u32);
+        let rank3 = base3 + (inc23 >> 16u32).wrapping_sub(1u32);
+        let my_pos: u32 = s_0 * rank0 + s_1 * rank1 + s_2 * rank2 + s_3 * rank3;
+
+        barrier();
+        kbuf[my_pos] = my_key;
+        vbuf[my_pos] = my_val;
+        barrier();
+
+        shift = shift + 2u32;
+    }
+
+    keys_out[i as usize] = f32_ordered_unkey(kbuf[lane]);
+    vals_out[i as usize] = vbuf[lane];
+}
+
+// ── Tier 2 — Segmented top-k over f32 keys ───────────────────────
+//
+// The batch-kNN shape: B fixed-width segments of `seg_len` keys, the
+// k largest of each written contiguously to `top_k_out[seg * k..]`.
+// Reduction to the machinery of `block_segmented_sort_u32_buffer` —
+// sort the composite key (segment id, f32 key) with the segment id
+// dominant, then read each segment's tail backwards for the
+// descending top-k.
+//
+// Segments are fixed-width rather than head-flag delimited because
+// the output slot is the GLOBAL segment index, which head flags only
+// yield after a device-wide scan; with a fixed width it is
+// `quark_id() / seg_len`, known per lane. `seg_len` must divide 256
+// so that no segment straddles a block boundary, and the segment id
+// within a block then fits the same 8 bits (4 radix passes) the
+// segmented sort uses.
+
+/// Convenience kernel: per-segment top-k over f32 keys, totalOrder
+/// descending — the batch-kNN shape (`seg_len` distances per query,
+/// k nearest per query). The input is B contiguous segments of
+/// `seg_len` keys; `top_k_out[seg * k + i]` is the (i+1)-th LARGEST
+/// key of segment `seg`.
+///
+/// Caller dispatches with `quark_count = data.len()` (a multiple of
+/// 256) and `top_k_out.len() >= (data.len() / seg_len) * k`.
+/// `seg_len` must divide 256 (segments never straddle a block) and
+/// `k <= seg_len`. NaN policy is totalOrder's: positive NaNs rank
+/// above +inf, so they surface FIRST in a descending top-k; negative
+/// NaNs rank below −inf.
+///
+/// For nearest-neighbour selection (smallest distance wins), negate
+/// the distances before the call — the k largest of `−d` are the k
+/// smallest of `d`.
+#[quanta_compute_dsl::kernel(crate = quanta_core, workgroup = [256])]
+pub fn block_segmented_top_k_f32_buffer(data: &[f32], top_k_out: &mut [f32], seg_len: u32, k: u32) {
+    #[quanta_compute_dsl::shared]
+    let kbuf: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let sbuf: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let s01: [u32; 256];
+    #[quanta_compute_dsl::shared]
+    let s23: [u32; 256];
+
+    let i = quark_id();
+    let lane = proton_id();
+    let block = nucleus_id();
+
+    // Key through the monotone bijection; the segment id is positional
+    // (fixed width), so it needs no head-flag scan.
+    kbuf[lane] = f32_ordered_key(data[i as usize]);
+    sbuf[lane] = lane / seg_len;
+    barrier();
+
+    // 20 LSD passes: 16 over the key (shift 0..30), then 4 over the
+    // segment id — the segment id applied last makes it dominant, so
+    // segments come out contiguous and in order, each sorted ascending.
+    let mut pass: u32 = 0u32;
+    while pass < 20u32 {
+        let my_key = kbuf[lane];
+        let my_seg = sbuf[lane];
+        let digit = if pass < 16u32 {
+            (my_key >> (pass * 2u32)) & 3u32
+        } else {
+            (my_seg >> ((pass - 16u32) * 2u32)) & 3u32
+        };
+
+        let s_0 = if digit == 0u32 { 1u32 } else { 0u32 };
+        let s_1 = if digit == 1u32 { 1u32 } else { 0u32 };
+        let s_2 = if digit == 2u32 { 1u32 } else { 0u32 };
+        let s_3 = if digit == 3u32 { 1u32 } else { 0u32 };
+        s01[lane] = s_0 + s_1 * 65536u32;
+        s23[lane] = s_2 + s_3 * 65536u32;
+        barrier();
+
+        let mut d: u32 = 1u32;
+        while d < 256u32 {
+            let mut v01: u32 = s01[lane];
+            let mut v23: u32 = s23[lane];
+            if lane >= d {
+                v01 = v01 + s01[lane - d];
+                v23 = v23 + s23[lane - d];
+            }
+            barrier();
+            s01[lane] = v01;
+            s23[lane] = v23;
+            barrier();
+            d = d * 2u32;
+        }
+
+        let t01 = s01[255u32];
+        let t23 = s23[255u32];
+        let total0 = t01 & 65535u32;
+        let total1 = t01 >> 16u32;
+        let total2 = t23 & 65535u32;
+        let base1 = total0;
+        let base2 = base1 + total1;
+        let base3 = base2 + total2;
+        let inc01 = s01[lane];
+        let inc23 = s23[lane];
+        let rank0 = (inc01 & 65535u32).wrapping_sub(1u32);
+        let rank1 = base1 + (inc01 >> 16u32).wrapping_sub(1u32);
+        let rank2 = base2 + (inc23 & 65535u32).wrapping_sub(1u32);
+        let rank3 = base3 + (inc23 >> 16u32).wrapping_sub(1u32);
+        let my_pos: u32 = s_0 * rank0 + s_1 * rank1 + s_2 * rank2 + s_3 * rank3;
+
+        barrier();
+        kbuf[my_pos] = my_key;
+        sbuf[my_pos] = my_seg;
+        barrier();
+
+        pass = pass + 1u32;
+    }
+
+    // Segment `seg` occupies [seg * seg_len, (seg+1) * seg_len)
+    // ascending, so its (rank+1)-th largest sits `rank` slots before
+    // the segment's end. Lanes whose rank slot is past k stay idle.
+    let seg = lane / seg_len;
+    let rank = lane % seg_len;
+    if rank < k {
+        let segs_per_block = 256u32 / seg_len;
+        let pos = seg * seg_len + (seg_len - 1u32 - rank);
+        top_k_out[(((block * segs_per_block) + seg) * k + rank) as usize] =
+            f32_ordered_unkey(kbuf[pos as usize]);
+    }
+}

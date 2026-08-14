@@ -258,6 +258,12 @@ required-features = ["nn"]
 name = "bench_op_overhead"
 required-features = ["sci"]
 
+# The batch-kNN pipeline crosses both umbrellas: `sci` for cdist_sq,
+# `prims` for the segmented top-k that consumes its output field.
+[[example]]
+name = "knn_batch_top_k"
+required-features = ["sci", "prims"]
+
 [[example]]
 name = "probe_wave_creation"
 required-features = ["jit", "compute"]

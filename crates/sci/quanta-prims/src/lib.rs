@@ -123,12 +123,35 @@
 //!   LSD radix, payload carried to the same scatter slot)
 //! - `block_segmented_sort_u32_buffer` — stable per-segment sort
 //!   (head-flag delimited; segments kept in input order)
+//! - `block_top_k_f32_buffer` — per-block top-k over f32 keys
+//!   (descending — the distance / score shape)
+//! - `block_radix_sort_kv_f32u32_buffer` — stable key-value sort,
+//!   f32 keys and u32 payloads
+//! - `block_segmented_top_k_f32_buffer` — per-segment top-k over
+//!   f32 keys (B segments × N keys — the batch-kNN shape)
 //!
 //! Tier 3 (device-wide convenience wrappers, all shipped):
 //! - `device_reduce_{add,min,max}_{u32,i32,f32}` — host slice in,
 //!   scalar out; multi-pass block reduce with identity padding
 //! - `device_sort_u32` — host slice in, sorted copy out;
 //!   device-wide bitonic network (one launch per pass)
+//! - `device_sort_f32` / `device_top_k_f32` — the same network over
+//!   f32 keys, the k largest returned descending
+//!
+//! ## f32 ordering and the NaN policy
+//!
+//! The f32 primitives add no sorting machinery: IEEE-754 binary32
+//! admits a monotone bijection into `u32` — set the sign bit for
+//! non-negatives, invert every bit for negatives — under which
+//! unsigned integer order IS IEEE totalOrder, so every u32 ordering
+//! primitive becomes an f32 one by keying at load and inverting at
+//! store. The order theorem (`key_monotone_iff`, with injectivity and
+//! `unkey_key`) is proved in `Quanta.Prims.FloatOrder`.
+//!
+//! The resulting order is `f32::total_cmp`'s: −0.0 ranks below +0.0,
+//! negative NaNs below −inf, positive NaNs above +inf — so a
+//! descending top-k surfaces positive NaNs FIRST. Every input is
+//! ordered deterministically; NaN is never UB and never dropped.
 //!
 //! Each block primitive ships as a `#[quanta::device]` callable
 //! function (e.g. `block_reduce_add_u32_kernel`) plus a top-level

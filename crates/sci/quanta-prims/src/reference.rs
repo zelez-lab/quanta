@@ -540,3 +540,72 @@ mod tests {
         assert_eq!(a, sorted);
     }
 }
+
+/// Per-block top-k over f32 keys, totalOrder descending.
+///
+/// Reference impl for `block_top_k_f32_buffer`. Ordering is IEEE
+/// totalOrder (`f32::total_cmp`): −0.0 < +0.0, negative NaNs below
+/// −inf, positive NaNs above +inf — so a descending top-k surfaces
+/// positive NaNs FIRST. Deterministic on every input, never UB.
+pub fn top_k_f32_blocks(data: &[f32], top_k_out: &mut [f32], block_size: usize, k: usize) {
+    let num_blocks = data.len() / block_size;
+    assert_eq!(top_k_out.len(), num_blocks * k);
+    assert!(k <= block_size);
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut sorted: Vec<f32> = data[start..start + block_size].to_vec();
+        sorted.sort_unstable_by(|a, b| b.total_cmp(a)); // totalOrder descending
+        top_k_out[b * k..(b + 1) * k].copy_from_slice(&sorted[..k]);
+    }
+}
+
+/// Per-block **stable** key-value sort over f32 keys, totalOrder
+/// ascending, u32 payloads permuted alongside.
+///
+/// Reference impl for `block_radix_sort_kv_f32u32_buffer`. Ordering
+/// is `f32::total_cmp` — the kernel's monotone bijection is injective
+/// on bit patterns, so the composition is exactly as stable as the
+/// underlying LSD radix: equal keys (identical bit patterns) keep
+/// their input order, and this oracle pins the exact `(key, value)`
+/// sequence the kernel must reproduce element for element.
+pub fn radix_sort_kv_f32u32_blocks(
+    keys: &[f32],
+    vals: &[u32],
+    block_size: usize,
+) -> (Vec<f32>, Vec<u32>) {
+    assert_eq!(keys.len(), vals.len());
+    let mut out_k = Vec::with_capacity(keys.len());
+    let mut out_v = Vec::with_capacity(vals.len());
+    let num_blocks = keys.len() / block_size;
+    for b in 0..num_blocks {
+        let start = b * block_size;
+        let mut pairs: Vec<(f32, u32)> = keys[start..start + block_size]
+            .iter()
+            .copied()
+            .zip(vals[start..start + block_size].iter().copied())
+            .collect();
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0)); // stable, totalOrder ascending
+        out_k.extend(pairs.iter().map(|&(k, _)| k));
+        out_v.extend(pairs.iter().map(|&(_, v)| v));
+    }
+    (out_k, out_v)
+}
+
+/// Per-segment top-k over f32 keys, totalOrder descending: the input
+/// is `data.len() / seg_len` contiguous segments of `seg_len` keys,
+/// and `top_k_out[s * k + i]` is the (i+1)-th largest of segment `s`.
+///
+/// Reference impl for `block_segmented_top_k_f32_buffer`. Same
+/// totalOrder policy as [`top_k_f32_blocks`] — a descending top-k
+/// surfaces positive NaNs first.
+pub fn segmented_top_k_f32_blocks(data: &[f32], top_k_out: &mut [f32], seg_len: usize, k: usize) {
+    let num_segments = data.len() / seg_len;
+    assert_eq!(top_k_out.len(), num_segments * k);
+    assert!(k <= seg_len);
+    for s in 0..num_segments {
+        let start = s * seg_len;
+        let mut sorted: Vec<f32> = data[start..start + seg_len].to_vec();
+        sorted.sort_unstable_by(|a, b| b.total_cmp(a)); // totalOrder descending
+        top_k_out[s * k..(s + 1) * k].copy_from_slice(&sorted[..k]);
+    }
+}
