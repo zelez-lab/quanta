@@ -267,7 +267,7 @@ webgpu = ["std", "jit", "compute", "quanta-core/webgpu", "quanta-render?/webgpu"
 # Companion-crate umbrella (tokio model) — off by default:
 sci = ["std", "dep:quanta-array", "dep:quanta-blas", "dep:quanta-fft", "dep:quanta-rand", "dep:quanta-tensor"]
 prims = ["std", "dep:quanta-prims"]
-autograd = ["std", "dep:quanta-autograd"]
+autograd = ["std", "dep:quanta-array", "quanta-array/autograd"]
 nn = ["std", "dep:quanta-nn"]
 ```
 
@@ -328,7 +328,7 @@ crates into the graph.
   (= `quanta-tensor`) submodules.
 - `prims` — activates `quanta-prims`, mounted as `quanta::prims`
   (block-cooperative + device-wide scan / reduce / sort).
-- `autograd` — activates `quanta-autograd`, mounted as `quanta::autograd`
+- `autograd` — activates `quanta-array`'s `autograd` feature, mounted as `quanta::autograd`
   (tape-based reverse-mode autodiff over `sci::Array`). Usually paired
   with `sci`.
 - `nn` — activates `quanta-nn`, mounted as `quanta::nn` (the neural

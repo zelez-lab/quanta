@@ -15,12 +15,12 @@
 //!
 //! Run (Pi, Vulkan):
 //!   QUANTA_NO_DOWNLOAD=1 cargo run --release --example vulkan_cpu_diff \
-//!       -p quanta-autograd --features quanta-autograd/vulkan
+//!       -p quanta-array --features vulkan,autograd
 //! Force lavapipe:
 //!   VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json <same command>
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 
 /// Deterministic pseudo-random values in [-1, 1].
 fn vals(count: usize, phase: f32) -> Vec<f32> {

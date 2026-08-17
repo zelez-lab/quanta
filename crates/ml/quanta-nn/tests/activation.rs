@@ -4,7 +4,7 @@
 //! GeLU/SwiGLU saturation); and zero-param layers inside tuple stacks.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::activation::{Gelu, SwiGlu, gelu_var, log_softmax_var, softmax_var, swiglu_var};
 use quanta_nn::layer::{Key, Layer, Linear, ParamTree};
 use quanta_nn::optim::Adam;
@@ -48,8 +48,8 @@ fn compare_paths(
     x: &[f32],
     g: &[f32],
     shape: &[usize],
-    fused: impl Fn(&Tape<f32>, &quanta_autograd::Var<f32>) -> quanta_autograd::Var<f32>,
-    composed: impl Fn(&Tape<f32>, &quanta_autograd::Var<f32>) -> quanta_autograd::Var<f32>,
+    fused: impl Fn(&Tape<f32>, &quanta_array::autograd::Var<f32>) -> quanta_array::autograd::Var<f32>,
+    composed: impl Fn(&Tape<f32>, &quanta_array::autograd::Var<f32>) -> quanta_array::autograd::Var<f32>,
     tol: f32,
     label: &str,
 ) {

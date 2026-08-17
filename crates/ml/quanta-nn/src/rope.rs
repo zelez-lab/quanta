@@ -8,15 +8,15 @@
 //! is the stability story: RoPE is an isometry per pair and can amplify
 //! neither activations nor gradients.
 //!
-//! Semantics match the composed [`quanta_autograd::Var::rope`] (the
+//! Semantics match the composed [`quanta_array::autograd::Var::rope`] (the
 //! differential-test oracle): `y = x⊙cos + rotate_half(x)⊙sin` with
 //! `rotate_half` pairing `j` and `j + d/2`. This fused core handles the 2-D
 //! `[T, d]` case; leading batch/head dims are a host loop, like the SDPA
 //! and norm cores.
 
 use crate::functional::{adopt_f32_field, f32_input, lift};
+use quanta_array::autograd::{AutogradError, DiffScalar, RopeCache, Tape, Var};
 use quanta_array::{Array, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, RopeCache, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]

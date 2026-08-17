@@ -8,7 +8,7 @@
 //! validated end to end, not against itself.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::functional::{Sdpa, scaled_dot_product_attention, sdpa_var};
 
 fn gpu() -> quanta::Gpu {
@@ -188,7 +188,7 @@ fn diff_larger() {
     run_case(40, 40, 16, 16, true, None);
 }
 
-// ── 2. Cross-check vs quanta-autograd's composed attention forward ───────────
+// ── 2. Cross-check vs quanta-array autograd's composed attention forward ─────
 
 #[test]
 fn cross_check_autograd_forward() {

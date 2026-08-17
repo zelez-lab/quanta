@@ -2,7 +2,7 @@
 //! loop through the stack (the D1–D3 architecture exercised end to end).
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::layer::{Key, Layer, LayerNorm, Linear, ParamTree};
 
 fn gpu() -> quanta::Gpu {

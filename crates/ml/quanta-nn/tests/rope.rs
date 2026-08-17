@@ -3,7 +3,7 @@
 //! are the references; T9217's isometry is checked empirically per pair.
 
 use quanta_array::Array;
-use quanta_autograd::{RopeCache, Tape};
+use quanta_array::autograd::{RopeCache, Tape};
 use quanta_nn::rope::rope_var;
 
 fn gpu() -> quanta::Gpu {

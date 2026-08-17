@@ -4,7 +4,7 @@
 //! shapes, clipping, and the tree-level training idiom end to end.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::layer::{Key, Layer, LayerNorm, Linear, ParamTree};
 use quanta_nn::optim::{Adam, Schedule, Sgd, clip_grad_norm, clip_grad_value};
 

@@ -149,7 +149,7 @@ jobs:
         # full so decoder-block training regressions still get caught.
         env:
           QUANTA_BACKEND: cpu
-        run: cargo test -p quanta-autograd --features software
+        run: cargo test -p quanta-array --features software,autograd
 
   # Step 063 follow-up — promoted to per-PR alongside diff-metal.
   # lavapipe gives free Vulkan coverage for the foundation slices

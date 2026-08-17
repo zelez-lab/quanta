@@ -14,7 +14,7 @@ fn gpu() -> quanta::Gpu {
 
 /// The error's debug text; panics if the call succeeded. (`unwrap_err`
 /// needs `Debug` on the success type, which holds GPU arrays.)
-fn err_text<T>(r: Result<T, quanta_autograd::AutogradError>) -> String {
+fn err_text<T>(r: Result<T, quanta_array::autograd::AutogradError>) -> String {
     match r {
         Err(e) => format!("{e:?}"),
         Ok(_) => panic!("expected an error"),

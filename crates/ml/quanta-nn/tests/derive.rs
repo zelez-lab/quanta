@@ -4,7 +4,7 @@
 //! over a derived tree.
 
 use quanta_array::Array;
-use quanta_autograd::{DiffScalar, Tape};
+use quanta_array::autograd::{DiffScalar, Tape};
 use quanta_nn::layer::{Key, Layer, Linear, LinearParams, ParamTree};
 use quanta_nn::optim::Adam;
 

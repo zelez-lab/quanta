@@ -21,6 +21,10 @@ default = ["software"]
 software = ["quanta-core/software", "quanta/software", "quanta-prims/gpu", "quanta-blas/gpu"]
 metal = ["quanta-core/metal", "quanta/metal", "quanta-prims/gpu-metal", "quanta-blas/gpu-metal"]
 vulkan = ["quanta-core/vulkan", "quanta/vulkan", "quanta-prims/gpu-vulkan", "quanta-blas/gpu-vulkan"]
+# Reverse-mode autodiff over `Array<T>`, exposed as the `autograd` module.
+# Off by default; needs no extra deps — quanta-blas + quanta-core[compute]
+# are already present.
+autograd = []
 
 [dependencies]
 # quanta-array uses the compute-face `GpuType` trait plus runtime types
@@ -44,3 +48,38 @@ quanta = { path = "../../..", version = "0.1.0-alpha.12", default-features = fal
 ] }
 # Host-side RNG for the Monte-Carlo pricing test (no GPU features needed).
 quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.12", default-features = false }
+
+# The autodiff tests and examples live behind the `autograd` feature, which
+# the default (`software`) build does not enable — each target names it so a
+# plain build skips them rather than failing to resolve `quanta_array::autograd`.
+[[test]]
+name = "gradcheck"
+required-features = ["autograd"]
+
+[[test]]
+name = "optim"
+required-features = ["autograd"]
+
+[[test]]
+name = "training"
+required-features = ["autograd"]
+
+[[test]]
+name = "transformer_mha"
+required-features = ["autograd"]
+
+[[test]]
+name = "transformer"
+required-features = ["autograd"]
+
+[[example]]
+name = "cnn_training"
+required-features = ["autograd"]
+
+[[example]]
+name = "mlp_training"
+required-features = ["autograd"]
+
+[[example]]
+name = "vulkan_cpu_diff"
+required-features = ["autograd"]

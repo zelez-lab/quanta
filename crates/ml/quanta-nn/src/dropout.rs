@@ -22,8 +22,8 @@
 //! quanta-rand contract). No global RNG exists anywhere in this path; the
 //! [`Key`](crate::layer::Key) is the whole effect (decision D4).
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
 use crate::functional::{adopt_f32_field, f32_input, lift};

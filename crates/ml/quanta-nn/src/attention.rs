@@ -20,8 +20,8 @@
 use crate::functional::{Sdpa, sdpa_var};
 use crate::layer::{Key, Layer, Linear, LinearParams, ParamTree};
 use crate::rope::rope_var;
+use quanta_array::autograd::{AutogradError, DiffScalar, RopeCache, Tape, Var};
 use quanta_array::{ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, RopeCache, Tape, Var};
 use quanta_core::Gpu;
 
 fn bad(msg: &'static str) -> AutogradError {

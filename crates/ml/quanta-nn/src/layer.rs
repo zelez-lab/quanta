@@ -20,8 +20,8 @@
 //! surface). The derive macro for user-defined trees comes after these
 //! hand-written impls have proven the trait shapes.
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::Gpu;
 use quanta_rand::Rng;
 

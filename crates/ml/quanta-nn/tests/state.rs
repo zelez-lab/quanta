@@ -3,7 +3,7 @@
 //! name-keyed (order-independent) loading, and the loud mismatch errors.
 
 use quanta_array::Array;
-use quanta_autograd::DiffScalar;
+use quanta_array::autograd::DiffScalar;
 use quanta_nn::layer::{Key, Layer, LayerNorm, Linear, LinearParams, NormParams, ParamTree};
 use quanta_nn::state::{load_state, save_state};
 

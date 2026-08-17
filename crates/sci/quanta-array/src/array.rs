@@ -118,7 +118,7 @@ impl<T: GpuType> Array<T> {
     /// A new `Array` view sharing the same backing field + layout (cheap
     /// `Arc` share — no device copy). `Array` deliberately isn't `Clone`
     /// (cloning GPU data should be explicit), but a zero-copy alias is safe
-    /// and needed by consumers like `quanta-autograd` that hold a value in
+    /// and needed by consumers like the `autograd` module that hold a value in
     /// several graph slots.
     pub fn shallow_clone(&self) -> Array<T> {
         Array {

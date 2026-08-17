@@ -1,6 +1,7 @@
-# quanta-autograd
+# quanta-array — the `autograd` feature
 
-Reverse-mode automatic differentiation for Quanta. The headline claim:
+Reverse-mode automatic differentiation for Quanta, the `autograd` module of
+`quanta-array` (off by default, enabled by the `autograd` feature). The headline claim:
 **every VJP rule is proven to be the analytic derivative** — via Mathlib's
 `HasDerivAt` in Lean (`specs/verify/lean/Quanta/Autograd/`) — and
 gradient-checked against finite differences on real GPU execution.
@@ -8,8 +9,8 @@ gradient-checked against finite differences on real GPU execution.
 The tier-2 *differentiation primitive*: it adds gradients to Quanta's GPU
 array ops, the substrate ML consumers (tier-5, e.g. `ai_project`) build training
 on. It is **not** an ML framework — no layers, optimizers, or datasets, just
-correct gradients. Built on `quanta-array` (the differentiable values) and
-`quanta-blas` (the matmul VJP).
+correct gradients. It rides on `quanta-array`'s `Array<T>` (the differentiable
+values) and `quanta-blas` (the matmul VJP).
 
 ## Status — tape-based reverse mode (f32)
 
@@ -31,7 +32,7 @@ into it. `var.grad(&wrt)` seeds the output gradient and walks the tape in
 reverse, applying each op's VJP and accumulating into inputs.
 
 ```rust,no_run
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_array::Array;
 
 let gpu = quanta::init_cpu();
@@ -49,7 +50,7 @@ layer can reuse them; `tape` owns the graph + reverse sweep. matmul is f32-only
 
 ```toml
 [dependencies]
-quanta-autograd = { version = "0.1", features = ["metal"] } # vulkan / software
+quanta-array = { version = "0.1", features = ["autograd", "metal"] } # vulkan / software
 ```
 
 ## Verification (honest framing)
@@ -74,8 +75,8 @@ Three layers of confidence, all green:
   `examples/cnn_training.rs` trains a conv → relu → maxpool → linear net to
   classify horizontal vs vertical stripes (8/8) — the whole conv stack composed.
 
-Run them: `cargo test -p quanta-autograd` and
-`cargo run --example cnn_training -p quanta-autograd --release`.
+Run them: `cargo test -p quanta-array --features software,autograd` and
+`cargo run --example cnn_training -p quanta-array --features software,autograd --release`.
 
 ## Coming next
 

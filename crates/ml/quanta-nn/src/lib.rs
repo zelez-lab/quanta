@@ -2,7 +2,7 @@
 //! namespace (`quanta::nn`, feature `nn`).
 //!
 //! Layers, fused kernels (attention, norms, rotary), losses, optimizers,
-//! initialization, and the training loop — built on [`quanta_autograd`]
+//! initialization, and the training loop — built on [`quanta_array::autograd`]
 //! (the tape) and [`quanta_array`] (the data plane). Everything here is
 //! single-node pure compute; the distributed, atom-aware mirrors live in
 //! dija-nn and wrap this crate.
@@ -48,4 +48,4 @@ pub mod state;
 pub mod transformer;
 
 pub use quanta_array::Array;
-pub use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
+pub use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};

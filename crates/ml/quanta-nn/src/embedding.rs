@@ -16,8 +16,8 @@
 //! `ids` must be `< vocab`; an out-of-range id is a contract violation
 //! (the gather kernel indexes the table unchecked).
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Var};
 use quanta_core::Gpu;
 
 use crate::layer::Key;

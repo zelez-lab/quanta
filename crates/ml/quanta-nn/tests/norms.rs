@@ -7,7 +7,7 @@
 //! (T9213/T9214): huge-magnitude rows and a constant row (variance → 0).
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::norm::{layer_norm_var, rms_norm_var};
 
 fn gpu() -> quanta::Gpu {

@@ -8,7 +8,7 @@
 //! dims — a correctness probe on the CPU JIT lane, not a perf test.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 
 fn gpu() -> quanta::Gpu {
     #[cfg(any(feature = "metal", feature = "vulkan"))]

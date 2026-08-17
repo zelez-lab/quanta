@@ -21,8 +21,8 @@
 //! Optimizer state trees are `ParamTree`s of the same shape as their
 //! params, so checkpointing an optimizer is the same two calls.
 
+use quanta_array::autograd::{AutogradError, DiffScalar};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar};
 use quanta_core::Gpu;
 use std::collections::HashMap;
 

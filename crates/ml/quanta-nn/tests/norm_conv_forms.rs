@@ -3,7 +3,7 @@
 //! running-stats EMA, checkpointable BnStats, and NCHW stacking.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::batchnorm::{BatchNorm, BnStats};
 use quanta_nn::conv::{AvgPool2d, Conv2d, MaxPool2d};
 use quanta_nn::layer::{GroupNorm, Key, Layer, ParamTree};

@@ -18,8 +18,8 @@
 //! let params = LinearParams { w, b: None };
 //! ```
 
+use quanta_array::autograd::{AutogradError, DiffScalar};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar};
 use quanta_core::{Gpu, QuantaError};
 
 use crate::layer::Key;

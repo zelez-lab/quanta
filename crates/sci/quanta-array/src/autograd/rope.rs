@@ -16,11 +16,11 @@
 //! `matmul`/`mul`/`add` — no new adjoint. `R` encodes `out[j] = −x[j+d/2]`
 //! (`j < d/2`) and `out[j] = x[j−d/2]` (`j ≥ d/2`).
 
-use quanta_array::{Array, ArrayError};
+use crate::{Array, ArrayError};
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::{Tape, Var};
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::{Tape, Var};
 
 /// Precomputed RoPE tables for a fixed max sequence length `t` and head
 /// dimension `d` (even). Holds the `[t, d]` `cos`/`sin` caches and the

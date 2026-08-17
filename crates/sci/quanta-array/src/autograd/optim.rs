@@ -8,7 +8,7 @@
 //! **decoupled** weight decay (the transformer-training default) — the decay is
 //! applied to the parameter directly, not folded into the gradient/moments.
 
-use quanta_array::{Array, ArrayError};
+use crate::{Array, ArrayError};
 
 /// A scalar broadcast to `shape` — the idiom for folding a constant (lr, β, …)
 /// into an elementwise array op.

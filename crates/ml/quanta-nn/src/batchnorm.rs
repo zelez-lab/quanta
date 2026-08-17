@@ -24,8 +24,8 @@
 //! layouts flatten their spatial dims into N at the call site, the
 //! host-loop convention the crate already uses.
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::Gpu;
 
 use crate::layer::{Key, NormParams, NormVars};

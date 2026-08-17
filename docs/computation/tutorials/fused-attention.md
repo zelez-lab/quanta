@@ -211,7 +211,7 @@ against the crate's completeness contract in
   `MultiheadAttention` *module*.
 - **`sdpa_var`'s backward is a naive recompute.** Its forward value matches the
   fused kernel, but the tape records the composed ops (`scale·QKᵀ → mask →
-  softmax → ·V`), so backward flows through the existing `quanta-autograd` VJPs
+  softmax → ·V`), so backward flows through the existing `autograd` VJPs
   and *does* rematerialise the score matrix on the backward path. The fused
   backward — consuming the `(m, l)` stats the forward already saves — is the next
   slice.

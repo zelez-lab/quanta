@@ -546,7 +546,7 @@ impl<T: FloatScalar> Array<T> {
     }
 
     /// Positive-step indicator: `1.0` where `x > 0`, else `0.0`. This is the
-    /// derivative mask of `relu` (`max(x,0)`) — `quanta-autograd` uses it for
+    /// derivative mask of `relu` (`max(x,0)`) — the `autograd` module uses it for
     /// the relu VJP. Kernel: `Cast(Cmp(x > 0))`.
     pub fn step_positive(&self) -> Result<Array<T>, ArrayError> {
         use quanta_ir::{CmpOp, ScalarType};

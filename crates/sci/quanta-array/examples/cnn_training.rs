@@ -1,4 +1,4 @@
-//! A tiny convolutional network, trained end-to-end on quanta-autograd.
+//! A tiny convolutional network, trained end-to-end on quanta-array's autograd module.
 //!
 //! The task: classify 4×4 single-channel images as a **horizontal** stripe
 //! (one bright row) vs a **vertical** stripe (one bright column). It's the
@@ -17,8 +17,8 @@
 //!
 //! Runs on the real GPU when built with a hardware backend feature; on the CPU
 //! JIT it works too but is far slower (conv-heavy), so prefer the GPU:
-//!   cargo run --example cnn_training -p quanta-autograd --release --features metal
-//!   cargo run --example cnn_training -p quanta-autograd --release            # CPU JIT (slow)
+//!   cargo run --example cnn_training -p quanta-array --release --features metal,autograd
+//!   cargo run --example cnn_training -p quanta-array --release --features autograd    # CPU JIT (slow)
 //! (release matters — every op JITs a kernel per step.)
 //!
 //! Bounded by design: 8 images, 4 conv channels, 400 epochs — under a minute on
@@ -26,7 +26,7 @@
 //! and add more stripe positions, or add epochs; lower `lr` if it destabilizes.
 
 use quanta_array::Array;
-use quanta_autograd::{Tape, Var};
+use quanta_array::autograd::{Tape, Var};
 
 /// The device this example runs on. With a hardware backend feature
 /// (`metal` / `vulkan`) it trains on the real GPU; otherwise it falls back to

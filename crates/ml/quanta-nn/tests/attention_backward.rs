@@ -6,7 +6,7 @@
 //! `--features software`, real device `--features metal` / `--features
 //! vulkan`):
 //!   1. against the composed-VJP path ([`sdpa_var_composed`], the oracle) — the
-//!      same forward, backprop via the materialising `quanta-autograd` graph;
+//!      same forward, backprop via the materialising `quanta-array` autograd graph;
 //!   2. against a from-scratch host **f64 analytic** backward (the FlashAttn
 //!      formulas computed in double precision) — the tight small-shape check;
 //!   3. by central-difference gradcheck through the new `sdpa_var` backward, on
@@ -16,7 +16,7 @@
 //! match the f64 reference.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::functional::{Sdpa, sdpa_var, sdpa_var_composed};
 
 fn gpu() -> quanta::Gpu {

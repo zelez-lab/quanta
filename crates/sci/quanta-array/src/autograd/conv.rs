@@ -1,7 +1,7 @@
 //! Differentiable 2-D convolution (NCHW), built as `im2col → matmul → reshape`.
 //!
 //! The forward unfolds the input `x[N,Cin,H,W]` into the patch matrix
-//! `cols[N·OH·OW, Cin·kh·kw]` ([`Array::im2col`](quanta_array::Array::im2col)),
+//! `cols[N·OH·OW, Cin·kh·kw]` ([`Array::im2col`](crate::Array::im2col)),
 //! flattens the weight `w[Cout,Cin,kh,kw]` to `wm[Cin·kh·kw, Cout]`, multiplies
 //! `cols · wm → ym[N·OH·OW, Cout]`, and reshapes/permutes `ym` to the NCHW
 //! output `y[N,Cout,OH,OW]`.
@@ -9,15 +9,15 @@
 //! Because the only nonlinear step is the matmul, the backward **reuses the
 //! proven matmul VJP**: with `G = ∂L/∂y` reshaped to `Gm[N·OH·OW, Cout]`,
 //! `∂cols = Gm · wmᵀ` and `∂wm = colsᵀ · Gm`. `∂x` then comes from
-//! [`col2im`](quanta_array::Array::col2im), the adjoint of `im2col`, and `∂w`
+//! [`col2im`](crate::Array::col2im), the adjoint of `im2col`, and `∂w`
 //! is `∂wm` reshaped back. No new gradient math — it is matmul + the linear
 //! im2col/col2im pair, composed.
 
-use quanta_array::Array;
+use crate::Array;
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::{Op, Var};
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::{Op, Var};
 
 /// Geometry of a single `conv2d`, captured on the tape so the backward pass can
 /// reshape/fold gradients without re-deriving the shapes.
@@ -61,19 +61,19 @@ impl<T: DiffScalar> Var<T> {
         let xs = x.shape();
         let ws = wt.shape();
         if xs.len() != 4 || ws.len() != 4 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("conv2d: x and w must be 4-D NCHW"),
             )));
         }
         let (n, cin, h, w_in) = (xs[0], xs[1], xs[2], xs[3]);
         let (cout, kh, kw) = (ws[0], ws[2], ws[3]);
         if ws[1] != cin {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("conv2d: weight Cin must match input Cin"),
             )));
         }
-        let oh = quanta_array::conv_out(h, kh, stride, pad);
-        let ow = quanta_array::conv_out(w_in, kw, stride, pad);
+        let oh = crate::conv_out(h, kh, stride, pad);
+        let ow = crate::conv_out(w_in, kw, stride, pad);
         let kdim = cin * kh * kw;
 
         // Forward: cols[N·OH·OW, kdim] · wm[kdim, Cout] → ym[N·OH·OW, Cout].

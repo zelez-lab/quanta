@@ -7,7 +7,7 @@
 //! parameters that don't reach ground truth.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 
 /// The device these training tests run on. With a hardware backend feature
 /// (`metal` / `vulkan`) they run on the real GPU — fast, and exercising the
@@ -95,7 +95,7 @@ fn fits_linear_regression() {
 /// The parity example for scikit's `LogisticRegression(multi_class="multinomial")`.
 #[test]
 fn softmax_regression_separates_three_classes() {
-    use quanta_autograd::optim::Adam;
+    use quanta_array::autograd::optim::Adam;
 
     let g = gpu();
     let (n_per, d, k) = (10usize, 2usize, 3usize);
@@ -162,7 +162,7 @@ fn softmax_regression_separates_three_classes() {
 /// differentiable embedding lookup and its sparse gradient train end to end.
 #[test]
 fn word2vec_embeddings_separate_topics() {
-    use quanta_autograd::optim::Adam;
+    use quanta_array::autograd::optim::Adam;
 
     let g = gpu();
     let (vocab, e) = (6usize, 4usize);
@@ -224,7 +224,7 @@ fn word2vec_embeddings_separate_topics() {
 /// there. Proves the attention pattern trains end to end through the tape.
 #[test]
 fn self_attention_learns_an_induction_shift() {
-    use quanta_autograd::optim::Adam;
+    use quanta_array::autograd::optim::Adam;
 
     let g = gpu();
     let (s, d, dh) = (4usize, 8usize, 8usize);
@@ -316,7 +316,7 @@ fn self_attention_learns_an_induction_shift() {
 #[test]
 #[ignore = "slow on the CPU interpreter; run with --ignored or --features metal"]
 fn conv_autoencoder_reconstructs() {
-    use quanta_autograd::optim::Adam;
+    use quanta_array::autograd::optim::Adam;
 
     let g = gpu();
     let (n, h, w) = (4usize, 8usize, 8usize);

@@ -2,7 +2,7 @@
 //!
 //! A 2-D convolution `y = conv(x, w)` (NCHW) is an `im2col` unfold followed by
 //! a matmul: each output spatial position becomes a row of patch taps, and the
-//! kernel becomes a matrix, so `cols · W = y`. quanta-autograd's `conv2d`
+//! kernel becomes a matrix, so `cols · W = y`. The `autograd` module's `conv2d`
 //! composes these with the proven `matmul` VJP; the backward needs `col2im`,
 //! the adjoint of `im2col` (overlapping patches scatter-add back).
 //!

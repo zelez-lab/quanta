@@ -22,7 +22,7 @@ and the verifier output.
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
 | **Verified Tier-A tracks** | 9 (ICB, tessellation, mesh shaders, ray tracing, VRS, sparse textures, multi-queue, async copy, printf) |
-| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); `quanta-autograd` VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss/dropout identities (T9210–T9233) — 37 theorems, 0 axioms — plus the quantized-inference round-trip supplement (T9234–T9235: dequantize∘quantize moves an element by at most `s/2`, max-abs scales are clamp-free) |
+| **Companion-crate numerics** | `quanta-blas` Higham `(1+δ)` forward-error bounds (Level-1/2/3 + mixed-precision); the `autograd` feature (in `quanta-array`) VJP rules proven = analytic derivatives (`HasDerivAt`); `quanta-fft` Cooley-Tukey radix-2 proven = direct DFT; `quanta-nn` online-softmax attention proven = two-pass softmax (T9200–T9209) plus norm/rotary/optimizer/activation/loss/dropout identities (T9210–T9233) — 37 theorems, 0 axioms — plus the quantized-inference round-trip supplement (T9234–T9235: dequantize∘quantize moves an element by at most `s/2`, max-abs scales are clamp-free) |
 
 **Sustainment state (2026-04-30).** The post-E finalization closed
 `kernel_body_compose` from a single monolithic axiom to a body-level
@@ -52,7 +52,7 @@ The math companion crates carry their own proof obligations, in the same
   with host repack) and proves every backend's element `i` reads source
   element `i` — plus a negative theorem pinning the old cross-stride bug,
   which agreed at element 0 and diverged from element 1 on.
-* **`quanta-autograd`** — every reverse-mode VJP multiplier is proven *equal to
+* **The `autograd` feature (in `quanta-array`)** — every reverse-mode VJP multiplier is proven *equal to
   the analytic derivative* via Mathlib's `HasDerivAt`
   (`specs/verify/lean/Quanta/Autograd/`): elementwise + activations
   (`Vjp.lean`, `ActivationVjp.lean` — relu/sigmoid/tanh), `matmul` (`G·Bᵀ`,

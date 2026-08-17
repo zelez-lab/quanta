@@ -5,11 +5,11 @@
 
 use std::rc::Rc;
 
-use quanta_array::Array;
+use crate::Array;
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::{Op, Tape, Var};
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::{Op, Tape, Var};
 
 impl<T: DiffScalar> Var<T> {
     fn same_tape(&self, other: &Var<T>) -> Result<(), AutogradError> {
@@ -39,7 +39,7 @@ impl<T: DiffScalar> Var<T> {
     /// the two regimes match in expectation.
     pub fn dropout(&self, p: f64, seed: u64) -> Result<Var<T>, AutogradError> {
         if !(0.0..1.0).contains(&p) {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("dropout: p must be in [0, 1)"),
             )));
         }
@@ -241,7 +241,7 @@ impl<T: DiffScalar> Var<T> {
     /// this composes cleanly with minibatch code (e.g. re-assembling batches).
     pub fn concat_axis0(parts: &[&Var<T>]) -> Result<Var<T>, AutogradError> {
         let first = parts.first().ok_or_else(|| {
-            AutogradError::from(quanta_array::ArrayError::Gpu(
+            AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("concat_axis0: need at least one var"),
             ))
         })?;
@@ -264,7 +264,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = x.shape();
         if d.len() != 2 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("gather_rows: table must be 2-D [N, C]"),
             )));
         }
@@ -295,7 +295,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = x.shape();
         if d.len() != 2 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("embedding: table must be 2-D [V, E]"),
             )));
         }
@@ -314,7 +314,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn gather_last(&self, idx: &Array<u32>) -> Result<Var<T>, AutogradError> {
         let x = self.value();
         let d = *x.shape().last().ok_or_else(|| {
-            AutogradError::from(quanta_array::ArrayError::Gpu(
+            AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param(
                     "gather_last: input needs at least one axis",
                 ),
@@ -331,7 +331,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn flatten(&self) -> Result<Var<T>, AutogradError> {
         let d = self.value().shape().to_vec();
         if d.is_empty() {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("flatten: need at least 1 dim"),
             )));
         }

@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
+use quanta_array::autograd::{AutogradError, Tape};
 use quanta_array::{Array, ArrayError};
-use quanta_autograd::{AutogradError, Tape};
 use quanta_nn::activation::Relu;
 use quanta_nn::layer::{Key, Layer, Linear, LinearParams, ParamTree};
 use quanta_nn::loss::{Reduction, mse_loss};

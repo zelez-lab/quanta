@@ -1,7 +1,7 @@
-//! # quanta-autograd — reverse-mode automatic differentiation for Quanta
+//! # Autograd — reverse-mode automatic differentiation for Quanta
 //!
 //! The tier-2 **differentiation primitive**: a tape-based reverse-mode autodiff
-//! engine over [`quanta_array::Array`], the substrate ML consumers (tier-5,
+//! engine over [`crate::Array`], the substrate ML consumers (tier-5,
 //! e.g. `ai_project`) build training on. It is *not* an ML framework — it adds
 //! gradients to Quanta's GPU array ops, nothing more.
 //!
@@ -14,7 +14,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use quanta_autograd::Tape;
+//! use quanta_array::autograd::Tape;
 //! use quanta_array::Array;
 //!
 //! let gpu = quanta_core::init_cpu();
@@ -36,8 +36,6 @@
 //! adjoint pair), `avgpool2d`/`maxpool2d`, and `reshape`/`flatten`. The VJP
 //! rules are factored as standalone functions ([`vjp`]) so a future
 //! graph/fusion layer can reuse them.
-
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod attention;
 pub mod conv;

@@ -247,7 +247,7 @@ jobs:
   # so the lane builds quanta-compiler the way the vulkan lane does.
   # QUANTA_BACKEND=cpu pins the interpreter even with backend features on.
   #
-  # quanta-autograd's gpt_decoder integration tests train a decoder block
+  # quanta-array's autograd gpt_decoder integration tests train a decoder block
   # on the interpreter (~8 min locally) — skipped per-push; the nightly
   # full lanes run them.
   companion-tests:
@@ -290,8 +290,7 @@ jobs:
           cargo test -p quanta-rand --features gpu
           cargo test -p quanta-blas --features gpu
           cargo test -p quanta-fft --features gpu
-          cargo test -p quanta-array --features software
-          cargo test -p quanta-autograd --features software -- --skip gpt_decoder
+          cargo test -p quanta-array --features software,autograd -- --skip gpt_decoder
           cargo test -p quanta-nn --features software
           cargo test -p quanta-tokenizers
 

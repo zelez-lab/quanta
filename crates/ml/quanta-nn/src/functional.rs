@@ -16,14 +16,14 @@
 //!   commit ships the correct single-head core.
 //! - **`sdpa_var` backward = fully fused.** The forward runs the online-softmax
 //!   kernel (saving `(m, l)` stats); the backward is a **custom VJP node** on
-//!   the tape ([`quanta_autograd::Tape::custom_vjp`]) that dispatches the fused
+//!   the tape ([`quanta_array::autograd::Tape::custom_vjp`]) that dispatches the fused
 //!   [`crate::kernel::sdpa_backward`] — reconstructing the softmax weights from
 //!   the saved stats (T9204), so the `seq_q × seq_k` matrix is never
 //!   materialised on *either* pass. The old composed path
 //!   ([`sdpa_var_composed`]) is retained as the differential-test oracle.
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Gpu, QuantaError};
 
 /// Lift a runtime `QuantaError` (from a field/dispatch call) into
@@ -154,7 +154,7 @@ pub fn scaled_dot_product_attention(
 /// The returned `Var` carries the attention context `(seq_q, dv)`. The forward
 /// runs the fused online-softmax kernel (via [`scaled_dot_product_attention`],
 /// saving the `(m, l)` stats); the backward is a **custom VJP node** on the
-/// tape ([`quanta_autograd::Tape::custom_vjp`]) that dispatches the fused
+/// tape ([`quanta_array::autograd::Tape::custom_vjp`]) that dispatches the fused
 /// [`crate::kernel::sdpa_backward`], reconstructing the softmax weights from
 /// the saved stats — so the `seq_q × seq_k` score matrix is materialised on
 /// *neither* pass. The composed path is kept as [`sdpa_var_composed`], the
@@ -332,7 +332,7 @@ pub(crate) fn adopt_f32_field<T: DiffScalar>(
 /// fused [`sdpa_var`] is differential-tested against, and a fallback for callers
 /// that want the materialising backward. Records the explicit ops
 /// (`scale·QKᵀ → mask → softmax → ·V`) so backward flows through the existing
-/// `quanta-autograd` VJPs, rematerialising the `seq_q × seq_k` score matrix on
+/// `quanta-array` autograd VJPs, rematerialising the `seq_q × seq_k` score matrix on
 /// the backward path. Same forward *value* as [`sdpa_var`]; prefer `sdpa_var`
 /// in production (it never materialises the score matrix on either pass).
 #[doc(hidden)]

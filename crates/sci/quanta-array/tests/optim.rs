@@ -1,6 +1,6 @@
 //! Optimizer tests: SGD + Adam both minimize a simple quadratic.
 use quanta_array::Array;
-use quanta_autograd::{
+use quanta_array::autograd::{
     Tape,
     optim::{Adam, Sgd},
 };

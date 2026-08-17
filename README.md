@@ -67,7 +67,7 @@ Add a backend feature (`metal` / `vulkan` / `software`) alongside for hardware e
 
 > **Advanced — depending on individual crates.** Each umbrella module is a
 > standalone crate underneath (`quanta-array`, `quanta-blas`, `quanta-fft`,
-> `quanta-rand`, `quanta-tensor`, `quanta-prims`, `quanta-autograd`, `quanta-nn`,
+> `quanta-rand`, `quanta-tensor`, `quanta-prims`, `quanta-nn`,
 > `quanta-tokenizers`), grouped
 > under `crates/{sci,ml}/` in the repo. A minimal-dependency consumer that wants
 > exactly one brick — and none of the facade — can depend on it directly; the

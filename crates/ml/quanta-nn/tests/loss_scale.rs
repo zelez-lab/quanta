@@ -4,7 +4,7 @@
 //! unscaled training while nothing overflows.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::layer::{Key, Layer, Linear, ParamTree};
 use quanta_nn::loss::{Reduction, mse_loss};
 use quanta_nn::optim::{LossScale, Sgd};

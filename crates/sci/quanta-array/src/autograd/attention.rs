@@ -8,11 +8,11 @@
 //! V, then the heads are merged back to `[B, T, D]` and mixed by the output
 //! projection. Every step is an existing `Var` op, so the backward pass is free.
 
-use quanta_array::Array;
+use crate::Array;
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::Var;
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::Var;
 
 impl<T: DiffScalar> Var<T> {
     /// Multiply this `Var` by a scalar constant `s` (broadcast over its shape),
@@ -65,7 +65,7 @@ impl<T: DiffScalar> Var<T> {
     ) -> Result<Var<T>, AutogradError> {
         let shape = self.value().shape().to_vec();
         if shape.len() != 3 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param(
                     "multi_head_attention: input must be 3-D [B, T, D]",
                 ),
@@ -73,7 +73,7 @@ impl<T: DiffScalar> Var<T> {
         }
         let (b, t, dmodel) = (shape[0], shape[1], shape[2]);
         if n_heads == 0 || dmodel % n_heads != 0 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param(
                     "multi_head_attention: D must be divisible by n_heads",
                 ),

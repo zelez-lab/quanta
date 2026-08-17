@@ -72,9 +72,9 @@
 //! foreign importer is a future reader constructing the same
 //! [`QuantizedMatrix`].
 
+use quanta_array::autograd::{AutogradError, Tape, Var};
 use quanta_array::quant::{HostCodes, dequantize_host};
 use quanta_array::{Array, ArrayError};
-use quanta_autograd::{AutogradError, Tape, Var};
 use quanta_core::Gpu;
 use std::collections::{HashMap, HashSet};
 

@@ -2,7 +2,7 @@
 //! full-tree checkpointing, tuple stacking, and a real overfit.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::layer::{Key, Layer, ParamTree};
 use quanta_nn::loss::{Reduction, cross_entropy_var};
 use quanta_nn::optim::Adam;

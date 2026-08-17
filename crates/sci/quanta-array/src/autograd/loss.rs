@@ -7,11 +7,11 @@
 //! cancels in softmax and contributes no gradient). `max_axis_last` is a
 //! non-differentiable `Array` op, which is exactly what we want for the shift.
 
-use quanta_array::Array;
+use crate::Array;
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::{Tape, Var};
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::{Tape, Var};
 
 impl<T: DiffScalar> Var<T> {
     /// Numerically-stable log-softmax over the class axis of a `[N, C]` logit
@@ -21,7 +21,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn log_softmax(&self) -> Result<Var<T>, AutogradError> {
         let x = self.value();
         if x.shape().len() != 2 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("log_softmax: input must be 2-D [N, C]"),
             )));
         }
@@ -61,7 +61,7 @@ impl<T: DiffScalar> Var<T> {
     ) -> Result<Var<T>, AutogradError> {
         let x = self.value();
         if x.shape().len() != 2 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("layer_norm: input must be 2-D [N, C]"),
             )));
         }
@@ -98,7 +98,7 @@ impl<T: DiffScalar> Var<T> {
     pub fn rms_norm(&self, gamma: &Var<T>, eps: f64) -> Result<Var<T>, AutogradError> {
         let x = self.value();
         if x.shape().len() != 2 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("rms_norm: input must be 2-D [N, C]"),
             )));
         }

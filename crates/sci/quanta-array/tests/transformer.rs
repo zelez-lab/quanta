@@ -12,7 +12,7 @@
 //! probe on the CPU JIT lane (a fresh kernel per op per step), not a perf test.
 
 use quanta_array::Array;
-use quanta_autograd::{Tape, Var};
+use quanta_array::autograd::{Tape, Var};
 
 fn gpu() -> quanta::Gpu {
     #[cfg(any(feature = "metal", feature = "vulkan"))]

@@ -15,8 +15,8 @@
 
 use crate::activation::dsl as act_dsl;
 use crate::functional::{adopt_f32_field, f32_input, lift};
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::QuantaError;
 
 #[allow(unused_imports)]

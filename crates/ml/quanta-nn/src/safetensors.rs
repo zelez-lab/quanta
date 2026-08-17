@@ -16,8 +16,8 @@
 //! policy) — strict about the entry keys, correct about string
 //! escapes.
 
+use quanta_array::autograd::{AutogradError, DiffScalar};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar};
 use quanta_core::Gpu;
 use std::collections::HashMap;
 

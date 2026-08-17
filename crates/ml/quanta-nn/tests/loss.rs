@@ -5,7 +5,7 @@
 //! the Huber knee); and a 3-class training run through the fused stack.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::activation::Gelu;
 use quanta_nn::layer::{Key, Layer, Linear, ParamTree};
 use quanta_nn::loss::{

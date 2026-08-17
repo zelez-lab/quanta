@@ -2,7 +2,7 @@
 //! gradient with repeated ids (the sparse update), and the unit-std init.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::embedding::Embedding;
 use quanta_nn::layer::Key;
 

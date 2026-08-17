@@ -83,6 +83,8 @@ mod ufunc;
 mod upsample;
 mod zip;
 
+#[cfg(feature = "autograd")]
+pub mod autograd;
 pub mod npy;
 pub mod npz;
 pub mod quant;

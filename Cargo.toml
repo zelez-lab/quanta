@@ -17,7 +17,6 @@ members = [
     "crates/gpu/quanta-render",
     "crates/sci/quanta-array",
     "crates/sci/quanta-blas",
-    "crates/ml/quanta-autograd",
     "crates/ml/quanta-nn",
     "crates/ml/quanta-nn-derive",
     "crates/ml/quanta-tokenizers",
@@ -86,7 +85,6 @@ metal = [
     "quanta-core/metal",
     "quanta-render?/metal",
     "quanta-array?/metal",
-    "quanta-autograd?/metal",
     "quanta-nn?/metal",
     "quanta-blas?/gpu-metal",
     "quanta-fft?/gpu-metal",
@@ -102,7 +100,6 @@ vulkan = [
     "quanta-core/vulkan",
     "quanta-render?/vulkan",
     "quanta-array?/vulkan",
-    "quanta-autograd?/vulkan",
     "quanta-nn?/vulkan",
     "quanta-blas?/gpu-vulkan",
     "quanta-fft?/gpu-vulkan",
@@ -147,7 +144,6 @@ software = [
     "quanta-core/software",
     "quanta-render?/software",
     "quanta-array?/software",
-    "quanta-autograd?/software",
     "quanta-nn?/software",
     "quanta-blas?/gpu",
     "quanta-fft?/gpu",
@@ -190,7 +186,7 @@ prims = ["std", "dep:quanta-prims"]
 ## Tape-based reverse-mode autodiff over `sci::Array`, mounted as
 ## `quanta::autograd`. Usually paired with `sci` (its API speaks
 ## `Array`), but activation is independent, tokio-style.
-autograd = ["std", "dep:quanta-autograd"]
+autograd = ["std", "dep:quanta-array", "quanta-array/autograd"]
 
 ## The full neural stack (`quanta::nn`): layers, fused kernels, optimizers,
 ## training. Carries its own autograd/array deps, so it activates alone.
@@ -218,7 +214,6 @@ quanta-render = { path = "crates/gpu/quanta-render", version = "0.1.0-alpha.12",
 # through the weak forwards on its own backend features above, and a
 # default build must not activate any of them.
 quanta-array = { path = "crates/sci/quanta-array", version = "0.1.0-alpha.12", default-features = false, optional = true }
-quanta-autograd = { path = "crates/ml/quanta-autograd", version = "0.1.0-alpha.12", default-features = false, optional = true }
 quanta-nn = { path = "crates/ml/quanta-nn", version = "0.1.0-alpha.12", default-features = false, optional = true }
 quanta-blas = { path = "crates/sci/quanta-blas", version = "0.1.0-alpha.12", default-features = false, optional = true }
 quanta-fft = { path = "crates/sci/quanta-fft", version = "0.1.0-alpha.12", default-features = false, optional = true }

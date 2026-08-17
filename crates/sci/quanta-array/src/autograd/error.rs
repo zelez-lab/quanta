@@ -1,6 +1,6 @@
-//! Error type for `quanta-autograd`.
+//! Error type for the `autograd` module.
 
-use quanta_array::ArrayError;
+use crate::ArrayError;
 
 /// An autograd failure — almost always a wrapped array/GPU error from running
 /// a forward op or accumulating a gradient.

@@ -4,20 +4,20 @@
 //! a handle `(tape, node id)`; the node's forward value lives in the tape. The
 //! forward pass runs the real `quanta-array` kernels now and appends a [`Node`]
 //! describing how to backprop. [`Tape::backward`] seeds the output gradient and
-//! walks the nodes in reverse, applying each op's VJP (see [`crate::vjp`]) and
+//! walks the nodes in reverse, applying each op's VJP (see [`crate::autograd::vjp`]) and
 //! accumulating into input gradients.
 //!
-//! The VJP math is the pure-function layer in `crate::vjp`; this module owns
+//! The VJP math is the pure-function layer in `crate::autograd::vjp`; this module owns
 //! the *graph* (node ids, topological reverse order, gradient accumulation).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use quanta_array::Array;
+use crate::Array;
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::vjp;
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::vjp;
 
 /// Which op produced a node — enough to run its VJP in the backward pass. The
 /// `usize` fields are node ids of the inputs; arrays captured here are the
@@ -59,15 +59,21 @@ pub(crate) enum Op<T: DiffScalar> {
     /// im2col patch matrix `cols` (for ∂w) and the reshaped weight matrix
     /// `wm = [Cin·kh·kw, Cout]` (for ∂cols → col2im → ∂x), plus the geometry
     /// needed to fold/reshape gradients back. Both VJPs are matmuls.
-    Conv2d(usize, usize, Array<T>, Array<T>, crate::conv::ConvParams),
+    Conv2d(
+        usize,
+        usize,
+        Array<T>,
+        Array<T>,
+        crate::autograd::conv::ConvParams,
+    ),
     /// avgpool2d(x): NCHW average pooling. Captures the geometry; the gradient
     /// is `avgpool2d_backward` (each input pixel sums g/(kh·kw) over its
     /// windows — avgpool's own adjoint).
-    AvgPool2d(usize, crate::pool::PoolParams),
+    AvgPool2d(usize, crate::autograd::pool::PoolParams),
     /// maxpool2d(x): NCHW max pooling. Captures the `argmax` index array (which
     /// input pixel won each window) and the geometry; the gradient routes each
     /// output's g to its argmax pixel via `maxpool2d_backward`.
-    MaxPool2d(usize, Array<u32>, crate::pool::PoolParams),
+    MaxPool2d(usize, Array<u32>, crate::autograd::pool::PoolParams),
     /// upsample2d(x, k): nearest-neighbour spatial upsample. Captures the factor
     /// and the input `H`/`W`; the gradient sums each k×k output block back to its
     /// source pixel via `upsample2d_backward` (upsampling's adjoint).

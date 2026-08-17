@@ -19,7 +19,7 @@
 //!
 //! 2-D `[T, E]` sequence core, like MHA (batch = host loop).
 
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::Gpu;
 
 use crate::activation::swiglu_var;

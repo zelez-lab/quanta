@@ -6,7 +6,7 @@ it — **without writing a single kernel**. Shape manipulation is zero-copy and
 proven correct in Lean (`quanta-tensor`); elementwise ops build IR at runtime and
 dispatch through Quanta's JIT to whatever backend you compiled for.
 
-It is the substrate the higher tiers stand on — [`quanta-autograd`](../quanta-autograd/README.md)
+It is the substrate the higher tiers stand on — the [`autograd` feature](AUTOGRAD.md)
 differentiates these ops, and a scientist reaches for `Array` the way they'd
 reach for `numpy.ndarray`.
 
@@ -76,7 +76,7 @@ Every shape operation rests on `quanta-tensor`'s Lean-proven layout algebra
 (composition associativity, permutation bijection, tile-offset bounds), so a
 `reshape`/`permute`/`broadcast` never produces an out-of-bounds or aliased view.
 The conv/pool building blocks carry their adjoint proofs in
-`quanta-autograd`'s `ConvVjp.lean` / `PoolVjp.lean` (the `col2im`/backward ops
+the `autograd` feature's `ConvVjp.lean` / `PoolVjp.lean` (the `col2im`/backward ops
 are proven transposes of the forwards), and every kernel is differential-tested
 against a pure-Rust host reference on both the software lane and real hardware.
 

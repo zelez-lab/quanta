@@ -5,7 +5,7 @@
 //! composition, and trained inside a tuple stack.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::attention::{MhaParams, MultiheadAttention};
 use quanta_nn::layer::{Key, Layer, Linear, ParamTree};
 use quanta_nn::optim::Adam;
@@ -235,7 +235,7 @@ fn mha_rope_mode_matches_manual_composition() {
         .unwrap();
 
     // Manual: project → slice heads → rope q/k → fused sdpa → merge → out.
-    use quanta_autograd::RopeCache;
+    use quanta_array::autograd::RopeCache;
     use quanta_nn::functional::{Sdpa, sdpa_var};
     use quanta_nn::rope::rope_var;
     let tape2: Tape<f32> = Tape::new();
@@ -250,7 +250,7 @@ fn mha_rope_mode_matches_manual_composition() {
     let k = lin.apply(&tape2, &vars2.wk, &xv2).unwrap();
     let v = lin.apply(&tape2, &vars2.wv, &xv2).unwrap();
     let cache = RopeCache::<f32>::new(&gpu, t, hd, 10_000.0).unwrap();
-    let slice = |m: &quanta_autograd::Var<f32>, s: usize| {
+    let slice = |m: &quanta_array::autograd::Var<f32>, s: usize| {
         m.transpose(0, 1)
             .unwrap()
             .narrow(s, hd)
@@ -267,7 +267,7 @@ fn mha_rope_mode_matches_manual_composition() {
         heads.push(ctx.transpose(0, 1).unwrap());
     }
     let refs: Vec<_> = heads.iter().collect();
-    let merged = quanta_autograd::Var::concat_axis0(&refs)
+    let merged = quanta_array::autograd::Var::concat_axis0(&refs)
         .unwrap()
         .transpose(0, 1)
         .unwrap();

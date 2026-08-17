@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Neural network stack for Quanta — layers, fused kernels (attention, norms), optimizers, and training over quanta-autograd. The ML face of the quanta:: namespace; completeness contract in PARITY.md."
+description = "Neural network stack for Quanta — layers, fused kernels (attention, norms), optimizers, and training over quanta-array's autograd feature. The ML face of the quanta:: namespace; completeness contract in PARITY.md."
 keywords = ["gpu", "neural-network", "deep-learning", "transformer", "machine-learning"]
 categories = ["science", "mathematics"]
 
@@ -13,25 +13,23 @@ name = "quanta_nn"
 path = "src/lib.rs"
 
 [features]
-# Backend forwarded down the substrate (array/autograd use software|metal|vulkan,
-# rand uses gpu|gpu-metal|gpu-vulkan — same split the facade handles).
+# Backend forwarded down the substrate (array uses software|metal|vulkan and
+# carries its own `autograd` module, rand uses gpu|gpu-metal|gpu-vulkan — same
+# split the facade handles).
 default = ["software"]
 software = [
-    "quanta-autograd/software",
     "quanta-array/software",
     "quanta-core/software",
     "quanta-rand/gpu",
     "quanta/software",
 ]
 metal = [
-    "quanta-autograd/metal",
     "quanta-array/metal",
     "quanta-core/metal",
     "quanta-rand/gpu-metal",
     "quanta/metal",
 ]
 vulkan = [
-    "quanta-autograd/vulkan",
     "quanta-array/vulkan",
     "quanta-core/vulkan",
     "quanta-rand/gpu-vulkan",
@@ -51,8 +49,9 @@ quanta-core = { path = "../../gpu/quanta-core", version = "0.1.0-alpha.12", defa
 # DSL is a plain (non-optional) dependency rather than gated behind a `gpu`
 # flag the way the pure-Rust-reference-capable prims/blas crates gate it.
 quanta-compute-dsl = { path = "../../lang/quanta-compute-dsl", version = "0.1.0-alpha.12" }
-quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.12", default-features = false }
-quanta-autograd = { path = "../quanta-autograd", version = "0.1.0-alpha.12", default-features = false }
+quanta-array = { path = "../../sci/quanta-array", version = "0.1.0-alpha.12", default-features = false, features = [
+    "autograd",
+] }
 quanta-blas = { path = "../../sci/quanta-blas", version = "0.1.0-alpha.12", default-features = false }
 quanta-rand = { path = "../../sci/quanta-rand", version = "0.1.0-alpha.12", default-features = false }
 

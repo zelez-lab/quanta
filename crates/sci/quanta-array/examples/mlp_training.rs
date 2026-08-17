@@ -1,4 +1,4 @@
-//! A tiny neural network, trained end-to-end on quanta-autograd.
+//! A tiny neural network, trained end-to-end on quanta-array's autograd module.
 //!
 //! A 2-layer MLP — `h = tanh(x·W1 + b1); ŷ = h·W2 + b2` — learns the nonlinear
 //! target `y = x²` on `[-1, 1]` by SGD on mean-squared error. The hidden layer
@@ -11,8 +11,8 @@
 //!
 //! Runs on the real GPU when built with a hardware backend feature; otherwise
 //! it falls back to the portable CPU JIT (slower, but no GPU required):
-//!   cargo run --example mlp_training -p quanta-autograd --release --features metal
-//!   cargo run --example mlp_training -p quanta-autograd --release            # CPU JIT
+//!   cargo run --example mlp_training -p quanta-array --release --features metal,autograd
+//!   cargo run --example mlp_training -p quanta-array --release --features autograd            # CPU JIT
 //! (release matters — every op JITs a kernel per step.)
 //!
 //! Bounded by design: 16 samples, 300 epochs — well under a minute either way.
@@ -20,7 +20,7 @@
 //! the epoch count; drop `lr` if a wider net starts to diverge.
 
 use quanta_array::Array;
-use quanta_autograd::{Tape, Var};
+use quanta_array::autograd::{Tape, Var};
 
 /// The device this example runs on. With a hardware backend feature
 /// (`metal` / `vulkan`) it trains on the real GPU; otherwise it falls back to

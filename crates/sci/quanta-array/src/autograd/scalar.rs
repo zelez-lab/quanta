@@ -1,13 +1,13 @@
 //! The element trait for differentiable arrays.
 //!
-//! [`Tape`](crate::Tape) is generic over `T: DiffScalar`. In practice the only
+//! [`Tape`](crate::autograd::Tape) is generic over `T: DiffScalar`. In practice the only
 //! type that is both `FloatScalar` (transcendentals) and `ReduceScalar`
 //! (device sums, needed for the `sum` loss) is `f32` — so `DiffScalar` is f32
 //! today. It exists so the matmul VJP (which calls the f32-only
 //! `Array::matmul`) can be reached from the otherwise type-generic backward
 //! pass without scattering `T == f32` assumptions through the engine.
 
-use quanta_array::{Array, ArrayError, FloatScalar, ReduceScalar};
+use crate::{Array, ArrayError, FloatScalar, ReduceScalar};
 use quanta_core::{Field, Gpu};
 
 /// A scalar that supports the full autograd op set, including the linear-algebra

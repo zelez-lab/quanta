@@ -6,7 +6,7 @@
 //! analytically in `specs/verify/lean/Quanta/Autograd/Vjp.lean`).
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 
 fn gpu() -> quanta::Gpu {
     quanta::init_cpu()
@@ -16,7 +16,7 @@ fn gpu() -> quanta::Gpu {
 fn analytic_grad(
     g: &quanta::Gpu,
     x: &[f32],
-    f: impl Fn(&quanta_autograd::Var<f32>) -> quanta_autograd::Var<f32>,
+    f: impl Fn(&quanta_array::autograd::Var<f32>) -> quanta_array::autograd::Var<f32>,
 ) -> Vec<f32> {
     let tape = Tape::<f32>::new();
     let xv = tape.var(Array::from_slice(g, x, &[x.len()]).unwrap());
@@ -1078,7 +1078,7 @@ fn grad_concat_routes_slices_to_inputs() {
     let tape = Tape::<f32>::new();
     let a = tape.var(Array::from_slice(&g, &a_data, &[2, 2]).unwrap());
     let b = tape.var(Array::from_slice(&g, &b_data, &[1, 2]).unwrap());
-    let out = quanta_autograd::Var::concat_axis0(&[&a, &b]).unwrap();
+    let out = quanta_array::autograd::Var::concat_axis0(&[&a, &b]).unwrap();
     let loss = out.mul(&out).unwrap().sum().unwrap();
     let ga = loss.grad(&a).unwrap().to_vec().unwrap();
     let gb = loss.grad(&b).unwrap().to_vec().unwrap();
@@ -1098,7 +1098,7 @@ fn grad_concat_narrow_roundtrip_is_identity_grad() {
     let x = tape.var(Array::from_slice(&g, &x_data, &[4, 2]).unwrap());
     let top = x.narrow(0, 2).unwrap();
     let bot = x.narrow(2, 2).unwrap();
-    let rejoined = quanta_autograd::Var::concat_axis0(&[&top, &bot]).unwrap();
+    let rejoined = quanta_array::autograd::Var::concat_axis0(&[&top, &bot]).unwrap();
     let loss = rejoined.sum().unwrap();
     let gx = loss.grad(&x).unwrap().to_vec().unwrap();
     assert_close(&gx, &[1.0f32; 8], 1e-6, "concat/narrow roundtrip grad");
@@ -1583,7 +1583,7 @@ fn mha_loss(
 
 #[test]
 fn grad_multi_head_attention() {
-    use quanta_autograd::Var;
+    use quanta_array::autograd::Var;
     let g = gpu();
     let (b, t, d, heads) = (1usize, 3usize, 4usize, 2usize);
     let xh = mha_init(b * t * d, 1.0);
@@ -1667,7 +1667,7 @@ fn host_rope(x: &[f32], t: usize, d: usize, cos: &[f32], sin: &[f32]) -> Vec<f32
 
 #[test]
 fn grad_rope() {
-    use quanta_autograd::{RopeCache, Var};
+    use quanta_array::autograd::{RopeCache, Var};
     let g = gpu();
     let (t, d) = (3usize, 4usize);
     let base = 10000.0f64;
@@ -1699,7 +1699,7 @@ fn grad_rope() {
 
 #[test]
 fn rope_preserves_norm_and_relative_position() {
-    use quanta_autograd::{RopeCache, Var};
+    use quanta_array::autograd::{RopeCache, Var};
     let g = gpu();
     let (t, d) = (4usize, 4usize);
     let base = 10000.0f64;

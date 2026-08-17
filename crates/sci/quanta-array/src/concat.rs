@@ -4,7 +4,7 @@
 //! into a full-size zero tensor at its row offset with
 //! [`pad_axis0`](crate::Array::pad_axis0), then the (disjoint) placements are
 //! summed. No new kernel, and the adjoint is just a `narrow` per input — so the
-//! differentiable [`Var`](../../quanta_autograd) version needs no new VJP math.
+//! differentiable [`Var`](crate::autograd::Var) version needs no new VJP math.
 //!
 //! Axis-0 only (matching the `narrow`/`pad_axis0` family). The trailing shape
 //! (`dims[1..]`) must match across all inputs.

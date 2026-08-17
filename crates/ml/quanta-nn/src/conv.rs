@@ -4,8 +4,8 @@
 //! rank-4 layers, so the 2-D last-dim width contracts don't apply —
 //! `in_dim` is `None` and the ops themselves check shapes loudly.
 
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::Gpu;
 
 use crate::layer::{Key, Layer, LinearParams, LinearVars};

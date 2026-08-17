@@ -3,7 +3,7 @@
 //! key-threading `apply_train` path through a real stack.
 
 use quanta_array::Array;
-use quanta_autograd::Tape;
+use quanta_array::autograd::Tape;
 use quanta_nn::dropout::{Dropout, dropout_var, keep_mask_host};
 use quanta_nn::layer::{Key, Layer, Linear, ParamTree};
 

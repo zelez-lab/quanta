@@ -1,14 +1,14 @@
 //! Differentiable 2-D pooling (NCHW) — `avgpool2d` and `maxpool2d`.
 //!
 //! Both forwards run the `quanta-array` pooling kernel and record the geometry
-//! needed for the matching gather backward (see [`crate::pool::PoolParams`]).
+//! needed for the matching gather backward (see [`crate::autograd::pool::PoolParams`]).
 //! avgpool is linear, so its backward is `avgpool2d_backward` (its own adjoint);
 //! maxpool captures the `argmax` index array the forward produced and routes
 //! each output's gradient to the winning input pixel.
 
-use crate::error::AutogradError;
-use crate::scalar::DiffScalar;
-use crate::tape::{Op, Var};
+use crate::autograd::error::AutogradError;
+use crate::autograd::scalar::DiffScalar;
+use crate::autograd::tape::{Op, Var};
 
 /// Geometry of a pooling op, captured on the tape so the backward can size and
 /// fold the gradient (input `H`/`W` aren't recoverable from the pooled output).
@@ -35,7 +35,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = x.shape();
         if d.len() != 4 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("avgpool2d: input must be 4-D NCHW"),
             )));
         }
@@ -60,7 +60,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = x.shape();
         if d.len() != 4 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("upsample2d: input must be 4-D NCHW"),
             )));
         }
@@ -82,7 +82,7 @@ impl<T: DiffScalar> Var<T> {
         let x = self.value();
         let d = x.shape();
         if d.len() != 4 {
-            return Err(AutogradError::from(quanta_array::ArrayError::Gpu(
+            return Err(AutogradError::from(crate::ArrayError::Gpu(
                 quanta_core::QuantaError::invalid_param("maxpool2d: input must be 4-D NCHW"),
             )));
         }

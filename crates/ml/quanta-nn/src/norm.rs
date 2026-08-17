@@ -534,7 +534,7 @@ pub fn rms_norm_backward(
 use crate::functional::{adopt_f32_field, f32_input, lift};
 use quanta_array::Array;
 use quanta_array::ToF64;
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 
 fn bad(msg: &'static str) -> AutogradError {
     AutogradError::from(quanta_array::ArrayError::Gpu(QuantaError::invalid_param(

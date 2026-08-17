@@ -23,8 +23,8 @@
 
 use crate::functional::{adopt_f32_field, f32_input, lift};
 use crate::layer::ParamTree;
+use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
-use quanta_autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_core::{Field, Gpu, QuantaError};
 
 #[allow(unused_imports)]

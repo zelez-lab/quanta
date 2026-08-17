@@ -178,7 +178,7 @@ fn main() {
 ```
 
 Minibatch SGD: each step trains on a `batch`-row window that
-[`Var::narrow`](https://docs.rs/quanta-autograd) selects as a zero-copy view of
+[`Var::narrow`](https://docs.rs/quanta-array) selects as a zero-copy view of
 the full array — the gradient flows only to the selected rows, so slicing costs
 nothing and stays differentiable. `n / batch` steps make an epoch; the reported
 loss is the epoch average. (For a stronger model, shuffle the row order each

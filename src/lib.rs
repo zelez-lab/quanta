@@ -255,7 +255,7 @@ pub mod prims {
 }
 
 /// Reverse-mode automatic differentiation over `sci::Array`
-/// (re-export of `quanta-autograd`).
+/// (re-export of `quanta-array`'s `autograd` module).
 ///
 /// Enabled by the `autograd` feature. A tape-based autodiff engine in
 /// the PyTorch/`autograd` tradition: wrap arrays as
@@ -268,7 +268,7 @@ pub mod prims {
 /// Enable `sci` alongside to name the `Array` type the API speaks.
 #[cfg(feature = "autograd")]
 pub mod autograd {
-    pub use quanta_autograd::*;
+    pub use quanta_array::autograd::*;
 }
 
 /// The neural network stack (feature `nn`) — layers, fused kernels

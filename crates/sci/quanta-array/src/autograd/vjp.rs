@@ -14,7 +14,7 @@
 //! These are the contiguous, same-shape rules. Broadcast/reduction
 //! axis-summing is handled by the tape op layer before/after calling these.
 
-use quanta_array::{Array, ArrayError, FloatScalar, ReduceScalar};
+use crate::{Array, ArrayError, FloatScalar, ReduceScalar};
 
 type R<T> = Result<Array<T>, ArrayError>;
 
@@ -145,7 +145,7 @@ pub fn tanh<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
 /// dims, `G·Bᵀ` / `Aᵀ·G` come out at the *broadcast* batch shape, so each
 /// gradient is summed back down to its operand's original shape (the standard
 /// broadcast-VJP reduction). Same-shape (incl. plain 2-D) is a no-op.
-pub fn matmul<T: crate::scalar::DiffScalar>(
+pub fn matmul<T: crate::autograd::scalar::DiffScalar>(
     g: &Array<T>,
     a: &Array<T>,
     b: &Array<T>,
@@ -167,7 +167,7 @@ pub fn matmul<T: crate::scalar::DiffScalar>(
 /// leading batch axis the operand lacks, and over every target batch axis whose
 /// operand extent is 1 while grad's is larger, then reshape to `target`. A
 /// no-op when the shapes already match (plain 2-D, or matching batch dims).
-fn reduce_to_shape<T: crate::scalar::DiffScalar>(
+fn reduce_to_shape<T: crate::autograd::scalar::DiffScalar>(
     grad: &Array<T>,
     target: &[usize],
 ) -> Result<Array<T>, ArrayError> {
@@ -200,11 +200,11 @@ fn reduce_to_shape<T: crate::scalar::DiffScalar>(
 ///   ∂cols = Gm·wmᵀ   → col2im → ∂X[N,Cin,H,W]
 ///   ∂wm   = colsᵀ·Gm → reshape → ∂W[Cout,Cin,kh,kw]
 /// reusing the proven matmul VJP and the im2col/col2im adjoint pair.
-pub fn conv2d<T: crate::scalar::DiffScalar>(
+pub fn conv2d<T: crate::autograd::scalar::DiffScalar>(
     g: &Array<T>,
     cols: &Array<T>,
     wm: &Array<T>,
-    p: &crate::conv::ConvParams,
+    p: &crate::autograd::conv::ConvParams,
 ) -> Result<(Array<T>, Array<T>), ArrayError> {
     // G[N,Cout,OH,OW] → [N,OH,OW,Cout] → Gm[N·OH·OW, Cout].
     let gm = g
