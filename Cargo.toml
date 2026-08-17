@@ -12,7 +12,6 @@ members = [
     "crates/lang/quanta-codegen",
     "crates/gpu/quanta-wasm-lowering",
     "crates/sci/quanta-rand",
-    "crates/tools/quanta-rand-import-test",
     "crates/sci/quanta-tensor",
     "crates/sci/quanta-prims",
     "crates/gpu/quanta-render",

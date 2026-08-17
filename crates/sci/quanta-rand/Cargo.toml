@@ -46,6 +46,16 @@ quanta = { path = "../../..", default-features = false, features = ["software"] 
 # path — the workspace's "no transitive runtime deps" policy still
 # holds for `[dependencies]`.
 rand = "0.8"
+# `quanta-prims` is dev-only: `tests/cross_crate_device_import.rs` imports
+# a `#[quanta::device]` fn from it to prove a downstream consumer can mix
+# device fns from two companions. quanta-core + quanta-compute-dsl are the
+# crate's own optional deps, active whenever the `gpu` feature is on (which
+# that test requires), so they need no dev-dep line.
+quanta-prims = { path = "../quanta-prims", features = ["gpu"] }
+
+[[test]]
+name = "cross_crate_device_import"
+required-features = ["gpu"]
 
 [[example]]
 name = "fill_buffer"
