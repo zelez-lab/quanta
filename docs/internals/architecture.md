@@ -86,7 +86,7 @@ crates/lang/quanta-compiler/         LLVM compiler binary (inkwell / LLVM 22)
 +-- src/
 |   +-- main.rs                 CLI entry: stdin KernelDef -> stdout CompilerOutput
 |   +-- to_llvm.rs              KernelOp -> LLVM IR module builder
-|   +-- targets/…               NVPTX / AMDGPU / SPIR-V intrinsics
+|   +-- targets/…               NVPTX / AMDGPU / SPIR-V intrinsics (LLVM experiments; the product SPIR-V comes from emit_spirv)
 |   +-- emit_msl.rs             KernelOp -> MSL source text
 |   +-- emit_wgsl.rs            KernelOp -> WGSL source text
 ```
@@ -162,8 +162,7 @@ Step 2: Serialize + invoke compiler (quanta-dsl-core/binary.rs)
     Pipe bytes to `quanta-compiler` binary via stdin
 
 Step 3: Compile to all targets (quanta-compiler) — binary-only
-    KernelOp -> LLVM IR -> PTX (NVIDIA)
-    KernelOp -> LLVM IR -> GCN ELF (AMD)
+    KernelOp -> LLVM IR -> (nvptx / amdgpu: compiler-internal experiments, not product artifacts)
     KernelOp -> LLVM IR -> SPIR-V (Vulkan)
     KernelOp -> LLVM IR -> SPIR-V -> xcrun metal -> metallib (Apple)
     No text output (MSL/WGSL) in the build path.
@@ -173,8 +172,6 @@ Step 4: Embed (quanta-compute-dsl)
     CompilerOutput -> proc_macro TokenStream:
 
     pub static MY_KERNEL_BINARY: KernelBinary = KernelBinary {
-        nvidia: Some(b"...ptx..."),
-        amd: Some(b"...elf..."),
         spirv: Some(b"..."),
         metallib: Some(b"..."),
         llvm_ir: None,
@@ -185,7 +182,7 @@ Step 4: Embed (quanta-compute-dsl)
     pub static MY_KERNEL_KERNEL_DEF: &[u8] = b"...serialized IR...";
 
     pub fn my_kernel(device: &Gpu) -> Result<Wave, QuantaError> {
-        let binary = MY_KERNEL_BINARY.for_vendor(device.caps().vendor)?;
+        let binary = MY_KERNEL_BINARY.for_artifact(device.artifact_kind())?;
         device.wave(binary)
     }
 ```

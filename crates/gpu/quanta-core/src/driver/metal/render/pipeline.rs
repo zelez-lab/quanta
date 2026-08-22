@@ -147,7 +147,7 @@ impl MetalDevice {
             } else {
                 let (vertex_bytes, fragment_bytes) = desc
                     .shader
-                    .stage_bytes(crate::Vendor::Apple)
+                    .stage_bytes(crate::ArtifactKind::Metallib)
                     .ok_or_else(|| {
                         QuantaError::invalid_param(
                             "pipeline shader binaries carry no Metal-compatible payload",

@@ -151,7 +151,7 @@ cooperatively.
 
 The `#[quanta::kernel]` / `#[quanta::vertex]` / `#[quanta::fragment]`
 macros shell out to the **`quanta-compiler`** binary at build time to
-embed GPU binaries (SPIR-V, metallib, PTX). Inside the quanta workspace
+embed GPU binaries (SPIR-V, metallib, WGSL). Inside the quanta workspace
 the freshly built `target/release/quanta-compiler` is found
 automatically — but a project consuming quanta as a **git dependency**
 builds from a pristine checkout with no `target/`, so the macros search
@@ -294,10 +294,11 @@ fn vector_add(data: &VecAdd) {
 to the GPU. `Vec<T>` fields become GPU storage buffers. Scalar fields
 become push constants. No manual slot numbers, no manual binding.
 
-`#[quanta::kernel]` compiles the function to all 5 GPU targets at build
-time: metallib (Apple), SPIR-V (Vulkan), PTX (NVIDIA), GCN (AMD), and
-WGSL (WebGPU). All are embedded in your binary. At runtime, the right
-one runs on whatever GPU is present.
+`#[quanta::kernel]` compiles the function to every driver's artifact at
+build time: metallib (Metal), SPIR-V (Vulkan — Intel, AMD, NVIDIA, Broadcom,
+lavapipe alike) and WGSL (WebGPU), plus the IR the software device executes.
+All are embedded in your binary. At runtime, the driver picks the one it
+loads.
 
 > **Targeting iOS?** iOS rejects a macOS-platform metallib, so the Apple
 > binary is emitted as up to three variants — macOS, iOS device, iOS

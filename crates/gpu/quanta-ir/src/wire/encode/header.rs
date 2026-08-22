@@ -173,8 +173,6 @@ pub(crate) fn write_kernel_def(w: &mut Writer, k: &KernelDef) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn write_compiler_output(w: &mut Writer, o: &crate::CompilerOutput) {
-    w.option_bytes(&o.amd);
-    w.option_bytes(&o.nvidia);
     w.option_bytes(&o.spirv);
     w.option_bytes(&o.metallib);
     // iOS metallib variants ride after the macOS one. Safe positional

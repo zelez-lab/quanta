@@ -97,11 +97,11 @@ fn msaa_resolve_then_sample_the_resolve() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    let vendor = gpu.caps().vendor;
-    if FILL_VERTEX_SHADER.for_vendor(vendor).is_none()
-        || FILL_BLUE_SHADER.for_vendor(vendor).is_none()
-        || UV_VERTEX_SHADER.for_vendor(vendor).is_none()
-        || TEXTURED_FRAG_SHADER.for_vendor(vendor).is_none()
+    let kind = gpu.artifact_kind();
+    if FILL_VERTEX_SHADER.for_artifact(kind).is_none()
+        || FILL_BLUE_SHADER.for_artifact(kind).is_none()
+        || UV_VERTEX_SHADER.for_artifact(kind).is_none()
+        || TEXTURED_FRAG_SHADER.for_artifact(kind).is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;

@@ -43,10 +43,10 @@ fn have_shaders(gpu: &quanta::Gpu) -> bool {
     // The driver picks the payload from the binaries; skip when this
     // vendor has none compiled in.
     LIFECYCLE_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_some()
         && LIFECYCLE_FRAGMENT_SHADER
-            .for_vendor(gpu.caps().vendor)
+            .for_artifact(gpu.artifact_kind())
             .is_some()
 }
 

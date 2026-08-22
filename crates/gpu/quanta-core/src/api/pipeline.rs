@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{CompareOp, Format, GpuDevice, ShaderBinary, Vendor};
+use crate::{CompareOp, Format, GpuDevice, ShaderBinary};
 
 /// Compiled render pipeline (vertex + fragment shaders + state).
 ///
@@ -82,7 +82,7 @@ impl Drop for Pipeline {
 /// enum makes the three supply modes mutually exclusive, and the
 /// [`Binaries`](ShaderSource::Binaries) arm lets the driver pick the
 /// right per-vendor format so callers never call
-/// [`ShaderBinary::for_vendor`] by hand.
+/// [`ShaderBinary::for_artifact`] by hand.
 ///
 /// Marked `#[non_exhaustive]`: supply modes can be added — match with a
 /// wildcard arm.
@@ -127,15 +127,15 @@ impl<'a> ShaderSource<'a> {
     /// Resolve per-stage `(vertex, fragment)` payloads for `vendor`.
     ///
     /// [`Combined`](Self::Combined) yields the same payload for both
-    /// stages. [`Binaries`](Self::Binaries) picks the vendor format via
-    /// [`ShaderBinary::for_vendor`]; `None` when a stage has no payload
-    /// for that vendor.
-    pub fn stage_bytes(&self, vendor: Vendor) -> Option<(&'a [u8], &'a [u8])> {
+    /// stages. [`Binaries`](Self::Binaries) picks the driver's artifact
+    /// via [`ShaderBinary::for_artifact`]; `None` when a stage has no
+    /// payload of that kind.
+    pub fn stage_bytes(&self, kind: crate::ArtifactKind) -> Option<(&'a [u8], &'a [u8])> {
         match self {
             Self::Stages { vertex, fragment } => Some((vertex, fragment)),
             Self::Combined(src) => Some((src, src)),
             Self::Binaries { vertex, fragment } => {
-                Some((vertex.for_vendor(vendor)?, fragment.for_vendor(vendor)?))
+                Some((vertex.for_artifact(kind)?, fragment.for_artifact(kind)?))
             }
         }
     }

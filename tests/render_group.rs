@@ -74,7 +74,7 @@ fn pipeline(
 
 fn shaders_ready(gpu: &quanta::Gpu, bins: &[&quanta::ShaderBinary]) -> bool {
     bins.iter()
-        .all(|b| b.for_vendor(gpu.caps().vendor).is_some())
+        .all(|b| b.for_artifact(gpu.artifact_kind()).is_some())
 }
 
 #[derive(quanta::Varyings)]

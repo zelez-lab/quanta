@@ -232,8 +232,6 @@ pub(crate) fn read_kernel_def(r: &mut Reader) -> Result<KernelDef, &'static str>
 // ---------------------------------------------------------------------------
 
 pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<crate::CompilerOutput, &'static str> {
-    let amd = r.option_bytes()?;
-    let nvidia = r.option_bytes()?;
     let spirv = r.option_bytes()?;
     let metallib = r.option_bytes()?;
     // iOS metallib variants — positionally after the macOS one, mirroring
@@ -243,8 +241,6 @@ pub(crate) fn read_compiler_output(r: &mut Reader) -> Result<crate::CompilerOutp
     let metallib_ios_sim = r.option_bytes()?;
     let wgsl = r.option_str()?;
     Ok(crate::CompilerOutput {
-        amd,
-        nvidia,
         spirv,
         metallib,
         metallib_ios,

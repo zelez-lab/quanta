@@ -63,6 +63,10 @@ fn spirv_val_gate(kernel_name: &str, spirv: &[u8]) {
 }
 
 /// Parse `--targets nvptx,amdgpu` from CLI args.
+///
+/// Only `--llvm-only` consumes the result today: the product output
+/// carries no PTX or GCN slot (no driver loads them), so `compile_kernel`
+/// ignores LLVM GPU targets. They remain reachable as experiments.
 pub fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
     for (i, arg) in args.iter().enumerate() {
         if arg == "--targets"
@@ -79,8 +83,8 @@ pub fn parse_targets(args: &[String]) -> Vec<GpuTarget> {
                 .collect();
         }
     }
-    // Default: both
-    vec![GpuTarget::Nvptx, GpuTarget::Amdgpu]
+    // Default: none — the product output has no slot for LLVM GPU targets.
+    Vec::new()
 }
 
 /// LLVM subprocess mode: compile a single target, write raw binary to stdout.
@@ -120,9 +124,12 @@ pub fn compile_kernel(args: &[String]) {
     }
 
     let targets = parse_targets(args);
+    if !targets.is_empty() {
+        eprintln!(
+            "[quanta] --targets is ignored in product mode (no driver loads PTX/GCN); use --llvm-only <target> for the raw artifact"
+        );
+    }
     let mut output = CompilerOutput {
-        amd: None,
-        nvidia: None,
         spirv: None,
         metallib: None,
         metallib_ios: None,
@@ -190,45 +197,6 @@ pub fn compile_kernel(args: &[String]) {
         }
     } else if verbose {
         eprintln!("[quanta] {}", vulkan_report.summary());
-    }
-
-    // LLVM compilation for PTX/GCN — run in subprocess to survive fatal errors.
-    // LLVM's error handler calls abort() on unsupported ops (e.g. fsin on SPIR-V target),
-    // which would kill this process before metallib + SPIR-V are written to stdout.
-    let self_exe = std::env::current_exe().unwrap_or_default();
-    for target in &targets {
-        let target_name = match target {
-            GpuTarget::Nvptx => "nvptx",
-            GpuTarget::Amdgpu => "amdgpu",
-            GpuTarget::Spirv => continue, // already emitted above
-        };
-
-        let child = std::process::Command::new(&self_exe)
-            .arg("--llvm-only")
-            .arg(target_name)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-
-        if let Ok(mut child) = child {
-            {
-                if let Some(ref mut stdin) = child.stdin {
-                    let _ = std::io::Write::write_all(stdin, &input);
-                }
-            }
-            child.stdin.take(); // close stdin so child sees EOF
-            if let Ok(result) = child.wait_with_output()
-                && result.status.success()
-                && !result.stdout.is_empty()
-            {
-                match target {
-                    GpuTarget::Nvptx => output.nvidia = Some(result.stdout),
-                    GpuTarget::Amdgpu => output.amd = Some(result.stdout),
-                    GpuTarget::Spirv => {}
-                }
-            }
-        }
     }
 
     let out_bytes = quanta_ir::serialize_output(&output);

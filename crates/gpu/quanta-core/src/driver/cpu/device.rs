@@ -293,6 +293,11 @@ impl GpuDevice for CpuDevice {
         &self.caps
     }
 
+    /// The software device has no precompiled artifact: it executes the embedded IR.
+    fn artifact_kind(&self) -> crate::ArtifactKind {
+        crate::ArtifactKind::Ir
+    }
+
     fn supports_f64(&self) -> bool {
         // The software interpreter computes f64 ops natively.
         true

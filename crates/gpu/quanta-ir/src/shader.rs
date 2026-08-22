@@ -114,7 +114,7 @@ pub struct ShaderDef {
 /// and the iOS simulator; each is `None` when its SDK was absent at
 /// compile time (a Command-Line-Tools-only mac ships macOS-only) or the
 /// platform was excluded via `QUANTA_METAL_PLATFORMS`. The runtime picks
-/// among them by compile target (see `ShaderBinary::for_vendor`).
+/// among them by compile target (see `ShaderBinary::for_artifact`).
 #[derive(Debug, Clone)]
 pub struct ShaderOutput {
     pub spirv: Option<Vec<u8>>,

@@ -107,6 +107,11 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         false
     }
 
+    /// Which precompiled artifact this driver loads. Required — every
+    /// driver states it explicitly so artifact selection can never fall
+    /// back to guessing from the vendor again.
+    fn artifact_kind(&self) -> crate::ArtifactKind;
+
     /// Whether the backend can run kernels that use 64-bit floats.
     /// Vulkan: `VkPhysicalDeviceFeatures.shaderFloat64` enabled at
     /// device creation (true on llvmpipe, false on Broadcom V3D).

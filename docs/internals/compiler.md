@@ -16,8 +16,8 @@ KernelDef
     |
     +-- to_llvm.rs (subprocess) --> LLVM Module
                                        |
-                                       +-- NVPTX target --> PTX binary
-                                       +-- AMDGPU target --> GCN ELF binary
+                                       +-- NVPTX target --> PTX binary (experiment: --llvm-only only; not in the product output)
+                                       +-- AMDGPU target --> GCN ELF binary (experiment: --llvm-only only; not in the product output)
     |
     +-- (JIT only) emit_msl.rs --> MSL source string
     +-- (JIT only) emit_wgsl.rs -> WGSL source string
@@ -38,7 +38,7 @@ LLVM's fatal error handler calls `abort()` on unsupported ops (e.g. `fsin` on
 the SPIR-V target). To prevent this from killing the compiler before metallib +
 SPIR-V + WGSL are serialized, LLVM compilation runs in a subprocess via
 `--llvm-only <target>`. The parent process emits metallib/SPIR-V/WGSL first,
-then spawns children for PTX/GCN. If a child crashes, the parent still succeeds.
+No LLVM GPU target runs in product mode any more — PTX/GCN have no slot in the output because no driver loads them; `--llvm-only <target>` produces them on demand.
 
 ### KernelOp coverage
 
@@ -214,8 +214,8 @@ Command-Line-Tools-only mac — soft-skips that variant with a single note,
 leaving today's macOS-only behavior intact. `QUANTA_METAL_PLATFORMS`
 overrides which variants are attempted. All three ride the wire in
 `ShaderOutput` / `CompilerOutput` and the macros embed them into the
-`ShaderBinary` / `KernelBinary` statics; the runtime's `for_vendor` selects
-by compile target (`cfg`). The macOS invocation is byte-for-byte unchanged,
+`ShaderBinary` / `KernelBinary` statics; the runtime's `for_artifact` selects
+the metallib variant by compile target (`cfg`). The macOS invocation is byte-for-byte unchanged,
 so desktop output is identical. (watchOS / tvOS / visionOS are out of scope
 but the `MetalPlatform` enum and probe leave room.)
 

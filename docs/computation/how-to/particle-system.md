@@ -193,8 +193,8 @@ fn main() {
         ],
     }];
 
-    // The driver picks the right per-vendor payload from the embedded
-    // multi-target binaries — no for_vendor() by hand.
+    // The driver picks its own artifact from the embedded multi-target
+    // binaries — no for_artifact() by hand.
     let pipeline = gpu.pipeline(
         &PipelineDesc::new(ShaderSource::Binaries {
             vertex: &PARTICLE_VERTEX_SHADER,

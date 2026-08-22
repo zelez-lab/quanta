@@ -113,10 +113,10 @@ fn pipeline_at(
 }
 
 fn shaders_available(gpu: &quanta::Gpu) -> bool {
-    let vendor = gpu.caps().vendor;
-    if PASSTHROUGH_VERTEX_SHADER.for_vendor(vendor).is_none()
-        || SOLID_WHITE_SHADER.for_vendor(vendor).is_none()
-        || SOLID_RED_SHADER.for_vendor(vendor).is_none()
+    let kind = gpu.artifact_kind();
+    if PASSTHROUGH_VERTEX_SHADER.for_artifact(kind).is_none()
+        || SOLID_WHITE_SHADER.for_artifact(kind).is_none()
+        || SOLID_RED_SHADER.for_artifact(kind).is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return false;

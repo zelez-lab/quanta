@@ -223,6 +223,14 @@ impl Gpu {
         self.ctx.device.supports_cooperative_matrix()
     }
 
+    /// The precompiled artifact this device's driver consumes — what
+    /// [`KernelBinary::for_artifact`](crate::KernelBinary::for_artifact)
+    /// and [`ShaderBinary::for_artifact`](crate::ShaderBinary::for_artifact)
+    /// select on. Declared by the driver, not derived from the vendor.
+    pub fn artifact_kind(&self) -> crate::ArtifactKind {
+        self.ctx.device.artifact_kind()
+    }
+
     /// Whether the active backend can run kernels that use 64-bit
     /// floats. The software lane and llvmpipe support f64; Metal and
     /// the Broadcom V3D GPU do not.

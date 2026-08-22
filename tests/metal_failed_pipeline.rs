@@ -69,8 +69,10 @@ fn apple_gpu_ready() -> Option<quanta::Gpu> {
         eprintln!("SKIP: Metal-only attribute-limit check (not an Apple backend)");
         return None;
     }
-    if TINY_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TINY_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if TINY_VERTEX_SHADER
+        .for_artifact(gpu.artifact_kind())
+        .is_none()
+        || TINY_FRAG_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no Metal shader binary");
         return None;

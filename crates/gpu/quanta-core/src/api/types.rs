@@ -326,19 +326,29 @@ pub enum CompareOp {
     Always,
 }
 
-/// Kernel binary format — compiled output from #[quanta::kernel].
+/// The precompiled artifact a driver consumes — declared by the
+/// driver, never derived from the GPU vendor.
+///
+/// Artifact selection used to key on [`Vendor`]: an NVIDIA or AMD card
+/// was handed PTX / GCN ELF that no driver could execute, while the
+/// Vulkan driver — the one actually running on that card — only accepts
+/// SPIR-V. The vendor says who made the chip; the driver says what bytes
+/// it can load. [`KernelBinary::for_artifact`] and
+/// [`ShaderBinary::for_artifact`] take this, and every driver reports
+/// its own through [`crate::Gpu::artifact_kind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KernelFormat {
-    /// AMD GCN binary (compiled via LLVM amdgcn backend).
-    AmdGcn,
-    /// NVIDIA PTX text (compiled via LLVM nvptx64 backend).
-    NvidiaPtx,
-    /// Metal Shading Language source (generated for Apple GPUs).
-    Msl,
-    /// WebGPU Shading Language source (generated for browsers).
+pub enum ArtifactKind {
+    /// SPIR-V module — the Vulkan driver, whatever the vendor.
+    Spirv,
+    /// Metal library (or MSL source the driver compiles) — the Metal
+    /// driver; the platform variant is resolved by `cfg` inside the
+    /// binary.
+    Metallib,
+    /// WGSL source — the WebGPU driver.
     Wgsl,
-    /// Platform-agnostic IR (fallback — driver compiles at load time).
-    LlvmIr,
+    /// No precompiled artifact: the driver executes the embedded IR
+    /// (`wave_jit`). The CPU software device.
+    Ir,
 }
 
 // === M2.2: Format Capability Queries ===

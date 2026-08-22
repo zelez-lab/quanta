@@ -250,8 +250,6 @@ proptest! {
         has_wgsl in any::<bool>(),
     ) {
         let output = CompilerOutput {
-            amd: None,
-            nvidia: None,
             spirv: if has_spirv { Some(vec![0x03, 0x02, 0x23, 0x07]) } else { None },
             metallib: if has_metallib { Some(vec![0x4D, 0x54]) } else { None },
             metallib_ios: if has_metallib_ios { Some(vec![0x4D, 0x54, 0x01]) } else { None },

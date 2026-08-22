@@ -30,6 +30,11 @@ impl GpuDevice for MetalDevice {
         &self.caps
     }
 
+    /// Metal loads a metallib (or MSL source it compiles itself).
+    fn artifact_kind(&self) -> crate::ArtifactKind {
+        crate::ArtifactKind::Metallib
+    }
+
     fn install_self_ref(&self, self_ref: alloc::sync::Weak<dyn GpuDevice>) {
         self.self_ref.install(self_ref);
     }

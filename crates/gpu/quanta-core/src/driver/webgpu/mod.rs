@@ -318,6 +318,11 @@ impl QGpuDevice for WebgpuDevice {
         &self.caps
     }
 
+    /// WebGPU loads WGSL source.
+    fn artifact_kind(&self) -> crate::ArtifactKind {
+        crate::ArtifactKind::Wgsl
+    }
+
     /// WGSL storage buffers cannot hold 16-/8-bit array elements, so the
     /// WGSL emitter keeps bf16/fp8 on the portable u32-slot layout (one
     /// element per 32-bit word). Hosts must expand tight narrow data

@@ -28,6 +28,11 @@ impl GpuDevice for VulkanDevice {
         &self.caps
     }
 
+    /// Vulkan loads SPIR-V — on Intel, AMD, NVIDIA, Broadcom and lavapipe alike.
+    fn artifact_kind(&self) -> crate::ArtifactKind {
+        crate::ArtifactKind::Spirv
+    }
+
     fn install_self_ref(&self, self_ref: alloc::sync::Weak<dyn GpuDevice>) {
         self.self_ref.install(self_ref);
     }

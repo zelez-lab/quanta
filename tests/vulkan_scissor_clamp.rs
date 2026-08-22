@@ -54,9 +54,11 @@ fn negative_scissor_offset_clamps_and_clips() {
         return;
     };
     if FULLSCREEN_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_WHITE_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_WHITE_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;
@@ -170,9 +172,11 @@ fn fully_offscreen_scissor_draws_nothing_without_error() {
         return;
     };
     if FULLSCREEN_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_WHITE_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_WHITE_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;

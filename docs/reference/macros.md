@@ -781,7 +781,7 @@ and the macros embed **every** variant that was produced into the
 `ShaderBinary` / `KernelBinary` static (the fields `metallib`,
 `metallib_ios`, `metallib_ios_sim`). A proc macro cannot see the
 consumer's compile target (that information only reaches build scripts), so
-the choice is deferred to the runtime: `for_vendor(Apple)` resolves the
+the choice is deferred to the runtime: `for_artifact(ArtifactKind::Metallib)` resolves the
 metallib by the build target, most-specific first —
 
 - an **iOS-simulator** build picks `metallib_ios_sim`, then `metallib_ios`,

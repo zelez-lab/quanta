@@ -103,19 +103,20 @@ impl GpuType for i8 {
 
 /// A compiled kernel binary — output of `#[quanta::kernel]` proc macro.
 ///
-/// Contains pre-compiled binaries for each supported GPU vendor.
-/// The driver selects the appropriate binary at runtime.
+/// One slot per artifact a driver can load; the driver selects by
+/// [`ArtifactKind`](crate::ArtifactKind) at runtime. There are no
+/// vendor-keyed slots: the PTX / GCN-ELF fields that once lived here
+/// were consumed by nothing and, worse, were what `for_vendor` handed to
+/// the Vulkan driver on an NVIDIA or AMD card.
 ///
 /// `metallib` is the macOS-platform Metal library. `metallib_ios` /
 /// `metallib_ios_sim` are the iOS-device / iOS-simulator variants: iOS
 /// rejects a macOS-platform metallib, so a build targeting an iOS device
 /// or the simulator embeds and selects its own. The proc macro cannot see
 /// the consumer's target (that reaches build scripts only), so it embeds
-/// every variant the compiler produced and [`KernelBinary::for_vendor`]
+/// every variant the compiler produced and [`KernelBinary::for_artifact`]
 /// picks the platform-correct one by `cfg`.
 pub struct KernelBinary {
-    pub amd: Option<&'static [u8]>,
-    pub nvidia: Option<&'static [u8]>,
     pub spirv: Option<&'static [u8]>,
     pub metallib: Option<&'static [u8]>,
     pub metallib_ios: Option<&'static [u8]>,
@@ -124,19 +125,17 @@ pub struct KernelBinary {
 }
 
 impl KernelBinary {
-    /// Select the best binary for the given vendor.
-    /// Apple: platform-correct metallib (see [`Self::apple_metallib`]).
-    /// Vulkan: SPIR-V. NVIDIA: PTX. AMD: GCN ELF.
-    /// Software (CPU): always None — the CPU device only executes the
-    /// JIT path (`wave_jit`) on the embedded `KernelDef` IR.
-    pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
-        match vendor {
-            crate::Vendor::Amd => self.amd.or(self.spirv),
-            crate::Vendor::Nvidia => self.nvidia.or(self.spirv),
-            crate::Vendor::Apple => self.apple_metallib(),
-            crate::Vendor::Intel => self.spirv.or(self.amd),
-            crate::Vendor::Software => None,
-            _ => self.spirv,
+    /// The artifact for the driver that asked. Metal: the
+    /// platform-correct metallib (see [`Self::apple_metallib`]); Vulkan:
+    /// SPIR-V; WebGPU: WGSL source bytes; IR (the CPU device): always
+    /// `None` — it executes the embedded `KernelDef` through `wave_jit`.
+    /// `None` for any driver means "no precompiled artifact, JIT".
+    pub fn for_artifact(&self, kind: crate::ArtifactKind) -> Option<&[u8]> {
+        match kind {
+            crate::ArtifactKind::Spirv => self.spirv,
+            crate::ArtifactKind::Metallib => self.apple_metallib(),
+            crate::ArtifactKind::Wgsl => self.wgsl.map(str::as_bytes),
+            crate::ArtifactKind::Ir => None,
         }
     }
 

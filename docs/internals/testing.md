@@ -151,6 +151,8 @@ soft dependency of the dev loop.
 
 ### ptxas
 
+(The PTX path is a compiler-internal experiment — it validates the shared LLVM emitter, not a product artifact.)
+
 NVIDIA's PTX assembler validates PTX text:
 
 ```bash

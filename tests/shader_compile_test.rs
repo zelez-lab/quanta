@@ -99,19 +99,19 @@ fn fragment_static_exists() {
 }
 
 #[test]
-fn shader_for_vendor_apple_returns_binary_or_none() {
+fn shader_for_artifact_metallib_returns_binary_or_none() {
     let shader = simple_passthrough();
-    // Without binary compilation, for_vendor returns None.
+    // Without binary compilation, for_artifact returns None.
     // With metallib, it returns Some.
-    let _binary = shader.for_vendor(quanta::Vendor::Apple);
+    let _binary = shader.for_artifact(quanta::ArtifactKind::Metallib);
 }
 
 #[test]
-fn shader_for_vendor_nvidia_returns_spirv_or_none() {
+fn shader_for_artifact_spirv_returns_spirv_or_none() {
     let shader = simple_passthrough();
-    // Without binary compilation, for_vendor returns None.
+    // Without binary compilation, for_artifact returns None.
     // With SPIR-V, it returns Some.
-    let _binary = shader.for_vendor(quanta::Vendor::Nvidia);
+    let _binary = shader.for_artifact(quanta::ArtifactKind::Spirv);
 }
 
 #[test]
@@ -207,11 +207,11 @@ fn fragment_with_multiple_inputs_spirv() {
 }
 
 #[test]
-fn vertex_for_vendor_returns_binary() {
+fn vertex_for_artifact_spirv_returns_binary() {
     let shader = simple_passthrough();
     // Nvidia/AMD/Intel use SPIR-V
     assert!(
-        shader.for_vendor(quanta::Vendor::Nvidia).is_some(),
-        "vertex for_vendor(Nvidia) must return SPIR-V binary",
+        shader.for_artifact(quanta::ArtifactKind::Spirv).is_some(),
+        "vertex for_artifact(Spirv) must return SPIR-V binary",
     );
 }

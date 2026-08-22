@@ -65,8 +65,10 @@ fn over_limit_vertex_attributes_error_cleanly() {
         eprintln!("SKIP: Metal aborts on over-limit attributes; this is a Vulkan-lane check");
         return;
     }
-    if TINY_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TINY_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if TINY_VERTEX_SHADER
+        .for_artifact(gpu.artifact_kind())
+        .is_none()
+        || TINY_FRAG_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;
@@ -158,8 +160,10 @@ fn over_limit_attribute_location_errs() {
         eprintln!("SKIP: Metal aborts on over-limit attribute locations; Vulkan-lane check");
         return;
     }
-    if TINY_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TINY_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if TINY_VERTEX_SHADER
+        .for_artifact(gpu.artifact_kind())
+        .is_none()
+        || TINY_FRAG_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;

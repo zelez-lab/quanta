@@ -32,8 +32,6 @@ pub fn compile_kernel(kernel: &KernelDef) -> Result<CompilerOutput, String> {
     // No compiler binary found — return empty output.
     // GPU dispatch will fail at runtime, but compilation succeeds.
     Ok(CompilerOutput {
-        amd: None,
-        nvidia: None,
         spirv: None,
         metallib: None,
         metallib_ios: None,
@@ -54,8 +52,6 @@ fn try_compiler_binary(kernel: &KernelDef) -> Option<CompilerOutput> {
 
     // Call the binary: stdin = KernelDef, stdout = CompilerOutput
     let result = std::process::Command::new(&binary)
-        .arg("--targets")
-        .arg("nvptx,amdgpu")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

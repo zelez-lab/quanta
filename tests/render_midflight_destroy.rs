@@ -59,9 +59,11 @@ fn pos_color_layout() -> Vec<quanta::VertexLayout> {
 
 fn make_pipeline(gpu: &quanta::Gpu, layouts: &[quanta::VertexLayout]) -> Option<quanta::Pipeline> {
     if MIDFLIGHT_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || MIDFLIGHT_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || MIDFLIGHT_RED_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("skipping: no shader binary for this vendor");
         return None;

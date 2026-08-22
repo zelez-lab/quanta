@@ -64,6 +64,11 @@ impl GpuDevice for ValidationDevice {
         self.inner.caps()
     }
 
+    /// Forwarded: the wrapper loads whatever the inner driver loads.
+    fn artifact_kind(&self) -> crate::ArtifactKind {
+        self.inner.artifact_kind()
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

@@ -175,20 +175,6 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         func_name.span(),
     );
 
-    let nvidia_expr = match &outputs.nvidia {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
-    let amd_expr = match &outputs.amd {
-        Some(bytes) => {
-            let lit = proc_macro2::Literal::byte_string(bytes);
-            quote! { Some(#lit as &[u8]) }
-        }
-        None => quote! { None },
-    };
     let spirv_expr = match &outputs.spirv {
         Some(bytes) => {
             let lit = proc_macro2::Literal::byte_string(bytes);
@@ -204,7 +190,7 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         None => quote! { None },
     };
     // Platform-targeted metallib variants (iOS device / simulator). Embedded
-    // alongside the macOS one; the runtime's cfg-gated for_vendor picks the
+    // alongside the macOS one; the runtime's cfg-gated for_artifact picks the
     // one matching the consumer's compile target. Absent when the compiler
     // ran on a host without the iOS SDK.
     let metallib_ios_expr = match &outputs.metallib_ios {
@@ -268,8 +254,6 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
 
     let wave_fn = quote! {
         pub static #binary_name: #krate::KernelBinary = #krate::KernelBinary {
-            amd: #amd_expr,
-            nvidia: #nvidia_expr,
             spirv: #spirv_expr,
             metallib: #metallib_expr,
             metallib_ios: #metallib_ios_expr,
@@ -277,15 +261,15 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
             wgsl: #wgsl_expr,
         };
 
-        // Embedded KernelDef IR — used as JIT fallback when the
-        // device's vendor isn't in the precompiled binary table
-        // (lavapipe, niche drivers, etc.).
+        // Embedded KernelDef IR — the JIT path when the driver's
+        // artifact slot is empty (the software device always; any GPU
+        // driver whose build-time artifact was not produced).
         pub static #ir_static_name: &[u8] = #ir_lit;
 
         pub fn #wave_fn_name #generics (device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
-            let mut wave = match #binary_name.for_vendor(device.caps().vendor) {
+            let mut wave = match #binary_name.for_artifact(device.artifact_kind()) {
                 Some(binary) => device.wave(binary)?,
-                // No precompiled binary for this vendor — JIT-compile
+                // No precompiled artifact for this driver — JIT-compile
                 // from the embedded IR.
                 None => device.wave_jit(#ir_static_name)?,
             };

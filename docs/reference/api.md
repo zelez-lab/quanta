@@ -53,6 +53,7 @@ path without throwing.
 | `supports_tessellation()` | `bool` | Tessellation control / evaluation stages |
 | `supports_sparse_residency()` | `bool` | Sparse textures (`vkQueueBindSparse` / `MTLHeap` placement) |
 | `supports_cooperative_matrix()` | `bool` | Cooperative-matrix / `simdgroup_matrix` support. True on Metal Apple GPU family 7+; **false on Vulkan** (`VK_KHR_cooperative_matrix` is not yet wired) and the software lane |
+| `artifact_kind()` | `ArtifactKind` | The precompiled artifact this driver loads — `Spirv` (Vulkan, whatever the vendor), `Metallib` (Metal), `Wgsl` (WebGPU), `Ir` (software device, always JIT). What `KernelBinary::for_artifact` / `ShaderBinary::for_artifact` select on; the macro-generated `*_wave` fns call it for you |
 | `supports_f64()` | `bool` | Kernels may use 64-bit floats. True on the software lane and llvmpipe; false on Metal (MSL has no `double`) and Broadcom V3D |
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
@@ -988,8 +989,8 @@ Contains the native artifacts (SPIR-V + metallib; on a build host without the Ap
 
 Pass shader binaries to a pipeline through
 `ShaderSource::Binaries { vertex, fragment }` in `PipelineDesc::new` —
-the driver selects the right per-vendor payload
-(`ShaderBinary::for_vendor`).
+the driver selects the artifact it loads
+(`ShaderBinary::for_artifact(gpu.artifact_kind())`).
 
 ---
 

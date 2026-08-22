@@ -39,25 +39,23 @@ fn test_identity(input: &[f32], output: &mut [f32]) {
 fn kernel_binary_struct_has_expected_fields() {
     // With quanta-compiler binary available, spirv/metallib may be populated.
     // Without it, all fields are None — that's valid for host tests.
-    let _amd = TEST_ADD_BINARY.amd;
-    let _nvidia = TEST_ADD_BINARY.nvidia;
     let _spirv = TEST_ADD_BINARY.spirv;
     let _metallib = TEST_ADD_BINARY.metallib;
 }
 
 #[test]
-fn kernel_binary_for_vendor_apple_needs_metallib() {
-    // Without compiler binary, Apple vendor returns None (no metallib).
+fn kernel_binary_for_artifact_metallib_needs_metallib() {
+    // Without compiler binary, for_artifact(Metallib) returns None (no metallib).
     // With compiler binary on macOS, it should return Some.
-    let binary = TEST_ADD_BINARY.for_vendor(quanta::Vendor::Apple);
+    let binary = TEST_ADD_BINARY.for_artifact(quanta::ArtifactKind::Metallib);
     // Either Some(metallib) or None — both valid depending on build environment.
     let _ = binary;
 }
 
 #[test]
-fn kernel_binary_for_vendor_unknown() {
-    // Unknown vendor needs SPIR-V — returns None if compiler not available.
-    let binary = TEST_ADD_BINARY.for_vendor(quanta::Vendor::Unknown);
+fn kernel_binary_for_artifact_spirv() {
+    // for_artifact(Spirv) returns None if compiler not available.
+    let binary = TEST_ADD_BINARY.for_artifact(quanta::ArtifactKind::Spirv);
     // spirv may or may not be populated depending on whether quanta-compiler
     // was found during build.
     let _ = binary;

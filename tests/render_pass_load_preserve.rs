@@ -92,10 +92,12 @@ fn second_pass_load_preserves_first_pass_output() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_WHITE_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_WHITE_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;

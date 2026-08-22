@@ -144,9 +144,9 @@ fn render_triangle() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -211,10 +211,12 @@ fn depth_test_near_wins() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || SOLID_GREEN_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || SOLID_GREEN_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -315,9 +317,9 @@ fn indexed_draw_cube() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -468,8 +470,10 @@ fn instanced_draw() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if OFFSET_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if OFFSET_VERTEX_SHADER
+        .for_artifact(gpu.artifact_kind())
+        .is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -612,8 +616,10 @@ fn textured_quad() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TEXTURED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || TEXTURED_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -733,9 +739,9 @@ fn two_indexed_draws_use_their_own_index_buffers() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -847,9 +853,9 @@ fn wait_idle_syncs_readback_without_pulse_wait() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -914,9 +920,9 @@ fn on_complete_notifies_after_render() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -988,9 +994,9 @@ fn on_complete_fires_for_already_completed_pulse() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1059,9 +1065,9 @@ fn pulse_fails_loudly_on_dropped_field() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1110,9 +1116,9 @@ fn draw_indexed_without_indices_is_rejected() {
         return;
     };
     if PASSTHROUGH_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1169,8 +1175,10 @@ fn texture_param_by_name_samples_exactly() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || ATLAS_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1295,8 +1303,10 @@ fn two_textured_draws_rebind_their_own_texture() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || ATLAS_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1420,8 +1430,10 @@ fn two_textured_draws_rebind_mixed_formats() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || ATLAS_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || ATLAS_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1551,8 +1563,10 @@ fn fragment_uniform_is_visible_to_fragment_stage() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TINTED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || TINTED_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1649,8 +1663,10 @@ fn statement_if_and_fragment_uniform_render_exactly() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || BRANCHY_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || BRANCHY_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1744,9 +1760,9 @@ fn vertex_uniform_shifts_geometry_exactly() {
         return;
     };
     if SHIFTED_VERTEX_SHADER
-        .for_vendor(gpu.caps().vendor)
+        .for_artifact(gpu.artifact_kind())
         .is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1836,8 +1852,10 @@ fn mat4_uniform_scales_geometry_exactly() {
     let Some(gpu) = try_gpu() else {
         return;
     };
-    if MVP_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || SOLID_RED_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if MVP_VERTEX_SHADER
+        .for_artifact(gpu.artifact_kind())
+        .is_none()
+        || SOLID_RED_SHADER.for_artifact(gpu.artifact_kind()).is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;
@@ -1935,8 +1953,10 @@ fn value_feeds_dsl_uniform_on_metal() {
         eprintln!("SKIP: .value-as-uniform is Metal-only semantics");
         return;
     }
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TINTED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || TINTED_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary");
         return;

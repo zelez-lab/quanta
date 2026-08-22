@@ -103,8 +103,10 @@ fn sampler_cache_dedups_across_draws_and_frames() {
         eprintln!("skipping: no GPU available");
         return;
     };
-    if UV_VERTEX_SHADER.for_vendor(gpu.caps().vendor).is_none()
-        || TEXTURED_FRAG_SHADER.for_vendor(gpu.caps().vendor).is_none()
+    if UV_VERTEX_SHADER.for_artifact(gpu.artifact_kind()).is_none()
+        || TEXTURED_FRAG_SHADER
+            .for_artifact(gpu.artifact_kind())
+            .is_none()
     {
         eprintln!("SKIP: no shader binary for this vendor");
         return;

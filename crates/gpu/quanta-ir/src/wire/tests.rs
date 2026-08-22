@@ -155,8 +155,6 @@ fn roundtrip_branch_and_loop() {
 #[test]
 fn roundtrip_compiler_output_empty() {
     let o = CompilerOutput {
-        amd: None,
-        nvidia: None,
         spirv: None,
         metallib: None,
         metallib_ios: None,
@@ -165,8 +163,6 @@ fn roundtrip_compiler_output_empty() {
     };
     let bytes = serialize_output(&o);
     let o2 = deserialize_output(&bytes).unwrap();
-    assert!(o2.amd.is_none());
-    assert!(o2.nvidia.is_none());
     assert!(o2.spirv.is_none());
     assert!(o2.metallib.is_none());
     assert!(o2.metallib_ios.is_none());
@@ -177,8 +173,6 @@ fn roundtrip_compiler_output_empty() {
 #[test]
 fn roundtrip_compiler_output_full() {
     let o = CompilerOutput {
-        amd: Some(vec![0xDE, 0xAD]),
-        nvidia: Some(vec![0xBE, 0xEF]),
         spirv: Some(vec![0x03, 0x02, 0x23, 0x07]),
         metallib: Some(vec![0x4D, 0x54]),
         metallib_ios: Some(vec![b'M', b'T', b'L', b'B', 0x10]),
@@ -187,8 +181,6 @@ fn roundtrip_compiler_output_full() {
     };
     let bytes = serialize_output(&o);
     let o2 = deserialize_output(&bytes).unwrap();
-    assert_eq!(o2.amd, Some(vec![0xDE, 0xAD]));
-    assert_eq!(o2.nvidia, Some(vec![0xBE, 0xEF]));
     assert_eq!(o2.spirv, Some(vec![0x03, 0x02, 0x23, 0x07]));
     assert_eq!(o2.metallib, Some(vec![0x4D, 0x54]));
     assert_eq!(o2.metallib_ios, Some(vec![b'M', b'T', b'L', b'B', 0x10]));

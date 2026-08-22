@@ -157,8 +157,10 @@ impl VulkanDevice {
                  cargo install --path crates/lang/quanta-compiler --locked --force",
             ));
         }
-        let (vertex_bytes, fragment_bytes) =
-            desc.shader.stage_bytes(self.caps.vendor).ok_or_else(|| {
+        let (vertex_bytes, fragment_bytes) = desc
+            .shader
+            .stage_bytes(crate::ArtifactKind::Spirv)
+            .ok_or_else(|| {
                 QuantaError::compilation_failed(
                     "pipeline shader binaries carry no SPIR-V payload for this vendor \
                      — the shader's build-time compile produced no SPIR-V \

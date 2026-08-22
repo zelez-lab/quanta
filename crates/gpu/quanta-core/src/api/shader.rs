@@ -80,7 +80,7 @@ pub enum ShaderStage {
 /// rejects a macOS-platform metallib, so a build targeting an iOS device
 /// or the simulator embeds and selects its own. The proc macro cannot see
 /// the consumer's target, so it embeds every variant the compiler produced
-/// and [`ShaderBinary::for_vendor`] picks the platform-correct one by `cfg`.
+/// and [`ShaderBinary::for_artifact`] picks the platform-correct one by `cfg`.
 pub struct ShaderBinary {
     /// Pre-compiled SPIR-V binary.
     pub spirv: Option<&'static [u8]>,
@@ -103,14 +103,16 @@ pub struct ShaderBinary {
 }
 
 impl ShaderBinary {
-    /// Select the best shader binary for the given vendor.
-    ///
-    /// Apple: platform-correct metallib (see [`Self::apple_metallib`]),
-    /// falling back to SPIR-V. All others: SPIR-V binary.
-    pub fn for_vendor(&self, vendor: crate::Vendor) -> Option<&[u8]> {
-        match vendor {
-            crate::Vendor::Apple => self.apple_metallib().or(self.spirv),
-            _ => self.spirv,
+    /// The shader artifact for the driver that asked: Metal takes the
+    /// platform-correct metallib (see [`Self::apple_metallib`]) and
+    /// falls back to SPIR-V; Vulkan takes SPIR-V; WebGPU takes the WGSL
+    /// source bytes; the IR kind has no render path and gets `None`.
+    pub fn for_artifact(&self, kind: crate::ArtifactKind) -> Option<&[u8]> {
+        match kind {
+            crate::ArtifactKind::Metallib => self.apple_metallib().or(self.spirv),
+            crate::ArtifactKind::Spirv => self.spirv,
+            crate::ArtifactKind::Wgsl => self.wgsl.map(str::as_bytes),
+            crate::ArtifactKind::Ir => None,
         }
     }
 
@@ -122,7 +124,7 @@ impl ShaderBinary {
     /// degrades to a less-specific variant when the more-specific one
     /// wasn't produced. macOS/desktop builds see only the macOS field, so
     /// behavior there is unchanged (the SPIR-V fallback still lives in
-    /// [`Self::for_vendor`]).
+    /// [`Self::for_artifact`]).
     #[cfg(all(target_os = "ios", target_abi = "sim"))]
     fn apple_metallib(&self) -> Option<&[u8]> {
         self.metallib_ios_sim

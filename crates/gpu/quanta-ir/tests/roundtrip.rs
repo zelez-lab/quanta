@@ -74,24 +74,21 @@ fn roundtrip_vector_add() {
 #[test]
 fn roundtrip_compiler_output() {
     let output = CompilerOutput {
-        amd: Some(vec![0x7f, 0x45, 0x4c, 0x46]),
-        nvidia: Some(b".visible .entry test()".to_vec()),
-        spirv: None,
+        spirv: Some(vec![0x03, 0x02, 0x23, 0x07]),
         metallib: None,
         metallib_ios: None,
         metallib_ios_sim: None,
-        wgsl: None,
+        wgsl: Some("fn main() {}".to_string()),
     };
 
     let bytes = serialize_output(&output);
     let restored = deserialize_output(&bytes).unwrap();
 
     assert_eq!(
-        restored.amd.as_ref().unwrap()[0..4],
-        [0x7f, 0x45, 0x4c, 0x46]
+        restored.spirv.as_ref().unwrap()[0..4],
+        [0x03, 0x02, 0x23, 0x07]
     );
-    assert!(restored.nvidia.is_some());
-    assert!(restored.spirv.is_none());
+    assert_eq!(restored.wgsl.as_deref(), Some("fn main() {}"));
     assert!(restored.metallib.is_none());
     assert!(restored.metallib_ios.is_none());
     assert!(restored.metallib_ios_sim.is_none());
