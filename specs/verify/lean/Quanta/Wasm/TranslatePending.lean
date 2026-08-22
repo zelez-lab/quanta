@@ -145,8 +145,9 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                   -- post ops; survivors propagate with one fewer
                   -- level. Inherited entries (s.pending) are NOT
                   -- consumed here — their closes are above us.
+                  let s_close : LowerState := { s1.base with currentReg := [] }
                   let (s2, postOps) ←
-                    lowerInstrsP f frames ⟨s1.base, []⟩ post
+                    lowerInstrsP f frames ⟨s_close, []⟩ post
                   pure (⟨s2.base, s.pending ++ s2.pending ++ stepPending s1.pending⟩,
                         innerOps ++ applyWraps s1.pending postOps)
       | .wloop _ =>
@@ -354,7 +355,10 @@ example :
                  nextReg := 8,
                  localReg := [(1, 7), (0, 4)],
                  localTy := [(1, .i32), (0, .i32)],
-                 currentReg := [(1, 6), (0, 3)] }, []⟩,
+                 -- local 0's in-block binding is dropped at the block
+                 -- close (its write is on the skipped path); post-block
+                 -- reads go through its stable register 4.
+                 currentReg := [(1, 6)] }, []⟩,
         [.const 0 (.i32 1),
          .cast 1 0 .u32 .bool,
          .branch 1 [] [],
@@ -378,7 +382,7 @@ example :
                  nextReg := 4,
                  localReg := [(0, 3)],
                  localTy := [(0, .i32)],
-                 currentReg := [(0, 2)] }, []⟩,
+                 currentReg := [] }, []⟩,
         [.const 0 (.bool true),
          .branch 0 [] [.const 1 (.i32 5), .const 2 (.i32 0), .copy 2 1, .copy 3 2]])) = true := by
   native_decide
@@ -455,12 +459,20 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
     rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
-    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
+      post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
     subst hs; subst hops
-    have e1 := ih1 s1 hp
+    have e1 : lowerInstrsP f frames
+        ⟨{ nextReg := s1.nextReg, stack := s1.stack,
+           localReg := s1.localReg, localTy := s1.localTy,
+           bufferSlots := s1.bufferSlots, currentReg := [] }, []⟩
+        post = some (⟨s2, []⟩, postOps) := ih1 s1 hp
     unfold lowerInstrsP
     rw [hsplit]
     simp only [ih2 hb, Option.bind_eq_bind, Option.some_bind, e1,

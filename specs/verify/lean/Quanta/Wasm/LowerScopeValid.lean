@@ -3402,7 +3402,11 @@ theorem lowerInstrs_nextReg_mono :
     rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
-    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
+      post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     have hpair := Option.some.inj h
@@ -3738,14 +3742,18 @@ theorem lowerInstrs_preserves_wellScoped :
     rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
-    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
+      post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     have hpair := Option.some.inj h
     have hs : s2 = s' := (Prod.mk.inj hpair).1
     subst hs
     have hws1 : s1.wellScoped := ih2 hws hb
-    exact ih1 _ hws1 hp
+    exact ih1 _ ⟨hws1.1, hws1.2.1, fun _ hp' => absurd hp' (by simp)⟩ hp
   | case5 _ _ _ _ =>
     intro s' ops _ h; simp [lowerInstrs] at h
   | case6 _ _ _ _ _ hsplit =>
@@ -4172,7 +4180,11 @@ theorem lowerInstrs_scopeValid_ops :
     rcases hb : lowerInstrs f (.block :: frames) s body with _ | ⟨s1, innerOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
-    rcases hp : lowerInstrs f frames s1 post with _ | ⟨s2, postOps⟩
+    rcases hp : lowerInstrs f frames
+      { nextReg := s1.nextReg, stack := s1.stack,
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
+      post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     have hpair := Option.some.inj h
@@ -4182,9 +4194,11 @@ theorem lowerInstrs_scopeValid_ops :
     have hws1 : s1.wellScoped :=
       lowerInstrs_preserves_wellScoped _ _ _ _ hws hb
     have hinner : scopeValidOps s1.scopeEnv innerOps := ih2 hws hb
-    have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws1 hp
-    have hmono : s1.nextReg ≤ s2.nextReg :=
-      lowerInstrs_nextReg_mono _ _ _ _ hp
+    have hpost : scopeValidOps s2.scopeEnv postOps :=
+      ih1 _ ⟨hws1.1, hws1.2.1, fun _ hp' => absurd hp' (by simp)⟩ hp
+    have hmono : s1.nextReg ≤ s2.nextReg := by
+      have := lowerInstrs_nextReg_mono _ _ _ _ hp
+      exact this
     have hsub : s1.scopeEnv ⊆ s2.scopeEnv :=
       LowerState.scopeEnv_subset_of_nextReg_le hmono
     have hinner_s2 : scopeValidOps s2.scopeEnv innerOps :=

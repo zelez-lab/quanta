@@ -327,15 +327,16 @@ does not reach them). Per-instruction scope is narrower still:
 `i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type
 conversions, byte-level memory, `call`, `wselect`, and `unreachable`.
 
-The Lean lowering model's loop and if frames follow the production
-translator's local-binding discipline (`force_locals_to_stable` at loop
-entry, `merge_locals_post_frame` at every frame close): per-frame
-bindings are dropped at loop entry and at frame close, reads fall back
-to the stable register the dual-Copy of every set keeps current, and a
-stable register first allocated inside a body stays allocated. (The
-model used to snapshot and restore the entry bindings around the body
-— a latent divergence, reachable only by a loop body writing a local,
-which no theorem admitted before L12.)
+The Lean lowering model's block, loop and if frames follow the
+production translator's local-binding discipline
+(`force_locals_to_stable` at loop entry, `merge_locals_post_frame` at
+every frame close): per-frame bindings are dropped at loop entry and at
+frame close, reads fall back to the stable register the dual-Copy of
+every set keeps current, and a stable register first allocated inside a
+body stays allocated. (The model used to snapshot and restore the entry
+bindings around a loop or if body, and to keep a block body's bindings
+past the block's end — latent divergences, reachable only by a body
+writing a local, which no theorem admitted before L12.)
 
 The Verus arm, `specs/verify/verus/quanta-wasm-lowering/` (13 files),
 closes the spec↔implementation half: that the production translator in

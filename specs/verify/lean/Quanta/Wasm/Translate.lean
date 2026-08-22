@@ -760,7 +760,14 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               | none => none
               | some (body, post) => do
                   let (s1, innerOps) ← lowerInstrs f (.block :: frames) s body
-                  let (s2, postOps)  ← lowerInstrs f frames s1 post
+                  -- Block close — production's `merge_locals_post_frame`:
+                  -- a local set inside the block is read through its
+                  -- stable register afterwards, never through the
+                  -- in-block per-set register, whose write a `br_if`
+                  -- out of the block may have skipped (the stable one
+                  -- then still holds the pre-block value).
+                  let s_close : LowerState := { s1 with currentReg := [] }
+                  let (s2, postOps)  ← lowerInstrs f frames s_close post
                   pure (s2, innerOps ++ postOps)
       | .wloop _ =>
           match fuel with

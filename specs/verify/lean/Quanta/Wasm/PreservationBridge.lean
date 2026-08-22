@@ -2543,7 +2543,7 @@ theorem preservation_evalInstrs_cons_block_fallthrough
   | some body_pair =>
     rcases body_pair with ⟨s1, innerOps⟩
     simp [h_lb] at hl
-    cases h_lp : lowerInstrs bt frames s1 post with
+    cases h_lp : lowerInstrs bt frames { s1 with currentReg := [] } post with
     | none => simp [h_lp] at hl
     | some post_pair =>
       rcases post_pair with ⟨s2, postOps⟩
@@ -2579,7 +2579,7 @@ theorem preservation_evalInstrs_cons_block_fallthrough
           exact h_nb_implies_no_broke h_bft_none
         -- Apply post_preserves on ws_after_body / s1 / kst_after_body.
         obtain ⟨kst', F_post, h_ev_post, R_post, h_bridge_post⟩ :=
-          post_preserves R_body h_bft_none h_bft_nh h_body_broke hw h_lp
+          post_preserves R_body.clear_current h_bft_none h_bft_nh h_body_broke hw h_lp
         -- Compose: ops = innerOps ++ postOps. evalOps the concat.
         -- Need to lift (innerOps, postOps) composition. Use
         -- evalOps_append (broke-aware): runs innerOps to kst_after_body
