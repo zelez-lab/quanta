@@ -52,3 +52,16 @@ By signing off you certify the following (full text at
   Lean check (see `specs/verify/`).
 - For new Tier-A features follow the two-commit verified-track recipe:
   proof foundation first (Lean + Verus), typed API second.
+
+## Verified and unverified zones
+
+`crates/` is the proof-required zone — the shipped library surface:
+`quanta-core`, `quanta-ir`, `quanta-compiler`, the wasm-lowering crate,
+and the companion / ML crates. A change there that alters semantics the
+proofs cover must ship with its Lean, Verus, or Kani update in the same
+PR, or an explicit scope note in `docs/verification/scope.md` recording
+what the proofs no longer reach. `examples/`, `tests/`, `docs/`,
+`bench/` and `web/` are the open zone: no proof obligation, normal
+review. If you are unsure which side your change lands on,
+`docs/verification/scope.md` is the map — it names, level by level, what
+is covered and what stays trusted.

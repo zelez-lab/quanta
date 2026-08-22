@@ -160,6 +160,35 @@ jobs:
       - name: Wave lifecycle tests (software lane)
         run: cargo test --test wave_lifecycle --features software --no-default-features
 
+      # Deferred-feature typed wrappers on the CPU device: the
+      # capability-query surface, async-copy queues, printf buffers.
+      # Every one is `init_cpu`-based, so the whole block runs on any
+      # runner without a GPU.
+      - name: Deferred-feature wrapper tests (software lane)
+        run: |
+          cargo test --test feature_support_queries --features software --no-default-features
+          cargo test --test async_copy_basic --features software --no-default-features
+          cargo test --test printf_basic --features software --no-default-features
+
+      # The render-gated half of the same set — tessellation / mesh /
+      # ray-tracing lifecycles against the CPU software pipelines —
+      # plus the cross-backend `PipelineDesc` no-silent-drops gate
+      # (step 063 slices 5/11/12).
+      - name: Deferred-feature render tests (software lane)
+        run: |
+          cargo test --test tessellation_basic --features software,render --no-default-features
+          cargo test --test mesh_shader_basic --features software,render --no-default-features
+          cargo test --test ray_tracing_basic --features software,render --no-default-features
+          cargo test --test pipeline_desc_gates --features software,render --no-default-features
+
+      # Saturating arithmetic (step 041) and f16 precision (step 042)
+      # on the CPU executor. The Metal and lavapipe lanes run the same
+      # two files against real devices.
+      - name: Numeric semantics tests (software lane)
+        run: |
+          cargo test --test gpu_saturation --features software --no-default-features
+          cargo test --test gpu_f16 --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
@@ -206,7 +235,7 @@ jobs:
         run: cargo build
 
       - name: GPU compute tests
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero --test gpu_saturation --test gpu_f16 -- --test-threads=1
 
       - name: GPU texture tests
         run: cargo test --test gpu_texture -- --test-threads=1
@@ -760,6 +789,8 @@ jobs:
           cargo test --test texture_write_region --no-default-features --features vulkan,render
           cargo test --test shader_parity_draw --no-default-features --features vulkan,render
           cargo test --test gpu_texture_compute --no-default-features --features vulkan,jit,compute
+          cargo test --test gpu_saturation --no-default-features --features vulkan,jit,compute
+          cargo test --test gpu_f16 --no-default-features --features vulkan,jit,compute
           cargo test --test vulkan_sampler_cache --no-default-features --features vulkan,render
           cargo test --test vulkan_scissor_clamp --no-default-features --features vulkan,render
           cargo test --test vulkan_failed_pipeline --no-default-features --features vulkan,render
@@ -768,6 +799,7 @@ jobs:
           cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
           cargo test --test gpu_deferred --no-default-features --features vulkan,jit,compute
           cargo test --test gpu_int_div_zero --no-default-features --features vulkan,jit,compute
+          cargo test --test ray_tracing_vulkan --no-default-features --features vulkan,render,compute,jit
 
       # Memory surface on a real Vulkan implementation: topology
       # (lavapipe = CPU type → Unified), zero-copy host import (native

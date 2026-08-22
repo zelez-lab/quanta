@@ -10,14 +10,14 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Proven Lean theorems**   |  ~300  |
+| **Lean theorems + lemmas** | 981 — 601 across the core / companion chains + 380 in the wasm-route arm (step 059); grep-counted over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
 | **Verus `external_body`**  |   1 (hazard tracking) |
 | **Tools used**             |   5    |
 | **Backends covered**       |   5    |
-| **Source preservation (E)** |  proven (T590-T5B0) |
+| **Source preservation** | two arms: route a / step E (T590-T5B0) + wasm route (step 059, `framework_preservation_kernel`) — each within its stated boundary |
 | **Headless smoke tests** | 3 in CI (per-PR) — `web_triangle` + `web_textured` also assert framebuffer SHA-256 against vendored golden bytes |
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
@@ -111,6 +111,18 @@ is named as an axiom; nothing is silently trusted.
                                 theorem; residual TCB is the narrow
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
+                               (Lowering preservation, wasm route,
+                                step 059 — Lean `Quanta/Wasm/*`: 380
+                                theorems, 0 sorries.
+                                `framework_preservation_kernel` over
+                                `KernelInstrs` = straight-line
+                                instructions interleaved with
+                                `WloopBodyShape`-shaped `wloop 0`
+                                segments; general nested
+                                block/wif/br is OUTSIDE the theorem.
+                                Verus `quanta-wasm-lowering/` V7
+                                closed; ScaledIdx-domain +
+                                nested-streaming residual.)
             │
    Race freedom                (T606/T607 — Verus; step 057.
                                 Level 2 may-happen-in-parallel: open)
@@ -247,6 +259,72 @@ covered: SPIR-V, MSL, WGSL (build-time + JIT), LLVM, CPU.
 * **T500+** — LLVM emitter, 5 theorems.
 * **T1000–T1003** — Cross-emitter exhaustiveness (every KernelOp
   variant handled in every backend).
+
+### Wasm-route lowering (step 059)
+
+A **second, independent** source-preservation arm, and not the one
+T590–T5B0 covers. Route a / step E proves the modeled Kernel-Rust
+subset lowers to KernelOps; this corpus proves the *shipping* route —
+`rustc` compiles the kernel body to wasm32, and
+`crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
+Different input language, different translator, different proof.
+
+Lean, `specs/verify/lean/Quanta/Wasm/` — **380 theorems and lemmas, 0
+sorries**, every file imported from `specs/verify/lean/Quanta.lean`
+(`PreservationFuel` transitively, via `PreservationList`):
+
+| File | Theorems/lemmas |
+|------|----------------:|
+| `LowerScopeValid.lean` | 117 |
+| `PreservationBridge.lean` | 72 |
+| `Preservation.lean` | 61 |
+| `PreservationList.lean` | 57 |
+| `PreservationFuel.lean` | 27 |
+| `PreservationInduction.lean` | 16 |
+| `LowerInvariants.lean` | 14 |
+| `WellFormed.lean` | 7 |
+| `TranslatePending.lean` | 5 |
+| `Semantics.lean` | 3 |
+| `Translate.lean` | 1 |
+| `Syntax.lean` / `Structured.lean` | 0 (definitions) |
+
+The apex is `framework_preservation_kernel` (L10v7,
+`PreservationBridge.lean:6269`), built from two narrower framework
+theorems: `framework_preservation_straightLine` (L10, `:5095`) and
+`framework_preservation_wloopThenStraightLine` (L10v6, `:5446`).
+
+**Scope — read this before quoting the number.** The apex admits
+exactly `KernelInstrs`: straight-line instructions interleaved with
+`wloop 0` segments whose bodies match `WloopBodyShape` (an IR-empty
+prefix followed by the single-iteration exit `[.i32Const 0, .brIf 0]`).
+**General nested `block` / `wif` / `br` is outside the theorem** — the
+structured arms are lowered and mechanized, but the preservation claim
+does not reach them. Per-instruction scope is narrower still:
+`WellFormed.lean` admits only the unsigned-i32 slice, refusing `i64` /
+`f32` constants and arithmetic, every signed-i32 op (`i32DivS`,
+`i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type
+conversions, byte-level memory, `call`, `wselect`, and `unreachable`.
+
+The Verus arm, `specs/verify/verus/quanta-wasm-lowering/` (13 files),
+closes the spec↔implementation half: that the production translator in
+`lower.rs` refines the Lean spec. Its README is the per-file status of
+record. Top-level composition is **closed** — V7's
+`refine_lower_instructions` proves `view ∘ lower_instructions ==
+spec_lower_instrs ∘ view` on state and ops, by induction over the
+instruction list, on the slice-1 straight-line subset. All four
+recorded production↔spec divergences (V8-#1 frame-0 zero-inits, #2
+const-tag + type threading, #3 `i32.add` chained-address folds, #4
+loop-entry `ScaledIdx` snapshot) are closed. Two residuals stand, both
+named in that README: the `ScaledIdx` **domain** lift (Lean models
+locals as `Reg`, not `SymVal`, so a `ScaledIdx`-valued local cannot be
+represented in the Lean spec at all — hence `commit` / `localGet`
+refuse it), and the **un-driven nested** `run_stream == descend`
+streaming equivalence (`streaming_equiv.rs` proves flat-stream equality
+and per-`wend` `wrap`-agreement — the only divergence point — so the
+nested composition is mechanical but not driven end to end). The
+`wasmparser::Operator` decode boundary is axiomatized in
+`parse_boundary.rs` (clean refusal + determinism), and rustc's
+Rust→wasm32 step is TCB, same as on route a.
 
 ### Render path
 
@@ -493,7 +571,7 @@ locally:
 cd specs/verify/lean && lake build
 
 # Verus mirrors (per file, no workspace)
-verus --crate-type=lib specs/verify/verus/quanta-api/pulse_lifetime.rs
+just verus specs/verify/verus/quanta-api/pulse_lifetime.rs --crate-type=lib
 
 # Kani harnesses
 kani specs/verify/kani/emitter_exhaustiveness.rs --harness <name>
@@ -506,6 +584,16 @@ herd7 -bell specs/verify/herd7/vmm.bell -model specs/verify/herd7/vmm.cat \
 
 # empirical GPU litmus kernels (MP / SB histograms)
 cargo test --test litmus --no-default-features --features software,metal,jit,compute
+```
+
+The wasm-route corpus (step 059) needs no command of its own on the
+Lean side: every `Quanta/Wasm/*` file is imported from `Quanta.lean`,
+so the `lake build` above already builds it. Its Verus arm verifies
+one file at a time — through `just verus`, never bare `verus`, which
+drops `lib*.rlib` in whatever directory it runs from:
+
+```sh
+just verus specs/verify/verus/quanta-wasm-lowering/lower_instructions_refine.rs --crate-type=lib
 ```
 
 ## Roadmap toward more verification

@@ -186,14 +186,52 @@ theorem list and the sustainment audit.
 KernelParam variant), wire-format roundtrip (T200-T217: serialize then
 deserialize is identity), and per-operation CPU-GPU equivalence (T610).
 
+**Second arm — wasm route (step 059):** A separate corpus covers the route
+kernels actually take today: `rustc` compiles the kernel body to wasm32, and
+`crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps. Lean
+(`specs/verify/lean/Quanta/Wasm/`) carries **380 theorems and lemmas, 0
+sorries**, every file imported from `Quanta.lean`. The apex is
+`framework_preservation_kernel` (`PreservationBridge.lean:6269`), composed from
+`framework_preservation_straightLine` (`:5095`) and
+`framework_preservation_wloopThenStraightLine` (`:5446`). Verus
+(`specs/verify/verus/quanta-wasm-lowering/`, 13 files) proves the *production*
+translator refines that Lean spec: V7's `refine_lower_instructions` closes the
+top-level list fold, and all four recorded production-spec divergences (V8 #1-#4)
+are closed. This arm is **not** T590-T5B0 restated — different input language,
+different translator, different proof.
+
 **Boundary (still trusted):** The proof is *relative to the modeled subset* and
 does not cover macro *expansion* itself — `rustc` parsing the proc-macro output
 and evaluating `const`s stays trusted (axiom A5). The residual TCB narrowed to
 the `stmt_heap_step_helper` axiom (single-statement translation shape + one-step
 heap projection); everything above it in the chain is a theorem.
 
+**Boundary of the wasm arm (explicitly not covered):**
+
+- **Nested control flow.** `framework_preservation_kernel` admits exactly
+  `KernelInstrs` — straight-line instructions interleaved with `wloop 0`
+  segments whose bodies match `WloopBodyShape` (an IR-empty prefix then the
+  single-iteration exit `[.i32Const 0, .brIf 0]`). General nested `block` /
+  `wif` / `br` is lowered and mechanized but **outside the preservation
+  theorem**.
+- **Ops outside the unsigned-i32 slice.** `WellFormed.lean` admits only that
+  slice; `i64` / `f32` constants and arithmetic, every signed-i32 op
+  (`i32DivS`, `i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type
+  conversions, byte-level memory, `call`, `wselect` and `unreachable` are
+  refused rather than proven.
+- **The two Verus residuals.** The `ScaledIdx` domain lift (the Lean
+  `LowerState` models locals as `Reg`, not `SymVal`, so a `ScaledIdx`-valued
+  local cannot be represented in the spec at all), and the un-driven nested
+  `run_stream == descend` streaming equivalence (`streaming_equiv.rs` proves
+  flat-stream equality and per-`wend` wrapper agreement; the nested composition
+  is mechanical but not driven end to end).
+- **The input edge.** The `wasmparser::Operator` decode is axiomatized in
+  `parse_boundary.rs` (clean refusal + determinism), and rustc's Rust→wasm32
+  step is TCB — the same status it has on route a.
+
 **Status:** End-to-end source preservation proven for the modeled subset;
-macro expansion remains the trusted boundary.
+macro expansion remains the trusted boundary. The wasm route is proven for
+`KernelInstrs` over the unsigned-i32 slice, with the residuals above open.
 
 ---
 
@@ -285,12 +323,15 @@ plus 8 in `crates/gpu/quanta-ir/src/wire/kani_proofs.rs`
 | 4 | Emitter Correctness | T100-T119, T200-T217, T300-T307, T400-T403, T500-T504, T600-T610, T700-T705, T1000-T1003, T1100-T1102 | 72 | all proven |
 | 3 | Memory Ordering | T900-T904, T1200-T1204, T1300-T1301, T1400-T1413, T1500-T1504 | 31 | all proven (scope limited -- see gap) |
 | 2 | Race Freedom | -- | 0 | analyzer not implemented |
-| 1 | Source Preservation | T590-T5B0 | see [dashboard](index.md) | proven for the modeled subset (route a / step E) |
+| 1 | Source Preservation | T590-T5B0 + Wasm corpus (380) | see [dashboard](index.md) | proven for the modeled subset (route a / step E) + the wasm route (step 059), each within its own boundary |
 | -- | Cross-level total (Levels 3-5) | T100-T2060 | **147** | **all 147 proven** |
 
 Note: the 147 count is the level-gated total (Levels 3-5). The Level-1
 source-preservation theorems (T590-T5B0, route a / step E) are a separate chain
-tracked on the [dashboard](index.md), not folded into this 147. T606-T607, T609
+tracked on the [dashboard](index.md), not folded into this 147. The wasm-route
+corpus (step 059) adds a further **380** Lean theorems and lemmas, 0 sorries, in
+`specs/verify/lean/Quanta/Wasm/`; it is likewise not level-summed, and it is a
+second Level-1 arm rather than more of the first. T606-T607, T609
 are counted once at Level 4 (where they are proven) but are also relevant to
 Levels 2-3. The 7 theorems listed at Levels 2-3 in the level descriptions above
 are cross-references, not additional theorems.

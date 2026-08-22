@@ -1,6 +1,7 @@
 # Quanta performance regression suite (step 069)
 
-Benchmarks run on every PR via CI; regressions ≥25% block merge.
+Benchmarks run in CI on the `run-perf` PR label or a manual dispatch (the
+Linux lane is dispatch-only); a ≥25% move in either direction fails the job.
 
 ## Layout
 
@@ -8,7 +9,8 @@ Benchmarks run on every PR via CI; regressions ≥25% block merge.
 bench/
   baselines/
     macos-aarch64.json    # Apple M1 Pro reference (M-series macOS, arm64)
-    linux-x86_64.json     # (TODO: record on a Linux+Vulkan reference)
+    linux-x86_64.json     # lavapipe (llvmpipe) reference, recorded on the ubuntu CI runner
+    windows-x86_64.json   # Intel Iris Xe reference (self-hosted Windows rig)
   README.md               # this file
 
 crates/tools/quanta-bench/      # the harness binary
@@ -45,8 +47,11 @@ cargo run --release -p quanta-bench -- compare \
 
 - **Local:** ±5% by default. Tight enough to catch real regressions on a
   quiet workstation.
-- **CI (macos-14 GitHub runner):** ±25%. Shared runners have neighbor noise;
-  tightening below 25% produces flaky failures.
+- **CI (shared GitHub runners):** ±25%, on the macos-14 lane and on
+  `perf-regression-linux`'s lavapipe alike. Shared runners have neighbor
+  noise; tightening below 25% produces flaky failures.
+- **Windows (Iris Xe rig):** no CI job yet — `just bench-check` on the rig
+  picks `windows-x86_64.json` up by host OS.
 - **Improvements ≥threshold also fail.** Legitimate optimizations land with
   a baseline update in the same PR. This forces every speedup to be
   consciously committed, not silently masked by future regressions.
@@ -73,9 +78,12 @@ optimization landed, which workload moved, and ideally a flame graph.
   flag would give a tighter signal at the cost of longer CI time.
 - **No CPU-execution smoke.** The CPU software backend has IR-coverage
   gaps for some kernels (e.g., `while` loops in mandelbrot trigger an
-  unset-register error). Linux CI (no GPU) currently runs build-only;
-  full smoke execution requires fixing the CPU executor first.
-- **No Linux baseline.** `linux-x86_64.json` does not exist yet — needs a
-  Vulkan-capable Linux runner (RPi 5 is one candidate, see step 053).
+  unset-register error), so no lane runs the suite on the `software`
+  backend. The Linux numbers come from lavapipe — a CPU *Vulkan*
+  implementation, not Quanta's own CPU executor: the `perf-regression-linux`
+  job (`workflow_dispatch` only) runs the smoke and the full release suite
+  on the ubuntu runner's lavapipe and compares against
+  `linux-x86_64.json` at a 25% threshold. Smoke on the `software` backend
+  still requires fixing the CPU executor first.
 - **No public dashboard.** `perf.quanta.rs` / GitHub Pages with historical
   trend lines is described in the roadmap but not built yet.
