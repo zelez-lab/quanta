@@ -330,6 +330,10 @@ impl GpuDevice for ValidationDevice {
     // otherwise QUANTA_VALIDATE=1 silently steers capability-gated
     // paths (64-bit kernels, subgroup reduce) onto their fallbacks.
 
+    fn supports_f16(&self) -> bool {
+        self.inner.supports_f16()
+    }
+
     fn supports_f64(&self) -> bool {
         self.inner.supports_f64()
     }

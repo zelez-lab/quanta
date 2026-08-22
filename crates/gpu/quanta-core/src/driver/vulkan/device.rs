@@ -284,6 +284,12 @@ pub struct VulkanDevice {
     /// was enabled at `vkCreateDevice`. Kernels using `i64`/`u64` emit
     /// the `Int64` capability, valid only when this feature is enabled.
     pub(super) shader_int64_supported: bool,
+    /// Whether `shaderFloat16` (`VkPhysicalDeviceShaderFloat16Int8Features`,
+    /// core 1.2) is available and was enabled at `vkCreateDevice`. Every
+    /// kernel computing in f16 declares the `Float16` capability, valid
+    /// only with this feature; f16 cooperative-matrix shapes are filtered
+    /// out without it. 1.0/1.1 devices report `false`.
+    pub(super) shader_float16_supported: bool,
     /// Whether `storageBuffer16BitAccess`
     /// (`VkPhysicalDevice16BitStorageFeatures`) is available and was
     /// enabled at `vkCreateDevice`. Gates the native-stride 16-bit
@@ -1346,45 +1352,56 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // bf16/fp8 pipelines fail creation with the capability named.
         const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
         let api_12 = props.api_version >= VK_API_VERSION_1_2;
-        let (storage16_supported, storage8_supported, vulkan_memory_model_supported) =
-            match get_features2_fn {
-                Some(get_features2) if api_12 => {
-                    let mut vmm_query = ffi::VkPhysicalDeviceVulkanMemoryModelFeatures {
-                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES,
-                        p_next: core::ptr::null_mut(),
-                        vulkan_memory_model: 0,
-                        vulkan_memory_model_device_scope: 0,
-                        vulkan_memory_model_availability_visibility_chains: 0,
-                    };
-                    let mut storage8_query = ffi::VkPhysicalDevice8BitStorageFeatures {
-                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
-                        p_next: &mut vmm_query as *mut _ as *mut core::ffi::c_void,
-                        storage_buffer_8bit_access: 0,
-                        uniform_and_storage_buffer_8bit_access: 0,
-                        storage_push_constant8: 0,
-                    };
-                    let mut storage16_query = ffi::VkPhysicalDevice16BitStorageFeatures {
-                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
-                        p_next: &mut storage8_query as *mut _ as *mut core::ffi::c_void,
-                        storage_buffer_16bit_access: 0,
-                        uniform_and_storage_buffer_16bit_access: 0,
-                        storage_push_constant16: 0,
-                        storage_input_output16: 0,
-                    };
-                    let mut features2 = ffi::VkPhysicalDeviceFeatures2 {
-                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                        p_next: &mut storage16_query as *mut _ as *mut core::ffi::c_void,
-                        features: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() },
-                    };
-                    unsafe { get_features2(pd, &mut features2) };
-                    (
-                        storage16_query.storage_buffer_16bit_access != 0,
-                        storage8_query.storage_buffer_8bit_access != 0,
-                        vmm_query.vulkan_memory_model != 0,
-                    )
-                }
-                _ => (false, false, false),
-            };
+        let (
+            storage16_supported,
+            storage8_supported,
+            vulkan_memory_model_supported,
+            shader_float16_supported,
+        ) = match get_features2_fn {
+            Some(get_features2) if api_12 => {
+                let mut f16_query = ffi::VkPhysicalDeviceShaderFloat16Int8Features {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+                    p_next: core::ptr::null_mut(),
+                    shader_float16: 0,
+                    shader_int8: 0,
+                };
+                let mut vmm_query = ffi::VkPhysicalDeviceVulkanMemoryModelFeatures {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES,
+                    p_next: &mut f16_query as *mut _ as *mut core::ffi::c_void,
+                    vulkan_memory_model: 0,
+                    vulkan_memory_model_device_scope: 0,
+                    vulkan_memory_model_availability_visibility_chains: 0,
+                };
+                let mut storage8_query = ffi::VkPhysicalDevice8BitStorageFeatures {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+                    p_next: &mut vmm_query as *mut _ as *mut core::ffi::c_void,
+                    storage_buffer_8bit_access: 0,
+                    uniform_and_storage_buffer_8bit_access: 0,
+                    storage_push_constant8: 0,
+                };
+                let mut storage16_query = ffi::VkPhysicalDevice16BitStorageFeatures {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+                    p_next: &mut storage8_query as *mut _ as *mut core::ffi::c_void,
+                    storage_buffer_16bit_access: 0,
+                    uniform_and_storage_buffer_16bit_access: 0,
+                    storage_push_constant16: 0,
+                    storage_input_output16: 0,
+                };
+                let mut features2 = ffi::VkPhysicalDeviceFeatures2 {
+                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                    p_next: &mut storage16_query as *mut _ as *mut core::ffi::c_void,
+                    features: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() },
+                };
+                unsafe { get_features2(pd, &mut features2) };
+                (
+                    storage16_query.storage_buffer_16bit_access != 0,
+                    storage8_query.storage_buffer_8bit_access != 0,
+                    vmm_query.vulkan_memory_model != 0,
+                    f16_query.shader_float16 != 0,
+                )
+            }
+            _ => (false, false, false, false),
+        };
 
         // TASK 37 — subgroup arithmetic capability. Chain
         // VkPhysicalDeviceSubgroupProperties onto a properties2 query;
@@ -1458,11 +1475,23 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // Cooperative-matrix SPIR-V must use the Vulkan memory model, so a
         // device that enumerates shapes but lacks `vulkanMemoryModel` cannot
         // run them: report no shapes rather than fail at pipeline creation.
-        let cooperative_matrix_shapes = if vulkan_memory_model_supported {
-            cooperative_matrix_shapes
-        } else {
-            Vec::new()
-        };
+        let cooperative_matrix_shapes: Vec<crate::CoopMatrixShape> =
+            if vulkan_memory_model_supported {
+                // An f16 fragment declares the Float16 capability, which the
+                // `shaderFloat16` feature gates: without it, f16 shapes are
+                // not runnable here and are not reported.
+                cooperative_matrix_shapes
+                    .into_iter()
+                    .filter(|s| {
+                        shader_float16_supported
+                            || (s.ab_ty != quanta_ir::ScalarType::F16
+                                && s.c_ty != quanta_ir::ScalarType::F16
+                                && s.result_ty != quanta_ir::ScalarType::F16)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let enable_coopmat = !cooperative_matrix_shapes.is_empty();
 
         // Find a queue family that supports compute + graphics
@@ -1590,9 +1619,15 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             uniform_and_storage_buffer_8bit_access: 0,
             storage_push_constant8: 0,
         };
+        let f16_enable = ffi::VkPhysicalDeviceShaderFloat16Int8Features {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
+            p_next: &storage8_enable as *const _ as *mut core::ffi::c_void,
+            shader_float16: if shader_float16_supported { 1 } else { 0 },
+            shader_int8: 0,
+        };
         let storage16_enable = ffi::VkPhysicalDevice16BitStorageFeatures {
             s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
-            p_next: &storage8_enable as *const _ as *mut core::ffi::c_void,
+            p_next: &f16_enable as *const _ as *mut core::ffi::c_void,
             storage_buffer_16bit_access: if storage16_supported { 1 } else { 0 },
             uniform_and_storage_buffer_16bit_access: 0,
             storage_push_constant16: 0,
@@ -2025,6 +2060,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             sparse_binding_supported,
             shader_float64_supported,
             shader_int64_supported,
+            shader_float16_supported,
             storage_buffer_16bit_supported: storage16_supported,
             storage_buffer_8bit_supported: storage8_supported,
             subgroup_arithmetic_supported,

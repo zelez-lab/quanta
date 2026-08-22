@@ -444,6 +444,10 @@ pub type PfnVkGetPhysicalDeviceFeatures2 = unsafe extern "C" fn(
 
 // ─── VK_KHR_cooperative_matrix (extension 507 → 1000506xxx) ─────────────────
 
+/// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES` (core
+/// 1.2; `VK_KHR_shader_float16_int8`). `shaderFloat16` gates the `Float16`
+/// SPIR-V capability — f16 arithmetic and f16 cooperative-matrix fragments.
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES: u32 = 1000082000;
 /// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES` (core
 /// 1.2; `VK_KHR_vulkan_memory_model`). Cooperative-matrix SPIR-V must use
 /// the Vulkan memory model, which needs this feature enabled.

@@ -202,6 +202,26 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         // WGSL has no type for them and the CPU executor no subgroup-
         // collective fragment model. Whether a GPU device enumerates the
         // kernel's SHAPE is the driver's check at wave creation.
+        //
+        // Fragment element types: f16 and f32 are real register types on
+        // both GPU emitters; bf16 / fp8 are f32-in-register emulations
+        // whose fragments would need the SPIR-V bfloat16 / fp8 types and
+        // Metal has none — refused until those are wired. Integers need
+        // the signedness operands on `OpCooperativeMatrixMulAddKHR`.
+        CooperativeMatrixLoad { ty, .. }
+        | CooperativeMatrixStore { ty, .. }
+        | CooperativeMMA { ty, .. }
+            if !matches!(
+                caps.backend,
+                crate::caps::Backend::WebGpu | crate::caps::Backend::Cpu
+            ) && !matches!(ty, ScalarType::F16 | ScalarType::F32) =>
+        {
+            report.issues.push(ValidationIssue {
+                location: format!("{}: {}", loc, op_name(op)),
+                ty: *ty,
+                reason: "cooperative-matrix fragments are f16 or f32 only for now (bf16/fp8 fragment types and integer MMA operands are not wired)",
+            });
+        }
         CooperativeMatrixLoad { ty, .. }
         | CooperativeMatrixStore { ty, .. }
         | CooperativeMMA { ty, .. }
@@ -540,6 +560,77 @@ mod tests {
         let report = validate_for(&METAL, &k);
         assert_eq!(report.issues.len(), 1);
         assert_eq!(report.issues[0].ty, ScalarType::F64);
+    }
+
+    /// The mixed form the tensor-core hardware actually runs: f16 `A`/`B`
+    /// fragments, an f32 accumulator, an f32 result. The uses must resolve
+    /// the MMA's operand types through the registers, not from its own `ty`.
+    #[test]
+    fn cooperative_matrix_uses_resolve_mixed_operand_types() {
+        use crate::{MatrixFrag, cooperative_matrix_uses};
+        let load = |dst: u32, field: u32, frag: MatrixFrag, ty: ScalarType| {
+            KernelOp::CooperativeMatrixLoad {
+                dst: Reg(dst),
+                field,
+                index: Reg(0),
+                stride: Reg(1),
+                frag,
+                from_shared: false,
+                m: 16,
+                n: 16,
+                k: 16,
+                ty,
+            }
+        };
+        let k = kernel_with_body(
+            "mixed",
+            vec![
+                load(2, 0, MatrixFrag::A, ScalarType::F16),
+                load(3, 1, MatrixFrag::B, ScalarType::F16),
+                load(4, 2, MatrixFrag::Accumulator, ScalarType::F32),
+                KernelOp::CooperativeMMA {
+                    dst: Reg(5),
+                    a: Reg(2),
+                    b: Reg(3),
+                    c: Reg(4),
+                    m: 16,
+                    n: 16,
+                    k: 16,
+                    ty: ScalarType::F32,
+                },
+                KernelOp::CooperativeMatrixStore {
+                    field: 2,
+                    index: Reg(0),
+                    stride: Reg(1),
+                    src: Reg(5),
+                    m: 16,
+                    n: 16,
+                    k: 16,
+                    ty: ScalarType::F32,
+                },
+            ],
+        );
+        let uses = cooperative_matrix_uses(&k);
+        assert_eq!(uses.mmas.len(), 1);
+        let u = uses.mmas[0];
+        assert_eq!((u.m, u.n, u.k), (16, 16, 16));
+        assert_eq!(u.a_ty, ScalarType::F16);
+        assert_eq!(u.b_ty, ScalarType::F16);
+        assert_eq!(u.c_ty, ScalarType::F32);
+        assert_eq!(u.result_ty, ScalarType::F32);
+        // Three loads + one store = three distinct fragment uses (the C
+        // load and the D store coincide: Accumulator 16x16x16 f32).
+        assert_eq!(uses.frags.len(), 3);
+        // Both GPU backends accept f16/f32 fragments at validation; the
+        // shape check is the driver's.
+        assert!(validate_for(&METAL, &k).is_ok());
+        assert!(validate_for(&VULKAN, &k).is_ok());
+        // bf16 fragments are refused until the SPIR-V/Metal types exist.
+        let bf = kernel_with_body(
+            "bf16_frag",
+            vec![load(2, 0, MatrixFrag::A, ScalarType::BF16)],
+        );
+        assert!(!validate_for(&VULKAN, &bf).is_ok());
     }
 
     #[test]

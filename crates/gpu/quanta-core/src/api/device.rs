@@ -114,57 +114,89 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         alloc::vec::Vec::new()
     }
 
-    /// Refuse a JIT kernel whose cooperative-matrix shapes this device
-    /// did not enumerate. Quanta's ops carry one element type for `A`,
-    /// `B`, `C` and `D`, so a device shape matches only when all four of
-    /// its types equal the op's. Drivers call this after the backend
-    /// validator and before building the pipeline — the error names the
-    /// shape the kernel wants and the shapes the device has.
+    /// Refuse a JIT kernel whose cooperative-matrix uses this device did
+    /// not enumerate. Each multiply-accumulate must match a device shape
+    /// exactly — `m,n,k`, the `A`/`B` input type, the `C` type and the `D`
+    /// type (the hardware forms are mixed: f16/bf16 inputs, f32
+    /// accumulation) — and each loaded or stored fragment must fit the
+    /// corresponding slot of some shape with its `m,n,k`. Drivers call this
+    /// after the backend validator and before building the pipeline; the
+    /// error names what the kernel wants and what the device has.
     fn check_cooperative_matrix_shapes(
         &self,
         kernel: &quanta_ir::KernelDef,
     ) -> Result<(), QuantaError> {
-        let used = quanta_ir::cooperative_matrix_shapes_used(kernel);
-        if used.is_empty() {
+        use quanta_ir::MatrixFrag;
+        let uses = quanta_ir::cooperative_matrix_uses(kernel);
+        if uses.is_empty() {
             return Ok(());
         }
         let have = self.cooperative_matrix_shapes();
-        for (m, n, k, ty) in used {
+        let listed = || -> alloc::string::String {
+            if have.is_empty() {
+                return alloc::string::String::from("none — no cooperative-matrix support");
+            }
+            let v: alloc::vec::Vec<alloc::string::String> = have
+                .iter()
+                .map(|s| {
+                    alloc::format!(
+                        "{}x{}x{} {:?}/{:?}->{:?}",
+                        s.m,
+                        s.n,
+                        s.k,
+                        s.ab_ty,
+                        s.c_ty,
+                        s.result_ty
+                    )
+                })
+                .collect();
+            v.join(", ")
+        };
+        for u in &uses.mmas {
             let ok = have.iter().any(|s| {
-                s.m == m
-                    && s.n == n
-                    && s.k == k
-                    && s.ab_ty == ty
-                    && s.c_ty == ty
-                    && s.result_ty == ty
+                s.m == u.m
+                    && s.n == u.n
+                    && s.k == u.k
+                    && s.ab_ty == u.a_ty
+                    && s.ab_ty == u.b_ty
+                    && s.c_ty == u.c_ty
+                    && s.result_ty == u.result_ty
             });
             if !ok {
-                let listed: alloc::vec::Vec<alloc::string::String> = have
-                    .iter()
-                    .map(|s| {
-                        alloc::format!(
-                            "{}x{}x{} {:?}/{:?}->{:?}",
-                            s.m,
-                            s.n,
-                            s.k,
-                            s.ab_ty,
-                            s.c_ty,
-                            s.result_ty
-                        )
-                    })
-                    .collect();
                 return Err(QuantaError::not_supported(alloc::format!(
-                    "kernel `{}` uses {}x{}x{} {:?} cooperative matrices; this device enumerates [{}]",
+                    "kernel `{}` multiplies {}x{}x{} cooperative matrices {:?}x{:?}+{:?}->{:?}; this device enumerates [{}]",
                     kernel.name,
-                    m,
-                    n,
-                    k,
-                    ty,
-                    if listed.is_empty() {
-                        alloc::string::String::from("none — no cooperative-matrix support")
-                    } else {
-                        listed.join(", ")
+                    u.m,
+                    u.n,
+                    u.k,
+                    u.a_ty,
+                    u.b_ty,
+                    u.c_ty,
+                    u.result_ty,
+                    listed()
+                )));
+            }
+        }
+        for f in &uses.frags {
+            let ok = have.iter().any(|s| {
+                s.m == f.m
+                    && s.n == f.n
+                    && s.k == f.k
+                    && match f.frag {
+                        MatrixFrag::A | MatrixFrag::B => s.ab_ty == f.ty,
+                        MatrixFrag::Accumulator => s.c_ty == f.ty || s.result_ty == f.ty,
                     }
+            });
+            if !ok {
+                return Err(QuantaError::not_supported(alloc::format!(
+                    "kernel `{}` uses a {:?} {}x{}x{} {:?} cooperative-matrix fragment; this device enumerates [{}]",
+                    kernel.name,
+                    f.frag,
+                    f.m,
+                    f.n,
+                    f.k,
+                    f.ty,
+                    listed()
                 )));
             }
         }
@@ -183,6 +215,16 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// no `double` type and reports false.
     fn supports_f64(&self) -> bool {
         false
+    }
+
+    /// Whether the backend can run kernels that compute in 16-bit floats
+    /// (the `Float16` SPIR-V capability / MSL `half`). Vulkan:
+    /// `shaderFloat16` (core 1.2) enabled at device creation — true on
+    /// llvmpipe and every recent discrete GPU, not guaranteed on older or
+    /// embedded parts. Metal and the CPU executor always can; the default
+    /// is therefore `true` and Vulkan overrides it with the feature bit.
+    fn supports_f16(&self) -> bool {
+        true
     }
 
     /// Whether the backend can run kernels that use 64-bit integers.

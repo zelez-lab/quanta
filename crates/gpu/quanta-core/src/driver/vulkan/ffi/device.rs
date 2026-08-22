@@ -252,6 +252,18 @@ pub struct VkPhysicalDevice8BitStorageFeatures {
     pub storage_push_constant8: u32,
 }
 
+/// `VkPhysicalDeviceShaderFloat16Int8Features` (core Vulkan 1.2). Only
+/// `shader_float16` is queried and enabled: the `Float16` capability every
+/// f16 kernel declares is invalid without it (llvmpipe tolerates the
+/// omission; strict drivers and the validation layers do not).
+#[repr(C)]
+pub struct VkPhysicalDeviceShaderFloat16Int8Features {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub shader_float16: u32,
+    pub shader_int8: u32,
+}
+
 /// `VkPhysicalDeviceVulkanMemoryModelFeatures` (core Vulkan 1.2). Queried
 /// and enabled together with cooperative matrices: a module declaring
 /// `CooperativeMatrixKHR` must also declare `VulkanMemoryModel`, and that

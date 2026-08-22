@@ -249,6 +249,16 @@ impl Gpu {
         self.ctx.device.supports_f64()
     }
 
+    /// Whether the active backend can run kernels that compute in f16
+    /// (`as f16` in a kernel, f16 cooperative-matrix fragments). Metal,
+    /// the software lane and llvmpipe can; on Vulkan this is the
+    /// `shaderFloat16` device feature, which older or embedded parts may
+    /// lack. A device whose f16 is unsupported enumerates no f16
+    /// cooperative-matrix shapes either.
+    pub fn supports_f16(&self) -> bool {
+        self.ctx.device.supports_f16()
+    }
+
     /// Whether the active backend can run kernels that use 64-bit
     /// integers. The software lane and llvmpipe support i64/u64; the
     /// Broadcom V3D GPU does not.

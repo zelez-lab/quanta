@@ -68,6 +68,10 @@ impl GpuDevice for VulkanDevice {
         self.sparse_binding_supported
     }
 
+    fn supports_f16(&self) -> bool {
+        self.shader_float16_supported
+    }
+
     fn supports_f64(&self) -> bool {
         self.shader_float64_supported
     }

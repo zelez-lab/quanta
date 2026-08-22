@@ -55,6 +55,7 @@ path without throwing.
 | `supports_cooperative_matrix()` | `bool` | Some native cooperative-matrix shape exists: Metal `simdgroup_matrix` (Apple GPU family 7+, 8×8×8 f32/f16) or a `VK_KHR_cooperative_matrix` device (shapes as enumerated, typically 16×16×16 with f16/bf16 inputs). Equals `!cooperative_matrix_shapes().is_empty()`; false on the software lane and WebGPU |
 | `cooperative_matrix_shapes()` | `Vec<CoopMatrixShape>` | The shapes the device executes natively — `m,n,k` plus the A/B, C and D element types. A kernel's `CooperativeMatrixLoad` / `CooperativeMMA` / `CooperativeMatrixStore` must use one of them or `wave_jit` refuses it with `NotSupported` |
 | `artifact_kind()` | `ArtifactKind` | The precompiled artifact this driver loads — `Spirv` (Vulkan, whatever the vendor), `Metallib` (Metal), `Wgsl` (WebGPU), `Ir` (software device, always JIT). What `KernelBinary::for_artifact` / `ShaderBinary::for_artifact` select on; the macro-generated `*_wave` fns call it for you |
+| `supports_f16()` | `bool` | Kernels may compute in f16 (`as f16`, f16 cooperative-matrix fragments). Always true on Metal and the software lane; on Vulkan it is the `shaderFloat16` device feature (true on llvmpipe and recent GPUs). A device without it enumerates no f16 cooperative-matrix shapes |
 | `supports_f64()` | `bool` | Kernels may use 64-bit floats. True on the software lane and llvmpipe; false on Metal (MSL has no `double`) and Broadcom V3D |
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
@@ -82,6 +83,7 @@ device-family- and extension-dependent within a backend.
 | `supports_tessellation` | family 4+ | feature | ✗ | ✗ |
 | `supports_sparse_residency` | family 7+ | feature | ✗ | ✗ |
 | `supports_cooperative_matrix` | family 7+ (8×8×8) | `VK_KHR_cooperative_matrix` (enumerated shapes) | ✗ | ✗ |
+| `supports_f16` | ✓ | feature (`shaderFloat16`) | ✓ | ✓ |
 | `supports_f64` | ✗ | driver | ✓ | ✗ |
 | `supports_i64` | ✗ | driver | ✓ | ✗ |
 | `supports_subgroups` | ✓ | driver | ✓ | ✗ |

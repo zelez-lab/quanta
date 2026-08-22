@@ -133,44 +133,143 @@ pub enum KernelParam {
 
 /// Bit N set = binding slot N is a [`KernelParam::FieldWrite`] — the
 /// kernel may WRITE (and read: `&mut [T]` is read-write) that buffer.
-/// Every distinct cooperative-matrix shape `(m, n, k, element type)` a
-/// kernel uses — body, nested arms, device functions. Empty for kernels
-/// without the ops. Drivers match this against the device's enumerated
-/// shapes (`Gpu::cooperative_matrix_shapes`) before creating a pipeline,
-/// so a kernel built for a shape the hardware lacks is refused with a
-/// clear `NotSupported` instead of failing (or silently misexecuting)
-/// inside the driver.
-pub fn cooperative_matrix_shapes_used(def: &KernelDef) -> Vec<(u8, u8, u8, ScalarType)> {
-    fn walk(ops: &[KernelOp], out: &mut Vec<(u8, u8, u8, ScalarType)>) {
+/// One cooperative multiply-accumulate a kernel performs, with the element
+/// type of each operand resolved through the fragment registers that feed
+/// it: `D[m×n] = A[m×k] · B[k×n] + C[m×n]`. This is the unit a device
+/// shape (`Gpu::cooperative_matrix_shapes`) has to match exactly — the
+/// hardware forms are mixed (f16/bf16 inputs, f32 accumulation), so the
+/// per-op `ty` fields are not a shape by themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoopMmaUse {
+    pub m: u8,
+    pub n: u8,
+    pub k: u8,
+    pub a_ty: ScalarType,
+    pub b_ty: ScalarType,
+    pub c_ty: ScalarType,
+    pub result_ty: ScalarType,
+}
+
+/// One fragment a kernel loads or stores without (necessarily) feeding an
+/// MMA: its role, shape and element type. A device must list some shape
+/// with that `m,n,k` whose corresponding slot (`A`/`B` → inputs,
+/// `Accumulator` → `C` or `D`) has that type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoopFragUse {
+    pub frag: MatrixFrag,
+    pub m: u8,
+    pub n: u8,
+    pub k: u8,
+    pub ty: ScalarType,
+}
+
+/// Everything a kernel asks of a device's cooperative-matrix support.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoopMatrixUses {
+    pub mmas: Vec<CoopMmaUse>,
+    pub frags: Vec<CoopFragUse>,
+}
+
+impl CoopMatrixUses {
+    pub fn is_empty(&self) -> bool {
+        self.mmas.is_empty() && self.frags.is_empty()
+    }
+}
+
+/// Collect a kernel's cooperative-matrix uses — body, nested arms, device
+/// functions — resolving each MMA operand's element type through the
+/// register it reads (written by a fragment load or an earlier MMA).
+/// Drivers match the result against the device's enumerated shapes before
+/// creating a pipeline, so a kernel built for a shape the hardware lacks
+/// is refused with a clear `NotSupported` instead of failing (or silently
+/// misexecuting) inside the driver. An operand whose register no
+/// cooperative op wrote (malformed IR) is reported as the MMA's own `ty`,
+/// which the shape match then rejects honestly.
+pub fn cooperative_matrix_uses(def: &KernelDef) -> CoopMatrixUses {
+    use std::collections::HashMap;
+    fn walk(ops: &[KernelOp], reg_ty: &mut HashMap<u32, ScalarType>, out: &mut CoopMatrixUses) {
         for op in ops {
-            let shape = match op {
-                KernelOp::CooperativeMatrixLoad { m, n, k, ty, .. }
-                | KernelOp::CooperativeMatrixStore { m, n, k, ty, .. }
-                | KernelOp::CooperativeMMA { m, n, k, ty, .. } => Some((*m, *n, *k, *ty)),
+            match op {
+                KernelOp::CooperativeMatrixLoad {
+                    dst,
+                    frag,
+                    m,
+                    n,
+                    k,
+                    ty,
+                    ..
+                } => {
+                    reg_ty.insert(dst.0, *ty);
+                    push_unique(
+                        &mut out.frags,
+                        CoopFragUse {
+                            frag: *frag,
+                            m: *m,
+                            n: *n,
+                            k: *k,
+                            ty: *ty,
+                        },
+                    );
+                }
+                KernelOp::CooperativeMatrixStore { m, n, k, ty, .. } => {
+                    push_unique(
+                        &mut out.frags,
+                        CoopFragUse {
+                            frag: MatrixFrag::Accumulator,
+                            m: *m,
+                            n: *n,
+                            k: *k,
+                            ty: *ty,
+                        },
+                    );
+                }
+                KernelOp::CooperativeMMA {
+                    dst,
+                    a,
+                    b,
+                    c,
+                    m,
+                    n,
+                    k,
+                    ty,
+                } => {
+                    let of = |r: &Reg| reg_ty.get(&r.0).copied().unwrap_or(*ty);
+                    push_unique(
+                        &mut out.mmas,
+                        CoopMmaUse {
+                            m: *m,
+                            n: *n,
+                            k: *k,
+                            a_ty: of(a),
+                            b_ty: of(b),
+                            c_ty: of(c),
+                            result_ty: *ty,
+                        },
+                    );
+                    reg_ty.insert(dst.0, *ty);
+                }
                 KernelOp::Branch {
                     then_ops, else_ops, ..
                 } => {
-                    walk(then_ops, out);
-                    walk(else_ops, out);
-                    None
+                    walk(then_ops, reg_ty, out);
+                    walk(else_ops, reg_ty, out);
                 }
-                KernelOp::Loop { body, .. } => {
-                    walk(body, out);
-                    None
-                }
-                _ => None,
-            };
-            if let Some(s) = shape
-                && !out.contains(&s)
-            {
-                out.push(s);
+                KernelOp::Loop { body, .. } => walk(body, reg_ty, out),
+                _ => {}
             }
         }
     }
-    let mut out = Vec::new();
-    walk(&def.body, &mut out);
+    fn push_unique<T: PartialEq>(v: &mut Vec<T>, x: T) {
+        if !v.contains(&x) {
+            v.push(x);
+        }
+    }
+    let mut out = CoopMatrixUses::default();
+    let mut reg_ty = HashMap::new();
+    walk(&def.body, &mut reg_ty, &mut out);
     for f in &def.device_functions {
-        walk(&f.body, &mut out);
+        let mut fn_regs = HashMap::new();
+        walk(&f.body, &mut fn_regs, &mut out);
     }
     out
 }
