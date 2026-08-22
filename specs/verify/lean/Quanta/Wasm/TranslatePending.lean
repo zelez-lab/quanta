@@ -156,23 +156,22 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
               match splitAtEnd rest with
               | none => none
               | some (body, post) => do
-                  let entry_localReg := s.base.localReg
-                  let entry_localTy  := s.base.localTy
-                  let entry_currentReg := s.base.currentReg
+                  -- Same binding discipline as `lowerInstrs`'s wloop
+                  -- arm: per-set bindings dropped at entry (reads go
+                  -- through the stable layer the body re-syncs) and at
+                  -- close; the body's stable registers and labels stay.
+                  let s_entry : LowerState := { s.base with currentReg := [] }
                   let (s1, bodyOps) ←
-                    lowerInstrsP f (.loopK :: frames) ⟨s.base, []⟩ body
+                    lowerInstrsP f (.loopK :: frames) ⟨s_entry, []⟩ body
                   -- The chain check forbids records crossing a Loop
                   -- frame; production routes those through the
                   -- exit-flag mechanism (still refused, Stage A
                   -- comments apply). Guard loudly.
                   if s1.pending ≠ [] then none
                   else
-                    let s1_restored : LowerState :=
-                      { s1.base with localReg := entry_localReg,
-                                     localTy  := entry_localTy,
-                                     currentReg := entry_currentReg }
+                    let s_close : LowerState := { s1.base with currentReg := [] }
                     let (s2, postOps) ←
-                      lowerInstrsP f frames ⟨s1_restored, s.pending⟩ post
+                      lowerInstrsP f frames ⟨s_close, s.pending⟩ post
                     pure (s2, [.loopOp bodyOps] ++ postOps)
       | .wif _ =>
           match fuel with
@@ -199,12 +198,9 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                       lowerInstrsP f (.wif :: frames) ⟨s2_restored, []⟩ elseBody
                     if s3.pending ≠ [] then none
                     else
-                      let s3_restored : LowerState :=
-                        { s3.base with localReg := entry_localReg,
-                                       localTy  := entry_localTy,
-                                       currentReg := entry_currentReg }
+                      let s3_close : LowerState := { s3.base with currentReg := [] }
                       let (s4, postOps) ←
-                        lowerInstrsP f frames ⟨s3_restored, s.pending⟩ post
+                        lowerInstrsP f frames ⟨s3_close, s.pending⟩ post
                       pure (s4, opsCommit
                                 ++ [.cast cond_bool cond .u32 .bool,
                                     .branch cond_bool thenOps elseOps]
@@ -478,23 +474,31 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
     rename_i ih2 ih1
     intro s' ops h
     simp only [lowerInstrs, hsplit] at h
-    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    rcases hb : lowerInstrs f (.loopK :: frames)
+      { nextReg := s.nextReg, stack := s.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s.bufferSlots, currentReg := [] }
+      body with _ | ⟨s1, bodyOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
     rcases hp : lowerInstrs f frames
       { nextReg := s1.nextReg, stack := s1.stack,
-        localReg := s.localReg, localTy := s.localTy,
-        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
       post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     obtain ⟨hs, hops⟩ := Prod.mk.inj (Option.some.inj h)
     subst hs; subst hops
-    have e2 := ih2 hb
+    have e2 : lowerInstrsP f (.loopK :: frames)
+        ⟨{ nextReg := s.nextReg, stack := s.stack,
+           localReg := s.localReg, localTy := s.localTy,
+           bufferSlots := s.bufferSlots, currentReg := [] }, []⟩
+        body = some (⟨s1, []⟩, bodyOps) := ih2 hb
     have e1 : lowerInstrsP f frames
         ⟨{ nextReg := s1.nextReg, stack := s1.stack,
-           localReg := s.localReg, localTy := s.localTy,
-           bufferSlots := s1.bufferSlots, currentReg := s.currentReg }, []⟩
+           localReg := s1.localReg, localTy := s1.localTy,
+           bufferSlots := s1.bufferSlots, currentReg := [] }, []⟩
         post = some (⟨s2, []⟩, postOps) := ih1 s1 hp
     simp only [lowerInstrsP, hsplit, e2, Option.bind_eq_bind, Option.some_bind,
                ne_eq, not_true_eq_false, if_false, e1, pure, Pure.pure]
@@ -528,8 +532,8 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
     simp only [hel, Option.some_bind] at h
     rcases hpo : lowerInstrs f frames
         { nextReg := s3.nextReg, stack := s3.stack,
-          localReg := s1.localReg, localTy := s1.localTy,
-          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+          localReg := s3.localReg, localTy := s3.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := [] }
         post with _ | ⟨s4, postOps⟩
     · simp [hpo] at h
     simp only [hpo, Option.some_bind, pure, Pure.pure] at h
@@ -556,12 +560,10 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
             bufferSlots := s1.bufferSlots, currentReg := s1.currentReg } s2 hel
     have e1 : lowerInstrsP f frames
         ⟨{ nextReg := s3.nextReg, stack := s3.stack,
-           localReg := s1.localReg, localTy := s1.localTy,
-           bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }, []⟩
+           localReg := s3.localReg, localTy := s3.localTy,
+           bufferSlots := s3.bufferSlots, currentReg := [] }, []⟩
         post = some (⟨s4, []⟩, postOps) :=
-      ih1 { nextReg := s1.nextReg + 1, stack := s1.stack,
-            localReg := s1.localReg, localTy := s1.localTy,
-            bufferSlots := s1.bufferSlots, currentReg := s1.currentReg } s3 hpo
+      ih1 s3 hpo
     simp only [lowerInstrsP, hsplit, hpop, Option.bind_eq_bind, Option.some_bind,
                hc, LowerState.alloc, e3, ne_eq, not_true_eq_false, if_false,
                e2, e1, pure, Pure.pure]

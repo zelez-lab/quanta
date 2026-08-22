@@ -3418,13 +3418,17 @@ theorem lowerInstrs_nextReg_mono :
     rename_i ih2 ih1
     intro s' ops h
     simp [lowerInstrs, hsplit] at h
-    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    rcases hb : lowerInstrs f (.loopK :: frames)
+      { nextReg := s.nextReg, stack := s.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s.bufferSlots, currentReg := [] }
+      body with _ | ⟨s1, bodyOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
     rcases hp : lowerInstrs f frames
       { nextReg := s1.nextReg, stack := s1.stack,
-        localReg := s.localReg, localTy := s.localTy,
-        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
       post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
@@ -3469,8 +3473,8 @@ theorem lowerInstrs_nextReg_mono :
     -- Recursively lower post on s3_restored.
     rcases hpo : lowerInstrs f frames
         { nextReg := s3.nextReg, stack := s3.stack,
-          localReg := s1.localReg, localTy := s1.localTy,
-          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+          localReg := s3.localReg, localTy := s3.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := [] }
         post with _ | ⟨s4, postOps⟩
     · simp [hpo] at h
     simp only [hpo, Option.some_bind, pure, Pure.pure] at h
@@ -3487,7 +3491,7 @@ theorem lowerInstrs_nextReg_mono :
         localReg := s1.localReg, localTy := s1.localTy,
         bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
     have hp5 : s2.nextReg ≤ s3.nextReg := ih2 s_cast s2 hel
-    have hp7 : s3.nextReg ≤ s4.nextReg := ih1 s_cast s3 hpo
+    have hp7 : s3.nextReg ≤ s4.nextReg := ih1 s3 hpo
     omega
   | case11 _ _ _ _ _ hg =>
     intro s' ops h
@@ -3751,37 +3755,31 @@ theorem lowerInstrs_preserves_wellScoped :
     rename_i ih2 ih1
     intro s' ops hws h
     simp [lowerInstrs, hsplit] at h
-    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    rcases hb : lowerInstrs f (.loopK :: frames)
+      { nextReg := s.nextReg, stack := s.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s.bufferSlots, currentReg := [] }
+      body with _ | ⟨s1, bodyOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
-    -- s1_restored = s1 with localReg/Ty/currentReg from s.
     rcases hp : lowerInstrs f frames
       { nextReg := s1.nextReg, stack := s1.stack,
-        localReg := s.localReg, localTy := s.localTy,
-        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
       post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
     have hpair := Option.some.inj h
     have hs : s2 = s' := (Prod.mk.inj hpair).1
     subst hs
-    have hws1 : s1.wellScoped := ih2 hws hb
-    have hnr_mono : s.nextReg ≤ s1.nextReg :=
-      lowerInstrs_nextReg_mono _ _ _ _ hb
-    apply ih1 _ ?_ hp
-    -- Goal: { nextReg := s1.nextReg, stack := s1.stack, ... }.wellScoped
-    obtain ⟨hstk1, _, _⟩ := hws1
-    obtain ⟨_, hloc0, hcur0⟩ := hws
-    refine ⟨?_, ?_, ?_⟩
-    · intro sv hsv r hr
-      show r < s1.nextReg
-      exact hstk1 sv hsv r hr
-    · intro p hp'
-      show p.snd < s1.nextReg
-      exact Nat.lt_of_lt_of_le (hloc0 p hp') hnr_mono
-    · intro p hp'
-      show p.snd < s1.nextReg
-      exact Nat.lt_of_lt_of_le (hcur0 p hp') hnr_mono
+    -- Clearing `currentReg` keeps a state well-scoped.
+    have hws_e : LowerState.wellScoped
+        { nextReg := s.nextReg, stack := s.stack,
+          localReg := s.localReg, localTy := s.localTy,
+          bufferSlots := s.bufferSlots, currentReg := [] } :=
+      ⟨hws.1, hws.2.1, fun _ hp' => absurd hp' (by simp)⟩
+    have hws1 : s1.wellScoped := ih2 hws_e hb
+    exact ih1 _ ⟨hws1.1, hws1.2.1, fun _ hp' => absurd hp' (by simp)⟩ hp
   | case8 _ _ _ _ =>
     intro s' ops _ h; simp [lowerInstrs] at h
   | case9 _ _ _ _ _ hsplit =>
@@ -3814,8 +3812,8 @@ theorem lowerInstrs_preserves_wellScoped :
     simp only [hel, Option.some_bind] at h
     rcases hpo : lowerInstrs f frames
         { nextReg := s3.nextReg, stack := s3.stack,
-          localReg := s1.localReg, localTy := s1.localTy,
-          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+          localReg := s3.localReg, localTy := s3.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := [] }
         post with _ | ⟨s4, postOps⟩
     · simp [hpo] at h
     simp only [hpo, Option.some_bind, pure, Pure.pure] at h
@@ -3858,37 +3856,13 @@ theorem lowerInstrs_preserves_wellScoped :
         localReg := s1.localReg, localTy := s1.localTy,
         bufferSlots := s1.bufferSlots, currentReg := s1.currentReg }
     have hws3 : s3.wellScoped := ih2 s_cast _ hws_2r hel
-    obtain ⟨hstk3, _, _⟩ := hws3
     have hws_3r :
         LowerState.wellScoped
           { nextReg := s3.nextReg, stack := s3.stack,
-            localReg := s1.localReg, localTy := s1.localTy,
-            bufferSlots := s3.bufferSlots, currentReg := s1.currentReg } := by
-      refine ⟨?_, ?_, ?_⟩
-      · intro sv hsv r hr
-        show r < s3.nextReg
-        exact hstk3 sv hsv r hr
-      · intro p hp
-        show p.snd < s3.nextReg
-        have hp1 : p.snd < s1.nextReg := hloc1 p hp
-        have h12 : s1.nextReg + 1 ≤ s2.nextReg :=
-          lowerInstrs_nextReg_mono _ _ _ _ hth
-        have h23 : s2.nextReg ≤ s3.nextReg := by
-          have := lowerInstrs_nextReg_mono _ _ _ _ hel
-          exact this
-        exact Nat.lt_of_lt_of_le hp1
-          (Nat.le_trans (Nat.le_of_lt h12) h23)
-      · intro p hp
-        show p.snd < s3.nextReg
-        have hp1 : p.snd < s1.nextReg := hcur1 p hp
-        have h12 : s1.nextReg + 1 ≤ s2.nextReg :=
-          lowerInstrs_nextReg_mono _ _ _ _ hth
-        have h23 : s2.nextReg ≤ s3.nextReg := by
-          have := lowerInstrs_nextReg_mono _ _ _ _ hel
-          exact this
-        exact Nat.lt_of_lt_of_le hp1
-          (Nat.le_trans (Nat.le_of_lt h12) h23)
-    exact ih1 s_cast _ hws_3r hpo
+            localReg := s3.localReg, localTy := s3.localTy,
+            bufferSlots := s3.bufferSlots, currentReg := [] } :=
+      ⟨hws3.1, hws3.2.1, fun _ hp' => absurd hp' (by simp)⟩
+    exact ih1 s3 hws_3r hpo
   | case11 _ _ _ _ _ hg =>
     intro s' ops _ h
     simp only [lowerInstrs] at h
@@ -4229,13 +4203,17 @@ theorem lowerInstrs_scopeValid_ops :
     rename_i ih2 ih1
     intro s' ops hws h
     simp [lowerInstrs, hsplit] at h
-    rcases hb : lowerInstrs f (.loopK :: frames) s body with _ | ⟨s1, bodyOps⟩
+    rcases hb : lowerInstrs f (.loopK :: frames)
+      { nextReg := s.nextReg, stack := s.stack,
+        localReg := s.localReg, localTy := s.localTy,
+        bufferSlots := s.bufferSlots, currentReg := [] }
+      body with _ | ⟨s1, bodyOps⟩
     · simp [hb] at h
     simp only [hb, Option.bind_eq_bind, Option.some_bind] at h
     rcases hp : lowerInstrs f frames
       { nextReg := s1.nextReg, stack := s1.stack,
-        localReg := s.localReg, localTy := s.localTy,
-        bufferSlots := s1.bufferSlots, currentReg := s.currentReg }
+        localReg := s1.localReg, localTy := s1.localTy,
+        bufferSlots := s1.bufferSlots, currentReg := [] }
       post with _ | ⟨s2, postOps⟩
     · simp [hp] at h
     simp only [hp, Option.some_bind, pure, Pure.pure] at h
@@ -4244,9 +4222,14 @@ theorem lowerInstrs_scopeValid_ops :
     have hopsEq : KernelOp.loopOp bodyOps :: postOps = ops :=
       (Prod.mk.inj hpair).2
     subst hs; subst hopsEq
+    have hws_e : LowerState.wellScoped
+        { nextReg := s.nextReg, stack := s.stack,
+          localReg := s.localReg, localTy := s.localTy,
+          bufferSlots := s.bufferSlots, currentReg := [] } :=
+      ⟨hws.1, hws.2.1, fun _ hp' => absurd hp' (by simp)⟩
     have hws1 : s1.wellScoped :=
-      lowerInstrs_preserves_wellScoped _ _ _ _ hws hb
-    have hbody : scopeValidOps s1.scopeEnv bodyOps := ih2 hws hb
+      lowerInstrs_preserves_wellScoped _ _ _ _ hws_e hb
+    have hbody : scopeValidOps s1.scopeEnv bodyOps := ih2 hws_e hb
     have hmono_p : s1.nextReg ≤ s2.nextReg := by
       have := lowerInstrs_nextReg_mono _ _ _ _ hp
       exact this
@@ -4254,26 +4237,12 @@ theorem lowerInstrs_scopeValid_ops :
       LowerState.scopeEnv_subset_of_nextReg_le hmono_p
     have hbody_s2 : scopeValidOps s2.scopeEnv bodyOps :=
       Quanta.KOps.KernelOp.scopeValidOps_mono bodyOps hsub_12 hbody
-    obtain ⟨hstk1, _, _⟩ := hws1
-    obtain ⟨_, hloc0, hcur0⟩ := hws
-    have hnr_mono_b : s.nextReg ≤ s1.nextReg :=
-      lowerInstrs_nextReg_mono _ _ _ _ hb
-    have hws_restored :
-        LowerState.wellScoped
-          { nextReg := s1.nextReg, stack := s1.stack,
-            localReg := s.localReg, localTy := s.localTy,
-            bufferSlots := s1.bufferSlots, currentReg := s.currentReg } := by
-      refine ⟨?_, ?_, ?_⟩
-      · intro sv hsv r hr
-        show r < s1.nextReg
-        exact hstk1 sv hsv r hr
-      · intro p hp'
-        show p.snd < s1.nextReg
-        exact Nat.lt_of_lt_of_le (hloc0 p hp') hnr_mono_b
-      · intro p hp'
-        show p.snd < s1.nextReg
-        exact Nat.lt_of_lt_of_le (hcur0 p hp') hnr_mono_b
-    have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_restored hp
+    have hws_close : LowerState.wellScoped
+        { nextReg := s1.nextReg, stack := s1.stack,
+          localReg := s1.localReg, localTy := s1.localTy,
+          bufferSlots := s1.bufferSlots, currentReg := [] } :=
+      ⟨hws1.1, hws1.2.1, fun _ hp' => absurd hp' (by simp)⟩
+    have hpost : scopeValidOps s2.scopeEnv postOps := ih1 _ hws_close hp
     refine ⟨?_, ?_⟩
     · exact loopOp_scopeValid s2.scopeEnv bodyOps hbody_s2
     · show scopeValidOps (extendEnv s2.scopeEnv (.loopOp bodyOps)) postOps
@@ -4311,8 +4280,8 @@ theorem lowerInstrs_scopeValid_ops :
     simp only [hel, Option.some_bind] at h
     rcases hpo : lowerInstrs f frames
         { nextReg := s3.nextReg, stack := s3.stack,
-          localReg := s1.localReg, localTy := s1.localTy,
-          bufferSlots := s3.bufferSlots, currentReg := s1.currentReg }
+          localReg := s3.localReg, localTy := s3.localTy,
+          bufferSlots := s3.bufferSlots, currentReg := [] }
         post with _ | ⟨s4, postOps⟩
     · simp [hpo] at h
     simp only [hpo, Option.some_bind, pure, Pure.pure] at h
@@ -4378,28 +4347,14 @@ theorem lowerInstrs_scopeValid_ops :
       exact this
     have hws3 : s3.wellScoped :=
       lowerInstrs_preserves_wellScoped _ _ _ _ hws_2r hel
-    obtain ⟨hstk3, _, _⟩ := hws3
     have hws_3r :
         LowerState.wellScoped
           { nextReg := s3.nextReg, stack := s3.stack,
-            localReg := s1.localReg, localTy := s1.localTy,
-            bufferSlots := s3.bufferSlots, currentReg := s1.currentReg } := by
-      refine ⟨?_, ?_, ?_⟩
-      · intro sv hsv r hr
-        show r < s3.nextReg
-        exact hstk3 sv hsv r hr
-      · intro p hp'
-        show p.snd < s3.nextReg
-        have hp1 : p.snd < s1.nextReg := hloc1 p hp'
-        exact Nat.lt_of_lt_of_le hp1
-          (Nat.le_trans (Nat.le_trans (Nat.le_succ _) hmono_th) hmono_el)
-      · intro p hp'
-        show p.snd < s3.nextReg
-        have hp1 : p.snd < s1.nextReg := hcur1 p hp'
-        exact Nat.lt_of_lt_of_le hp1
-          (Nat.le_trans (Nat.le_trans (Nat.le_succ _) hmono_th) hmono_el)
+            localReg := s3.localReg, localTy := s3.localTy,
+            bufferSlots := s3.bufferSlots, currentReg := [] } :=
+      ⟨hws3.1, hws3.2.1, fun _ hp' => absurd hp' (by simp)⟩
     -- Post recursion.
-    have hpost : scopeValidOps s4.scopeEnv postOps := ih1 s_cast _ hws_3r hpo
+    have hpost : scopeValidOps s4.scopeEnv postOps := ih1 s3 hws_3r hpo
     have hmono_po : s3.nextReg ≤ s4.nextReg := by
       have := lowerInstrs_nextReg_mono _ _ _ _ hpo
       exact this

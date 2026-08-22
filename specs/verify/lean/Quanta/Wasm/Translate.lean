@@ -769,29 +769,29 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
               match splitAtEnd rest with
               | none => none
               | some (body, post) => do
-                  -- Snapshot localReg / localTy / currentReg at loop
-                  -- entry (mirrors production's `force_locals_to_stable`
-                  -- semantics on lower.rs line 546). Inside the body,
-                  -- any `localSet` updates currentReg + emits a
-                  -- stable-sync Copy; post-loop reads see the entry
-                  -- baseline because currentReg is reset to its
-                  -- pre-loop value at frame close.
-                  let entry_localReg := s.localReg
-                  let entry_localTy  := s.localTy
-                  let entry_currentReg := s.currentReg
-                  let (s1, bodyOps) ← lowerInstrs f (.loopK :: frames) s body
-                  -- Restore localReg / localTy / currentReg after the
-                  -- loop body. localReg + localTy snapshot/restore
-                  -- mirrors production's `merge_locals_post_frame`
-                  -- for the Loop arm. currentReg restore clears the
-                  -- per-frame post-write bindings so post-loop reads
-                  -- fall back to the stable-reg layer (which was kept
-                  -- in sync by localSet's dual-Copy).
-                  let s1_restored : LowerState :=
-                    { s1 with localReg := entry_localReg,
-                              localTy  := entry_localTy,
-                              currentReg := entry_currentReg }
-                  let (s2, postOps) ← lowerInstrs f frames s1_restored post
+                  -- Loop entry — production's `force_locals_to_stable`
+                  -- (lower.rs `RawInstr::Loop`): every value local is
+                  -- rebound to its stable register, i.e. the per-set
+                  -- `currentReg` bindings are dropped and reads inside
+                  -- the body go through `localReg`. The body lowers
+                  -- ONCE but runs every iteration: a read lowered
+                  -- against a per-set register would read iteration
+                  -- 1's value forever, while the stable register is
+                  -- re-synced by the dual-Copy of every in-body set.
+                  let s_entry : LowerState := { s with currentReg := [] }
+                  let (s1, bodyOps) ← lowerInstrs f (.loopK :: frames) s_entry body
+                  -- Loop close — production's `merge_locals_post_frame`
+                  -- for the Loop arm: a local set inside the body lives
+                  -- on through its stable register only (the in-body
+                  -- per-set binding is dropped, never a pre-loop one
+                  -- resurrected), and a stable register first
+                  -- allocated inside the body stays allocated. The
+                  -- label layer (`localTy`) keeps the body's honest
+                  -- per-set labels — production rebinds to the
+                  -- declared `stable_ty` instead, a label-only
+                  -- difference over the same bits.
+                  let s_close : LowerState := { s1 with currentReg := [] }
+                  let (s2, postOps) ← lowerInstrs f frames s_close post
                   pure (s2, [.loopOp bodyOps] ++ postOps)
       | .wif _ =>
           match fuel with
@@ -825,15 +825,16 @@ def lowerInstrs (fuel : Nat) (frames : List FrameKind) (s : LowerState) :
                               localTy  := entry_localTy,
                               currentReg := entry_currentReg }
                   let (s3, elseOps) ← lowerInstrs f (.wif :: frames) s2_restored elseBody
-                  -- Restore again after elseBody (post-If merge: both
-                  -- branches' local rebindings are discarded; post-wif
-                  -- reads fall back to the stable-reg layer which was
-                  -- kept in sync by localSet's dual-Copy per-write).
-                  let s3_restored : LowerState :=
-                    { s3 with localReg := entry_localReg,
-                              localTy  := entry_localTy,
-                              currentReg := entry_currentReg }
-                  let (s4, postOps) ← lowerInstrs f frames s3_restored post
+                  -- If close — production's `merge_locals_post_frame`:
+                  -- a local set in either branch lives on through its
+                  -- stable register (kept in sync by the dual-Copy per
+                  -- write); the per-set bindings are dropped, and no
+                  -- pre-If binding is resurrected for a local a branch
+                  -- may have rewritten. Reads of an untouched local go
+                  -- to its stable register too — value-equal to the
+                  -- pre-If per-set binding production keeps for it.
+                  let s3_close : LowerState := { s3 with currentReg := [] }
+                  let (s4, postOps) ← lowerInstrs f frames s3_close post
                   pure (s4, opsCommit
                             ++ [.cast cond_bool cond .u32 .bool,
                                 .branch cond_bool thenOps elseOps]
