@@ -170,7 +170,7 @@ brew install llvm@22
 
 ```sh
 # Vulkan driver. Pick one stack:
-sudo apt install mesa-vulkan-drivers vulkan-tools libvulkan-dev    # AMD/Intel
+sudo apt install mesa-vulkan-drivers vulkan-tools    # AMD/Intel (libvulkan-dev is NOT needed: the loader is opened at runtime)
 sudo apt install nvidia-driver-550                                  # NVIDIA proprietary
 
 # Sanity check:

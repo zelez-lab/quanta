@@ -18,11 +18,12 @@ std = []
 metal = ["std"]
 ## Vulkan face. The FEATURE is target-independent (it may be on by
 ## default), but the CODE is `cfg(target_os)`-gated to Linux / Android /
-## Windows — the Vulkan module, its discovery arm, and the
-## `#[link(name = "vulkan")]` stanza only compile there. On Apple targets
-## the face is pruned so a plain build needs no libvulkan (the MoltenVK
-## link trap). `vulkan-portability` extends the code to macOS for
-## MoltenVK users; see below.
+## Windows — the Vulkan module and its discovery arm only compile there,
+## and on all three the loader is opened at RUNTIME (`dlopen` /
+## `LoadLibrary`), so no libvulkan is needed to build or to run: a box
+## without one falls back to the software backend, loudly. On Apple
+## targets the face is pruned (the MoltenVK link trap); `vulkan-portability`
+## extends the code to macOS for MoltenVK users, link-time; see below.
 vulkan = ["std"]
 ## Opt-in: compile the Vulkan face on macOS too (against MoltenVK's
 ## `libvulkan`). Requires `vulkan`. Purely additive — it only widens the

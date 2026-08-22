@@ -157,29 +157,32 @@ The ~100 entry-point signatures live in one macro (`vk_fns!` in
 `ffi/extern_fns.rs`); a per-platform emitter chooses the binding form:
 
 ```rust
-// Linux / Android / macOS (MoltenVK under `vulkan-portability`):
-// one link-time extern block.
+// macOS under `vulkan-portability` (MoltenVK): one link-time extern block.
 #[link(name = "vulkan")]
 unsafe extern "C" { pub fn vkCreateInstance(...) -> VkResult; ... }
 
-// Windows: a function-pointer table resolved at runtime
-// (LoadLibraryA("vulkan-1.dll") + GetProcAddress) behind
-// identically-named shims — call sites are the same on every platform.
+// Windows / Linux / Android: a function-pointer table resolved at
+// runtime (LoadLibraryA("vulkan-1.dll") + GetProcAddress, or
+// dlopen("libvulkan.so.1") + dlsym) behind identically-named shims —
+// call sites are the same on every platform.
 pub unsafe fn vkCreateInstance(...) -> VkResult {
     (fns().vkCreateInstance)(...)
 }
 ```
 
-Windows deliberately does **not** link `vulkan-1.lib`: the import
-library ships only with the Vulkan SDK (which would make the SDK a
-build dependency), and a link-time-bound app fails at *process load*
-on a machine without `vulkan-1.dll` — before init can engage the
-software fallback. Instead, `discover()` gates on
-`ffi::ensure_loaded()`: when the DLL (or an export — a Vulkan 1.3
-loader is required) is missing, it prints a loud `quanta vulkan:` line
-naming the missing piece and returns no devices, letting the software
-last resort engage. `QUANTA_VULKAN_LOADER` overrides the DLL name (see
-[Environment](../reference/environment.md)).
+No platform other than the MoltenVK opt-in links `libvulkan` at build
+time. On Windows the import library ships only with the Vulkan SDK
+(which would make the SDK a build dependency); on Linux a link-bound
+binary could not be *built* without `libvulkan` present and could not
+*run* without `libvulkan.so.1` — a wall for headless and GPU-less boxes
+the software backend would carry. In both cases a link-bound app also
+fails at *process load*, before init can engage the software fallback.
+Instead, `discover()` gates on `ffi::ensure_loaded()`: when the loader
+(or an export — a Vulkan 1.3 loader is required) is missing, it prints a
+loud `quanta vulkan:` line naming the missing piece and returns no
+devices, letting the software last resort engage (`QUANTA_BACKEND=vulkan`
+still refuses rather than falls through). `QUANTA_VULKAN_LOADER`
+overrides the library name (see [Environment](../reference/environment.md)).
 
 ### Memory management
 

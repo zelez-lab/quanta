@@ -3,19 +3,22 @@
 //! [`vk_fns!`] holds the ~100 signatures once and hands them to a
 //! per-platform emitter macro:
 //!
-//! - Linux / Android / macOS (MoltenVK under `vulkan-portability`):
-//!   `vk_emit_link!` — one link-time `unsafe extern "C"` block against
-//!   `libvulkan`.
-//! - Windows: `vk_emit_runtime!` — a function-pointer table resolved at
-//!   runtime from `vulkan-1.dll` (`LoadLibraryA` + `GetProcAddress`)
-//!   behind identically-named unsafe-fn shims, so call sites read the
-//!   same on every platform. Link-time binding is wrong on Windows
-//!   twice over: the import library `vulkan-1.lib` ships only with the
-//!   Vulkan SDK (making the SDK a build dependency), and a link-bound
-//!   app fails at *process load* on a machine without `vulkan-1.dll` —
-//!   foreclosing the software fallback before discovery can run.
-//!   Runtime loading converts both failures into [`ensure_loaded`],
-//!   which `discover()` gates on with a loud init line.
+//! - macOS under `vulkan-portability` (MoltenVK): `vk_emit_link!` — one
+//!   link-time `unsafe extern "C"` block against `libvulkan`. An explicit
+//!   opt-in on a platform where the loader's presence is the exception.
+//! - Windows / Linux / Android: `vk_emit_runtime!` — a function-pointer
+//!   table resolved at runtime from the loader (`vulkan-1.dll` via
+//!   `LoadLibraryA` + `GetProcAddress`; `libvulkan.so.1` / `libvulkan.so`
+//!   via `dlopen` + `dlsym`) behind identically-named unsafe-fn shims, so
+//!   call sites read the same on every platform. Link-time binding was
+//!   wrong on Windows twice over — `vulkan-1.lib` ships only with the SDK
+//!   (a build dependency) and a link-bound app dies at *process load*
+//!   without the DLL — and wrong on Linux the same way (dija R11): any
+//!   binary with the `vulkan` feature could not BUILD without `libvulkan`
+//!   present and could not RUN without `libvulkan.so.1`, even on a
+//!   headless box the software backend would carry. Runtime loading
+//!   converts both failures into [`ensure_loaded`], which `discover()`
+//!   gates on with a loud init line and the software fallback.
 
 use core::ffi::c_void;
 
@@ -550,11 +553,7 @@ macro_rules! vk_fns {
 /// stanza never reaches a plain Apple build (the MoltenVK link trap):
 /// the explicit feature gate keeps that contract legible at the link
 /// site.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    all(feature = "vulkan-portability", target_os = "macos"),
-))]
+#[cfg(all(feature = "vulkan-portability", target_os = "macos"))]
 macro_rules! vk_emit_link {
     ( $( $(#[$meta:meta])* pub fn $name:ident( $($arg:ident: $argty:ty),* $(,)? ) $(-> $ret:ty)?; )* ) => {
         #[link(name = "vulkan")]
@@ -564,17 +563,24 @@ macro_rules! vk_emit_link {
     };
 }
 
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    all(feature = "vulkan-portability", target_os = "macos"),
-))]
+#[cfg(all(feature = "vulkan-portability", target_os = "macos"))]
 vk_fns! { vk_emit_link }
 
-/// Runtime form (Windows): a table of function pointers resolved from
-/// the loader DLL, behind shims named exactly like the link-time
-/// externs so call sites never see the difference.
-#[cfg(target_os = "windows")]
+/// Platforms that bind the loader at runtime.
+macro_rules! runtime_cfg {
+    ($($item:item)*) => {
+        $(
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
+            $item
+        )*
+    };
+}
+
+/// Runtime form (Windows / Linux / Android): a table of function
+/// pointers resolved from the loader library, behind shims named
+/// exactly like the link-time externs so call sites never see the
+/// difference.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
 macro_rules! vk_emit_runtime {
     ( $( $(#[$meta:meta])* pub fn $name:ident( $($arg:ident: $argty:ty),* $(,)? ) $(-> $ret:ty)?; )* ) => {
         /// Every entry point quanta binds, resolved once by [`load`].
@@ -599,9 +605,7 @@ macro_rules! vk_emit_runtime {
                     let sym = concat!(stringify!($name), "\0");
                     // SAFETY: `module` is live per the contract above;
                     // `sym` is NUL-terminated.
-                    let p = unsafe {
-                        GetProcAddress(module, sym.as_ptr() as *const core::ffi::c_char)
-                    };
+                    let p = unsafe { os_sym(module, sym.as_ptr() as *const core::ffi::c_char) };
                     if p.is_null() {
                         return Err(alloc::format!(
                             concat!(
@@ -636,6 +640,8 @@ macro_rules! vk_emit_runtime {
     };
 }
 
+// ── OS primitives: open the loader library, look a symbol up ────────
+
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -643,54 +649,110 @@ unsafe extern "system" {
     fn GetProcAddress(module: *mut c_void, name: *const core::ffi::c_char) -> *mut c_void;
 }
 
-#[cfg(target_os = "windows")]
-vk_fns! { vk_emit_runtime }
-
-/// The one loaded table. `Err` caches the failure so every
-/// [`ensure_loaded`] call reports the same message without retrying
-/// `LoadLibrary`.
-#[cfg(target_os = "windows")]
-static VK_TABLE: std::sync::OnceLock<Result<VkFns, alloc::string::String>> =
-    std::sync::OnceLock::new();
-
-/// Load the loader DLL and resolve the whole entry-point table.
-#[cfg(target_os = "windows")]
-fn load() -> Result<VkFns, alloc::string::String> {
-    // Diagnostic lever: point at an alternate loader DLL — or at a
-    // nonexistent name, to exercise the missing-loader fallback on a
-    // machine that has Vulkan. Same role QUANTA_BACKEND plays for
-    // discovery: making the failure path deterministically reachable.
-    let dll = std::env::var("QUANTA_VULKAN_LOADER")
-        .unwrap_or_else(|_| alloc::string::String::from("vulkan-1.dll"));
-    let mut name_z = alloc::vec::Vec::with_capacity(dll.len() + 1);
-    name_z.extend_from_slice(dll.as_bytes());
-    name_z.push(0);
-    // SAFETY: `name_z` is NUL-terminated.
-    let module = unsafe { LoadLibraryA(name_z.as_ptr() as *const core::ffi::c_char) };
-    if module.is_null() {
-        return Err(alloc::format!(
-            "{dll} not found (no Vulkan loader on this machine)"
-        ));
-    }
-    // SAFETY: `module` is the handle LoadLibraryA just returned; it is
-    // never freed — the table borrows from it for the process lifetime.
-    unsafe { resolve_table(module, &dll) }
+// `dlopen` / `dlsym`. glibc ≥ 2.34 and bionic provide them in libc;
+// `libdl` remains a stub on glibc, so linking it is harmless where it
+// is not needed and required where it is.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg_attr(target_os = "linux", link(name = "dl"))]
+unsafe extern "C" {
+    fn dlopen(filename: *const core::ffi::c_char, flag: core::ffi::c_int) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const core::ffi::c_char) -> *mut c_void;
 }
 
-/// Gate for discovery: load the loader and resolve the table. `Err`
-/// carries the human-readable missing piece (`vulkan-1.dll not found…`,
-/// `…has no export…`) for the loud init line in `discover()`.
-#[cfg(target_os = "windows")]
-pub fn ensure_loaded() -> Result<(), alloc::string::String> {
-    match VK_TABLE.get_or_init(load) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e.clone()),
+/// `RTLD_NOW | RTLD_LOCAL` on glibc and bionic.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RTLD_NOW_LOCAL: core::ffi::c_int = 2;
+
+runtime_cfg! {
+    /// The loader's default file name on this platform.
+    fn default_loader_name() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "vulkan-1.dll"
+        } else if cfg!(target_os = "android") {
+            "libvulkan.so"
+        } else {
+            "libvulkan.so.1"
+        }
+    }
+
+    /// Open the loader library by NUL-terminated name; null when absent.
+    ///
+    /// # Safety
+    /// `name` must be NUL-terminated.
+    unsafe fn os_open(name: *const core::ffi::c_char) -> *mut c_void {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe { LoadLibraryA(name) }
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            unsafe { dlopen(name, RTLD_NOW_LOCAL) }
+        }
+    }
+
+    /// Look an export up in an open loader library; null when absent.
+    ///
+    /// # Safety
+    /// `module` must be a live handle from [`os_open`]; `sym` NUL-terminated.
+    unsafe fn os_sym(module: *mut c_void, sym: *const core::ffi::c_char) -> *mut c_void {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe { GetProcAddress(module, sym) }
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            unsafe { dlsym(module, sym) }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
+vk_fns! { vk_emit_runtime }
+
+runtime_cfg! {
+    /// The one loaded table. `Err` caches the failure so every
+    /// [`ensure_loaded`] call reports the same message without retrying
+    /// the load.
+    static VK_TABLE: std::sync::OnceLock<Result<VkFns, alloc::string::String>> =
+        std::sync::OnceLock::new();
+
+    /// Open the loader and resolve the whole entry-point table.
+    fn load() -> Result<VkFns, alloc::string::String> {
+        // Diagnostic lever: point at an alternate loader — or at a
+        // nonexistent name, to exercise the missing-loader fallback on a
+        // machine that has Vulkan. Same role QUANTA_BACKEND plays for
+        // discovery: making the failure path deterministically reachable.
+        let lib = std::env::var("QUANTA_VULKAN_LOADER")
+            .unwrap_or_else(|_| alloc::string::String::from(default_loader_name()));
+        let mut name_z = alloc::vec::Vec::with_capacity(lib.len() + 1);
+        name_z.extend_from_slice(lib.as_bytes());
+        name_z.push(0);
+        // SAFETY: `name_z` is NUL-terminated.
+        let module = unsafe { os_open(name_z.as_ptr() as *const core::ffi::c_char) };
+        if module.is_null() {
+            return Err(alloc::format!(
+                "{lib} not found (no Vulkan loader on this machine)"
+            ));
+        }
+        // SAFETY: `module` is the handle os_open just returned; it is
+        // never closed — the table borrows from it for the process lifetime.
+        unsafe { resolve_table(module, &lib) }
+    }
+
+    /// Gate for discovery: open the loader and resolve the table. `Err`
+    /// carries the human-readable missing piece (`libvulkan.so.1 not
+    /// found…`, `…has no export…`) for the loud init line in `discover()`.
+    pub fn ensure_loaded() -> Result<(), alloc::string::String> {
+        match VK_TABLE.get_or_init(load) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.clone()),
+        }
     }
 }
 
 /// Link-time platforms: binding cannot fail at runtime (a missing
 /// loader fails at process load instead), so the gate is a no-op.
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(feature = "vulkan-portability", target_os = "macos"))]
 pub fn ensure_loaded() -> Result<(), alloc::string::String> {
     Ok(())
 }
@@ -698,7 +760,7 @@ pub fn ensure_loaded() -> Result<(), alloc::string::String> {
 /// The resolved table, for the shims. Discovery gates on
 /// [`ensure_loaded`], so an unresolvable table here is a driver bug —
 /// panic with the load error rather than limp on.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "android"))]
 fn fns() -> &'static VkFns {
     match VK_TABLE.get_or_init(load) {
         Ok(t) => t,
