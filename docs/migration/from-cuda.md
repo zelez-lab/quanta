@@ -95,6 +95,10 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `blockIdx.x` | `group_id()` |
 | `blockDim.x * blockIdx.x + threadIdx.x` | `quark_id()` |
 | `gridDim.x * blockDim.x` | `quark_count()` |
+| `threadIdx.x % warpSize` (lane) | `subgroup_id()` |
+| `warpSize` | `subgroup_size()` (a runtime builtin — 32 on NVIDIA, 32/64 on AMD) |
+| `cudaSetDevice(i)` | `QUANTA_DEVICE=i` (or a name substring), or pick from `quanta::devices()` |
+| `__half` arithmetic | `as f16` in the kernel; gate on `gpu.supports_f16()` |
 | `__syncthreads()` | `barrier()` |
 | `atomicAdd(&x, val)` | `atomic_add(&mut x, val)` |
 | `atomicCAS(&x, expected, desired)` | `atomic_compare_exchange(&mut x, expected, desired)` |
@@ -294,6 +298,7 @@ find typed wrappers in Quanta. The render-side constructors
 
 | CUDA / NVIDIA            | Quanta                                                       |
 |--------------------------|--------------------------------------------------------------|
+| WMMA / `mma.sync` (tensor cores) | Cooperative-matrix IR ops, used through `quanta-blas` (`gemm` routes to the tensor-core kernel when the device lists its shape); the device's shapes via `gpu.cooperative_matrix_shapes()` — see [Cooperative matrices](../computation/how-to/cooperative-matrix.md) |
 | OptiX `optixAccel*` BLAS | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`    |
 | OptiX pipeline           | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`   |
 | `optixLaunch`            | `pipeline.dispatch_rays(width, height)`                       |

@@ -140,6 +140,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 |------|--------|
 | `wgpu::Instance::new(Backends::all())` | `quanta::init()` |
 | `instance.request_adapter()` | `quanta::init()` (automatic) |
+| `request_adapter(power_preference)` / picking an adapter | `QUANTA_DEVICE=<index or name>` at runtime, or choose from `quanta::devices()` |
 | `adapter.request_device()` | `quanta::init()` (automatic) |
 | `device.create_buffer(...)` | `gpu.field::<T>(n)` |
 | `device.create_buffer_init(...)` | `gpu.field(n)` + `field.write(&data)` |

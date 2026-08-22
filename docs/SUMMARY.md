@@ -55,6 +55,7 @@
 
 - [Vector Add](computation/how-to/vector-add.md)
 - [Matrix Multiply](computation/how-to/matrix-multiply.md)
+- [Cooperative Matrices (tensor cores)](computation/how-to/cooperative-matrix.md)
 - [Parallel Reduce](computation/how-to/parallel-reduce.md)
 - [Histogram](computation/how-to/histogram.md)
 - [Image Blur](computation/how-to/image-blur.md)

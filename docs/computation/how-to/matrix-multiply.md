@@ -134,3 +134,12 @@ With TILE=16 tiling:
 The two `barrier()` calls ensure:
 1. All quarks have finished loading before computation begins
 2. All quarks have finished computing before the next tile overwrites shared memory
+
+## Going faster: tensor cores
+
+The tiled kernel above is the portable SIMT path. On devices with matrix
+units — Apple GPU family 7+ (`simdgroup_matrix`), NVIDIA tensor cores and
+AMD WMMA through `VK_KHR_cooperative_matrix` — `quanta-blas::gemm` routes
+large multiplies to a cooperative-matrix kernel automatically. The shapes
+those units execute are a hardware fact Quanta exposes rather than hides;
+see [Cooperative Matrices](cooperative-matrix.md).

@@ -185,12 +185,16 @@ QuarkCount { dst: Reg }
 ```
 
 ### `ProtonId`
-Thread index within the proton (warp/subgroup). Quanta's terminology:
-quark = thread, proton = warp, nucleus = workgroup.
+Thread index within the nucleus (workgroup) — the *local* invocation
+index, `0..workgroup size`. Quanta's terminology: quark = thread,
+proton = warp/subgroup, nucleus = workgroup.
 ```
 ProtonId { dst: Reg }
 ```
-Equivalent to `thread_index_in_simdgroup` (MSL) / `gl_SubgroupInvocationID`.
+Equivalent to `thread_position_in_threadgroup` (MSL) /
+`gl_LocalInvocationID.x` (SPIR-V) / `local_invocation_id.x` (WGSL). It is
+**not** the lane within the subgroup — for that see `SubgroupLaneId`; the two
+agree only while the workgroup fits in one subgroup.
 
 ### `NucleusId`
 Nucleus (workgroup) index.
@@ -206,10 +210,23 @@ ProtonSize { dst: Reg }
 ```
 
 ### `SubgroupSize`
-Active subgroup size for the current dispatch.
+The device's real subgroup width — a builtin on every backend, never a
+constant (4/8 on lavapipe, 8–32 on Intel, 32 on NVIDIA and Apple, 32 or 64
+on AMD; the CPU executor's warp cohorts are 32 wide).
 ```
 SubgroupSize { dst: Reg }
 ```
+`threads_per_simdgroup` (MSL) / `gl_SubgroupSize` (SPIR-V) /
+`@builtin(subgroup_size)` (WGSL). The DSL spelling is `subgroup_size()`.
+
+### `SubgroupLaneId`
+This thread's lane within its subgroup, `0..SubgroupSize`.
+```
+SubgroupLaneId { dst: Reg }
+```
+`thread_index_in_simdgroup` (MSL) / `gl_SubgroupInvocationID` (SPIR-V) /
+`@builtin(subgroup_invocation_id)` (WGSL); `ProtonId % SubgroupSize` on the
+CPU executor. The DSL spelling is `subgroup_id()`.
 
 ---
 

@@ -365,16 +365,21 @@ the results back from the same struct.
 ## What happened
 
 1. **Build time**: `#[quanta::kernel]` compiled `vector_add` to native GPU
-   binaries for all 5 targets. `#[derive(quanta::Fields)]` generated the
+   binaries for every driver's artifact. `#[derive(quanta::Fields)]` generated the
    metadata that maps struct fields to GPU buffer slots and push constant
    slots. Both happen at `cargo build` -- zero runtime compilation.
 
 2. **`init()`**: Discovered the first available GPU and returned a `Gpu` handle.
+   On a machine with several (an integrated GPU plus a discrete card, say),
+   `QUANTA_DEVICE=<index or name substring>` picks which one, and
+   `quanta::devices()` lists them all — see the
+   [environment reference](reference/environment.md).
 
 3. **`vector_add(&gpu, &mut data, 1024)?`**: This single call did everything:
    - Allocated GPU storage buffers for each `Vec<T>` field
    - Uploaded CPU data to the GPU
-   - Selected the right pre-compiled binary for your GPU vendor
+   - Selected the pre-compiled artifact the device's driver loads
+     (SPIR-V for Vulkan, a metallib for Metal, WGSL for WebGPU)
    - Created a Wave (a kernel ready to dispatch) and bound all fields
    - Dispatched 1024 quarks on the GPU
    - Read results back into `data.result`

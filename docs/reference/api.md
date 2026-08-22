@@ -1062,6 +1062,14 @@ choose another, enumerate with `devices()` and pick from the list.
 Set `QUANTA_CPU=1` as an alternative to calling `init_cpu()` — when set,
 discovery includes the CPU software executor.
 
+**Picking a device (`QUANTA_DEVICE`).** On a host with several devices
+`init()` returns the first one `devices()` enumerates. `QUANTA_DEVICE` selects
+another: a zero-based index into that order, or a case-insensitive substring
+of the device name (`QUANTA_DEVICE=radeon`). It composes with
+`QUANTA_BACKEND` (which narrows the list first); a value matching nothing
+fails `init()` with an error listing the discovered names, never falling
+through to a different device. `devices()` remains the programmatic path.
+
 **Forcing a backend (`QUANTA_BACKEND`).** Set `QUANTA_BACKEND` to
 `metal`, `vulkan`, or `cpu` (case-insensitive) to restrict discovery to
 exactly that backend. A forced-but-unavailable backend does **not** fall

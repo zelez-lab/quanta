@@ -13,7 +13,9 @@ while maintaining the same performance (it generates the same API calls under th
 | Platform `#ifdef` / `#if __METAL__` | One source, all backends |
 | Command buffer/encoder management | Automatic — dispatches encode into a per-device batch, submitted at sync points |
 | Memory type selection (Vulkan) | Automatic (driver picks optimal) |
-| `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary` |
+| `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary`; the driver picks its artifact by `Gpu::artifact_kind()` |
+| `MTLCopyAllDevices` / `vkEnumeratePhysicalDevices` + a choice | `quanta::devices()`, or `QUANTA_DEVICE=<index or name>` for `init()` |
+| `simdgroup_matrix` / `VK_KHR_cooperative_matrix` | Cooperative-matrix IR ops via `quanta-blas`; shapes from `gpu.cooperative_matrix_shapes()` — see [Cooperative matrices](../computation/how-to/cooperative-matrix.md) |
 | Fence/semaphore creation | `Pulse` returned from dispatch |
 | Buffer/image layout transitions (Vulkan) | `gpu.barrier_texture()` / `gpu.barrier_field()` |
 | `replaceRegion:` / staging + `vkCmdCopyBufferToImage` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
