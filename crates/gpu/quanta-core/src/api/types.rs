@@ -326,6 +326,28 @@ pub enum CompareOp {
     Always,
 }
 
+/// One cooperative-matrix shape a device executes natively:
+/// `D = A·B + C` with `A` `m×k`, `B` `k×n`, `C`/`D` `m×n`, at subgroup
+/// scope. `ab_ty` is the element type of `A` and `B`, `c_ty` of the
+/// accumulator input, `result_ty` of `D`.
+///
+/// Shapes are hardware facts, not a Quanta choice: Metal's
+/// `simdgroup_matrix` is 8×8×8 in f32 or f16; `VK_KHR_cooperative_matrix`
+/// devices enumerate theirs (NVIDIA and AMD RDNA3/4 expose f16/bf16
+/// inputs with f32 accumulation at 16×16×16 — f32 inputs are generally
+/// not a tensor-core shape there). A consumer builds its kernel around a
+/// shape the device reports; `CooperativeMatrixLoad` / `CooperativeMMA` /
+/// `CooperativeMatrixStore` carry `m`, `n`, `k` and the type per op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoopMatrixShape {
+    pub m: u8,
+    pub n: u8,
+    pub k: u8,
+    pub ab_ty: quanta_ir::ScalarType,
+    pub c_ty: quanta_ir::ScalarType,
+    pub result_ty: quanta_ir::ScalarType,
+}
+
 /// The precompiled artifact a driver consumes — declared by the
 /// driver, never derived from the GPU vendor.
 ///

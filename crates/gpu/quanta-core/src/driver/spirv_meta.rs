@@ -26,6 +26,40 @@
 // only under `vulkan-portability`). The render arm keeps this module alive
 // on Apple for `fragment_output_count`, so the OS set must match the
 // module gate or these read as dead on a default macOS build.
+/// `Capability CooperativeMatrixKHR` — declared by every module that
+/// uses a cooperative-matrix fragment.
+#[allow(dead_code)]
+pub(crate) const CAPABILITY_COOPERATIVE_MATRIX_KHR: u32 = 6022;
+
+/// Whether the module declares `OpCapability <cap>`. Capabilities sit in
+/// the first section, so the walk stops at the first non-capability
+/// instruction. Malformed streams answer `false` — the caller's pipeline
+/// creation will report them.
+#[allow(dead_code)]
+pub(crate) fn declares_capability(words: &[u32], cap: u32) -> bool {
+    const SPIRV_MAGIC: u32 = 0x0723_0203;
+    const OP_CAPABILITY: u32 = 17;
+    if words.len() < 5 || words[0] != SPIRV_MAGIC {
+        return false;
+    }
+    let mut i = 5usize;
+    while i < words.len() {
+        let word_count = (words[i] >> 16) as usize;
+        let opcode = words[i] & 0xFFFF;
+        if word_count == 0 || i + word_count > words.len() {
+            return false;
+        }
+        if opcode != OP_CAPABILITY {
+            return false;
+        }
+        if word_count == 2 && words[i + 1] == cap {
+            return true;
+        }
+        i += word_count;
+    }
+    false
+}
+
 #[cfg_attr(
     not(all(
         feature = "vulkan",

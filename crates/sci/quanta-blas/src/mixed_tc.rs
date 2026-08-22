@@ -15,8 +15,11 @@
 //! `KernelDef` IR: the cooperative-matrix ops (`CooperativeMatrixLoad` /
 //! `CooperativeMMA` / `CooperativeMatrixStore`) have no `#[quanta::kernel]`
 //! Rust surface and are subgroup-collective, so the WASM route can't express
-//! them. Only backends advertising `supports_cooperative_matrix()` run this;
-//! others return `NotSupported`.
+//! them. Only devices that enumerate the **8×8×8 f32** shape run this (Metal
+//! `simdgroup_matrix`; a `VK_KHR_cooperative_matrix` device only if it lists
+//! that shape — NVIDIA and AMD expose f16/bf16 inputs at 16×16×16, so the
+//! f16-input / f32-accumulate GEMM on the device's own shape is the next
+//! increment); others return `NotSupported` and `gemm` takes the tiled path.
 //!
 //! Scope: `C += A·B` (α = β = 1), m/n multiple of 32, k multiple of 8. General
 //! α/β, tails, and threadgroup-shared staging of the A/B tiles (which would cut
@@ -35,10 +38,11 @@ const BC: u32 = 4; // accumulator fragments across (cols) per subgroup
 const TILE_M: u32 = FRAG * BR; // output tile rows per subgroup (32)
 const TILE_N: u32 = FRAG * BC; // output tile cols per subgroup (32)
 
-/// `gemm_f32_tc`: `C ← A·B + C` on the cooperative-matrix path. Requires
-/// `supports_cooperative_matrix()`, `m`/`n` multiples of 32 and `k` a multiple
-/// of 8; otherwise returns `NotSupported` so the caller can fall back to the
-/// tiled kernel.
+/// `gemm_f32_tc`: `C ← A·B + C` on the cooperative-matrix path. Requires the
+/// device to enumerate the 8×8×8 f32 shape (see
+/// `Gpu::cooperative_matrix_shapes`), `m`/`n` multiples of 32 and `k` a
+/// multiple of 8; otherwise returns `NotSupported` so the caller can fall
+/// back to the tiled kernel.
 ///
 /// Register-blocked: each subgroup owns a 32×32 output tile = a 4×4 grid of 8×8
 /// accumulator fragments. Per K-step it loads 4 A row-strip fragments + 4 B
@@ -54,9 +58,9 @@ pub fn gemm_f32_tc(
     b: &Field<f32>,
     c: &Field<f32>,
 ) -> Result<(), QuantaError> {
-    if !gpu.supports_cooperative_matrix() {
+    if !device_has_f32_8x8x8(gpu) {
         return Err(QuantaError::not_supported(
-            "cooperative matrix (tensor cores) not available on this backend",
+            "this kernel is built on 8x8x8 f32 cooperative matrices, which this device does not enumerate",
         ));
     }
     if !m.is_multiple_of(TILE_M) || !n.is_multiple_of(TILE_N) || !k.is_multiple_of(FRAG) {
@@ -109,8 +113,10 @@ pub fn gemm_f32_tc_shared_probe(
     b: &Field<f32>,
     c: &Field<f32>,
 ) -> Result<(), QuantaError> {
-    if !gpu.supports_cooperative_matrix() {
-        return Err(QuantaError::not_supported("no cooperative matrix"));
+    if !device_has_f32_8x8x8(gpu) {
+        return Err(QuantaError::not_supported(
+            "this kernel is built on 8x8x8 f32 cooperative matrices, which this device does not enumerate",
+        ));
     }
     let def = build_tc_shared_probe_def();
     let bytes = serialize_kernel(&def);
@@ -302,6 +308,29 @@ fn build_tc_shared_probe_def() -> KernelDef {
         subgroup_size: Some(32),
         dynamic_shared_bytes: 0,
     }
+}
+
+/// Whether the device enumerates the `8×8×8`, all-f32 shape these kernels
+/// are built on.
+fn device_has_f32_8x8x8(gpu: &Gpu) -> bool {
+    use quanta_core::ScalarType::F32;
+    gpu.cooperative_matrix_shapes().iter().any(|s| {
+        (s.m, s.n, s.k) == (FRAG as u8, FRAG as u8, FRAG as u8)
+            && s.ab_ty == F32
+            && s.c_ty == F32
+            && s.result_ty == F32
+    })
+}
+
+/// The hand-built tensor-core kernels, for emitter validation (spirv-val
+/// on the SPIR-V lowering, which cannot run on this crate's GPU tests
+/// without a `VK_KHR_cooperative_matrix` device). Not API.
+#[doc(hidden)]
+pub fn tc_kernel_defs_for_validation() -> Vec<(&'static str, KernelDef)> {
+    vec![
+        ("gemm_f32_tc[n=64,k=16]", build_tc_def(64, 16)),
+        ("gemm_f32_tc_shared_probe", build_tc_shared_probe_def()),
+    ]
 }
 
 /// Build the register-blocked cooperative-matrix GEMM kernel (`C += A·B`,

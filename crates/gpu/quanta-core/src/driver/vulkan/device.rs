@@ -305,6 +305,15 @@ pub struct VulkanDevice {
     /// (the driver aborts at pipeline creation); llvmpipe supports it.
     /// Queried at discovery via `vkGetPhysicalDeviceProperties2`.
     pub(super) subgroup_arithmetic_supported: bool,
+    /// The `VK_KHR_cooperative_matrix` shapes this device enumerated at
+    /// subgroup scope, already mapped to Quanta types — empty when the
+    /// extension is absent (lavapipe < Mesa 24.1, Broadcom V3D, MoltenVK)
+    /// or when no enumerated shape uses a type Quanta can name. The
+    /// extension and its feature are enabled at `vkCreateDevice` exactly
+    /// when this is non-empty, so a kernel carrying the
+    /// `CooperativeMatrixKHR` capability only reaches pipeline creation
+    /// on a device that accepted it.
+    pub(super) cooperative_matrix_shapes: Vec<crate::CoopMatrixShape>,
     /// `vkCmdDispatchBase` (core Vulkan 1.1), resolved at device
     /// creation; `None` on 1.0-only implementations. Used by the
     /// folded 1D-dispatch path (`wave_dispatch_threads_impl`) to issue
@@ -1240,6 +1249,28 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
     };
 
+    // Resolve `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` once.
+    // Instance-level; null unless some ICD implements the extension.
+    // Only consulted for physical devices that advertise it.
+    let get_coopmat_props_fn: Option<ffi::PfnVkGetPhysicalDeviceCooperativeMatrixPropertiesKHR> = {
+        let name = b"vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR\0";
+        let p = unsafe {
+            ffi::vkGetInstanceProcAddr(instance, name.as_ptr() as *const core::ffi::c_char)
+        };
+        if p.is_null() {
+            None
+        } else {
+            // SAFETY: vkGetInstanceProcAddr returns a valid function
+            // pointer of the documented signature when non-null.
+            Some(unsafe {
+                core::mem::transmute::<
+                    *const core::ffi::c_void,
+                    ffi::PfnVkGetPhysicalDeviceCooperativeMatrixPropertiesKHR,
+                >(p)
+            })
+        }
+    };
+
     // Resolve `vkGetPhysicalDeviceFeatures2` (core 1.1) once. Used
     // below to chain the 16-/8-bit storage feature queries onto each
     // physical device — those features gate the native-stride bf16 /
@@ -1372,6 +1403,50 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             }
             None => false,
         };
+
+        // `VK_KHR_cooperative_matrix` — enumerate the native MMA shapes at
+        // subgroup scope. Core 1.1 is the extension's floor; the two-call
+        // pattern sizes the array. A device that advertises the extension
+        // but enumerates nothing Quanta can type (or only workgroup-scope
+        // shapes) gets an empty list and the extension stays disabled.
+        let has_coopmat_ext = physical_device_has_extension(pd, b"VK_KHR_cooperative_matrix\0");
+        let cooperative_matrix_shapes: Vec<crate::CoopMatrixShape> =
+            match (has_coopmat_ext, get_coopmat_props_fn) {
+                (true, Some(get_props)) => {
+                    let mut count = 0u32;
+                    let r = unsafe { get_props(pd, &mut count, core::ptr::null_mut()) };
+                    if r != ffi::VK_SUCCESS || count == 0 {
+                        Vec::new()
+                    } else {
+                        let template = ffi::VkCooperativeMatrixPropertiesKHR {
+                            s_type: ffi::VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+                            p_next: core::ptr::null_mut(),
+                            m_size: 0,
+                            n_size: 0,
+                            k_size: 0,
+                            a_type: 0,
+                            b_type: 0,
+                            c_type: 0,
+                            result_type: 0,
+                            saturating_accumulation: 0,
+                            scope: 0,
+                        };
+                        let mut props = vec![template; count as usize];
+                        let r = unsafe { get_props(pd, &mut count, props.as_mut_ptr()) };
+                        if r != ffi::VK_SUCCESS {
+                            Vec::new()
+                        } else {
+                            props
+                                .iter()
+                                .take(count as usize)
+                                .filter_map(coopmat_shape_from_props)
+                                .collect()
+                        }
+                    }
+                }
+                _ => Vec::new(),
+            };
+        let enable_coopmat = !cooperative_matrix_shapes.is_empty();
 
         // Find a queue family that supports compute + graphics
         let queue_family = queue_families.iter().enumerate().find(|(_, qf)| {
@@ -1506,10 +1581,24 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             storage_push_constant16: 0,
             storage_input_output16: 0,
         };
-        let device_p_next: *const core::ffi::c_void = if api_12 {
+        let storage_or_sync2_p_next: *const core::ffi::c_void = if api_12 {
             &storage16_enable as *const _ as *const core::ffi::c_void
         } else {
             &sync2_features as *const _ as *const core::ffi::c_void
+        };
+        // Cooperative matrix rides at the head of the chain, only when the
+        // device enumerated usable shapes (an unadvertised feature fails
+        // vkCreateDevice).
+        let coopmat_enable = ffi::VkPhysicalDeviceCooperativeMatrixFeaturesKHR {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+            p_next: storage_or_sync2_p_next as *mut core::ffi::c_void,
+            cooperative_matrix: 1,
+            cooperative_matrix_robust_buffer_access: 0,
+        };
+        let device_p_next: *const core::ffi::c_void = if enable_coopmat {
+            &coopmat_enable as *const _ as *const core::ffi::c_void
+        } else {
+            storage_or_sync2_p_next
         };
 
         let has_swapchain_ext =
@@ -1527,6 +1616,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         }
         if host_import_min_align.is_some() {
             enabled_extensions.push(c"VK_EXT_external_memory_host".as_ptr());
+        }
+        if enable_coopmat {
+            enabled_extensions.push(c"VK_KHR_cooperative_matrix".as_ptr());
         }
         if has_rt {
             enabled_extensions.push(c"VK_KHR_acceleration_structure".as_ptr());
@@ -1912,6 +2004,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             storage_buffer_16bit_supported: storage16_supported,
             storage_buffer_8bit_supported: storage8_supported,
             subgroup_arithmetic_supported,
+            cooperative_matrix_shapes,
             dispatch_base_fn,
             sparse_tile_bindings: RwLock::new(HashMap::new()),
             buffer_device_address_enabled: has_accel_ext,
@@ -1965,6 +2058,51 @@ fn instance_has_extension(ext_name: &[u8]) -> bool {
 /// Used during device discovery to decide which extensions to enable
 /// at `vkCreateDevice`, before the `VulkanDevice` exists. `ext_name`
 /// must be a null-terminated byte string.
+/// Map one enumerated `VkCooperativeMatrixPropertiesKHR` to a
+/// [`CoopMatrixShape`](crate::CoopMatrixShape). `None` for shapes Quanta
+/// cannot express: non-subgroup scope, dimensions above `u8`, or
+/// component types with no `ScalarType` (none today, but the mapping
+/// refuses rather than guesses if a new `VkComponentTypeKHR` appears).
+fn coopmat_shape_from_props(
+    p: &ffi::VkCooperativeMatrixPropertiesKHR,
+) -> Option<crate::CoopMatrixShape> {
+    use quanta_ir::ScalarType as S;
+    if p.scope != ffi::VK_SCOPE_SUBGROUP_KHR {
+        return None;
+    }
+    let ty = |c: u32| -> Option<S> {
+        Some(match c {
+            ffi::VK_COMPONENT_TYPE_FLOAT16_KHR => S::F16,
+            ffi::VK_COMPONENT_TYPE_FLOAT32_KHR => S::F32,
+            ffi::VK_COMPONENT_TYPE_FLOAT64_KHR => S::F64,
+            ffi::VK_COMPONENT_TYPE_SINT8_KHR => S::I8,
+            ffi::VK_COMPONENT_TYPE_SINT16_KHR => S::I16,
+            ffi::VK_COMPONENT_TYPE_SINT32_KHR => S::I32,
+            ffi::VK_COMPONENT_TYPE_SINT64_KHR => S::I64,
+            ffi::VK_COMPONENT_TYPE_UINT8_KHR => S::U8,
+            ffi::VK_COMPONENT_TYPE_UINT16_KHR => S::U16,
+            ffi::VK_COMPONENT_TYPE_UINT32_KHR => S::U32,
+            ffi::VK_COMPONENT_TYPE_UINT64_KHR => S::U64,
+            ffi::VK_COMPONENT_TYPE_BFLOAT16_KHR => S::BF16,
+            ffi::VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT => S::FP8E4M3,
+            ffi::VK_COMPONENT_TYPE_FLOAT8_E5M2_EXT => S::FP8E5M2,
+            _ => return None,
+        })
+    };
+    // A and B share an element type in Quanta's op (`ty` on the load).
+    if p.a_type != p.b_type {
+        return None;
+    }
+    Some(crate::CoopMatrixShape {
+        m: u8::try_from(p.m_size).ok()?,
+        n: u8::try_from(p.n_size).ok()?,
+        k: u8::try_from(p.k_size).ok()?,
+        ab_ty: ty(p.a_type)?,
+        c_ty: ty(p.c_type)?,
+        result_ty: ty(p.result_type)?,
+    })
+}
+
 fn physical_device_has_extension(pd: ffi::VkPhysicalDevice, ext_name: &[u8]) -> bool {
     let mut count = 0u32;
     let result = unsafe {

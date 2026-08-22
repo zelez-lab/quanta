@@ -99,6 +99,13 @@ impl SpvEmitter {
             &[CAPABILITY_SHADER],
         );
 
+        // Fragment registers (cooperative matrix) must be known before
+        // demotion declares their variables and before any type is built.
+        self.scan_coop_frags(&kernel.body);
+        for f in &kernel.device_functions {
+            self.scan_coop_frags(&f.body);
+        }
+
         // Add subgroup capabilities if needed. Arithmetic (reduce/scan)
         // and shuffle are separate SPIR-V capabilities; both build on the
         // base GroupNonUniform capability.

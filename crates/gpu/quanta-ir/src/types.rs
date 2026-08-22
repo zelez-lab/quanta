@@ -133,6 +133,48 @@ pub enum KernelParam {
 
 /// Bit N set = binding slot N is a [`KernelParam::FieldWrite`] — the
 /// kernel may WRITE (and read: `&mut [T]` is read-write) that buffer.
+/// Every distinct cooperative-matrix shape `(m, n, k, element type)` a
+/// kernel uses — body, nested arms, device functions. Empty for kernels
+/// without the ops. Drivers match this against the device's enumerated
+/// shapes (`Gpu::cooperative_matrix_shapes`) before creating a pipeline,
+/// so a kernel built for a shape the hardware lacks is refused with a
+/// clear `NotSupported` instead of failing (or silently misexecuting)
+/// inside the driver.
+pub fn cooperative_matrix_shapes_used(def: &KernelDef) -> Vec<(u8, u8, u8, ScalarType)> {
+    fn walk(ops: &[KernelOp], out: &mut Vec<(u8, u8, u8, ScalarType)>) {
+        for op in ops {
+            let shape = match op {
+                KernelOp::CooperativeMatrixLoad { m, n, k, ty, .. }
+                | KernelOp::CooperativeMatrixStore { m, n, k, ty, .. }
+                | KernelOp::CooperativeMMA { m, n, k, ty, .. } => Some((*m, *n, *k, *ty)),
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } => {
+                    walk(then_ops, out);
+                    walk(else_ops, out);
+                    None
+                }
+                KernelOp::Loop { body, .. } => {
+                    walk(body, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(s) = shape
+                && !out.contains(&s)
+            {
+                out.push(s);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&def.body, &mut out);
+    for f in &def.device_functions {
+        walk(&f.body, &mut out);
+    }
+    out
+}
+
 /// Clear bits with a bound field are read-only. The deferred lane uses
 /// this to order only genuinely dependent dispatches; drivers stamp it
 /// onto the `Wave` at JIT time, the `#[quanta::kernel]` wrapper stamps

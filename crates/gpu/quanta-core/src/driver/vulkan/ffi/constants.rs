@@ -442,6 +442,45 @@ pub type PfnVkGetPhysicalDeviceFeatures2 = unsafe extern "C" fn(
     p_features: *mut super::device::VkPhysicalDeviceFeatures2,
 );
 
+// ─── VK_KHR_cooperative_matrix (extension 507 → 1000506xxx) ─────────────────
+
+/// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR`.
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: u32 = 1000506000;
+/// `VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR` — one per
+/// enumerated shape.
+pub const VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR: u32 = 1000506001;
+/// `VkScopeKHR::VK_SCOPE_SUBGROUP_KHR` — the only scope Quanta's
+/// cooperative-matrix ops use.
+pub const VK_SCOPE_SUBGROUP_KHR: u32 = 3;
+/// `VkComponentTypeKHR` values, as enumerated by the driver.
+pub const VK_COMPONENT_TYPE_FLOAT16_KHR: u32 = 0;
+pub const VK_COMPONENT_TYPE_FLOAT32_KHR: u32 = 1;
+pub const VK_COMPONENT_TYPE_FLOAT64_KHR: u32 = 2;
+pub const VK_COMPONENT_TYPE_SINT8_KHR: u32 = 3;
+pub const VK_COMPONENT_TYPE_SINT16_KHR: u32 = 4;
+pub const VK_COMPONENT_TYPE_SINT32_KHR: u32 = 5;
+pub const VK_COMPONENT_TYPE_SINT64_KHR: u32 = 6;
+pub const VK_COMPONENT_TYPE_UINT8_KHR: u32 = 7;
+pub const VK_COMPONENT_TYPE_UINT16_KHR: u32 = 8;
+pub const VK_COMPONENT_TYPE_UINT32_KHR: u32 = 9;
+pub const VK_COMPONENT_TYPE_UINT64_KHR: u32 = 10;
+/// `VK_COMPONENT_TYPE_BFLOAT16_KHR` (from `VK_KHR_shader_bfloat16`).
+pub const VK_COMPONENT_TYPE_BFLOAT16_KHR: u32 = 1000141000;
+/// `VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT` / `_E5M2_EXT` (from
+/// `VK_EXT_shader_float8`).
+pub const VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT: u32 = 1000491000;
+pub const VK_COMPONENT_TYPE_FLOAT8_E5M2_EXT: u32 = 1000491001;
+
+/// Function-pointer type for `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`
+/// (instance-level; resolved via `vkGetInstanceProcAddr` only when the
+/// physical device advertises `VK_KHR_cooperative_matrix`). Two-call
+/// enumeration: null `p_properties` writes the count.
+pub type PfnVkGetPhysicalDeviceCooperativeMatrixPropertiesKHR = unsafe extern "C" fn(
+    physical_device: VkPhysicalDevice,
+    p_property_count: *mut u32,
+    p_properties: *mut super::device::VkCooperativeMatrixPropertiesKHR,
+) -> VkResult;
+
 // ─── Folded 1D dispatch (vkCmdDispatchBase, Vulkan 1.1 core) ────────────────
 
 /// `VK_PIPELINE_CREATE_DISPATCH_BASE` — compute pipelines created with

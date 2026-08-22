@@ -67,10 +67,26 @@ impl GpuDevice for MetalDevice {
         self.sparse_supported
     }
 
-    fn supports_cooperative_matrix(&self) -> bool {
-        // `simdgroup_matrix` is available on Apple GPU family 7+ (and Mac2);
-        // reuse the family-7 proxy that gates sparse/VRS here.
-        self.sparse_supported
+    fn cooperative_matrix_shapes(&self) -> alloc::vec::Vec<crate::CoopMatrixShape> {
+        // `simdgroup_matrix<T, 8, 8>` for `float` and `half`, on Apple GPU
+        // family 7+ (and Mac2); reuse the family-7 proxy that gates
+        // sparse/VRS here. The MSL emitter's `simd_matrix_elem` covers
+        // exactly these two element types.
+        if !self.sparse_supported {
+            return alloc::vec::Vec::new();
+        }
+        let shape = |ty| crate::CoopMatrixShape {
+            m: 8,
+            n: 8,
+            k: 8,
+            ab_ty: ty,
+            c_ty: ty,
+            result_ty: ty,
+        };
+        alloc::vec![
+            shape(quanta_ir::ScalarType::F32),
+            shape(quanta_ir::ScalarType::F16),
+        ]
     }
 
     fn supports_subgroups(&self) -> bool {

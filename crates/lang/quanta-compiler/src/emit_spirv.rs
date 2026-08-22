@@ -7,6 +7,7 @@
 //! The output is a `Vec<u8>` ready for `vkCreateShaderModule`.
 
 mod constants;
+mod coopmat;
 mod device_fn;
 mod emitter;
 mod expr;

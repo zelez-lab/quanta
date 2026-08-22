@@ -216,11 +216,22 @@ impl Gpu {
     }
 
     /// Whether the active backend can lower the cooperative-matrix ops to
-    /// native tensor-core / SIMD-group-matrix instructions (Metal Apple GPU
-    /// family 7+; Vulkan `VK_KHR_cooperative_matrix`, not yet wired). The
-    /// software lane reports `false`.
+    /// native tensor-core / SIMD-group-matrix instructions: Metal on Apple
+    /// GPU family 7+ (`simdgroup_matrix`), Vulkan when the device enables
+    /// `VK_KHR_cooperative_matrix`. The software lane and WebGPU report
+    /// `false`. Equivalent to `!self.cooperative_matrix_shapes().is_empty()`.
     pub fn supports_cooperative_matrix(&self) -> bool {
         self.ctx.device.supports_cooperative_matrix()
+    }
+
+    /// The cooperative-matrix shapes this device executes natively — see
+    /// [`CoopMatrixShape`](crate::CoopMatrixShape). A kernel must be built
+    /// around one of these; the shape is a hardware fact, not a
+    /// Quanta-wide constant (Metal: 8×8×8; `VK_KHR_cooperative_matrix`
+    /// devices: whatever they enumerate, typically 16×16×16 with f16 or
+    /// bf16 inputs).
+    pub fn cooperative_matrix_shapes(&self) -> alloc::vec::Vec<crate::CoopMatrixShape> {
+        self.ctx.device.cooperative_matrix_shapes()
     }
 
     /// The precompiled artifact this device's driver consumes — what

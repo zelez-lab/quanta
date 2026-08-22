@@ -69,6 +69,10 @@ impl GpuDevice for ValidationDevice {
         self.inner.artifact_kind()
     }
 
+    fn cooperative_matrix_shapes(&self) -> alloc::vec::Vec<crate::CoopMatrixShape> {
+        self.inner.cooperative_matrix_shapes()
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError> {

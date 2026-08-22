@@ -53,6 +53,13 @@ pub(crate) struct SpvEmitter {
     // width is 4/8 on lavapipe, 8-32 on Intel, 32 on NVIDIA, 32/64 on AMD.
     pub(crate) subgroup_size_var: Option<u32>,
 
+    // `SPV_KHR_cooperative_matrix`: declared once per module, and the
+    // fragment shape of every register a cooperative-matrix op writes
+    // (filled by `scan_coop_frags` in the prologue — demotion and typing
+    // both read it).
+    pub(crate) coopmat_declared: bool,
+    pub(crate) coop_frag_regs: HashMap<u32, super::coopmat::CoopFrag>,
+
     // Register → SPIR-V ID mapping (function-scoped variables)
     pub(crate) reg_ids: HashMap<u32, u32>,
     // Register → type ID (so we know what type a register holds)
@@ -150,6 +157,8 @@ impl SpvEmitter {
             glsl_ext_id: None,
             loop_merge_stack: Vec::new(),
             subgroup_size_var: None,
+            coopmat_declared: false,
+            coop_frag_regs: HashMap::new(),
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
             demoted_regs: HashMap::new(),
@@ -254,7 +263,12 @@ impl SpvEmitter {
         demoted: &std::collections::BTreeMap<u32, crate::ScalarType>,
     ) {
         for (&reg, &sty) in demoted {
-            let elem_ty = self.scalar_type_id(sty);
+            // A fragment register's variable is the matrix type, not the
+            // scalar the mutability pass recorded for it.
+            let elem_ty = match self.coop_frag_regs.get(&reg).copied() {
+                Some(frag) => self.coopmat_type(frag),
+                None => self.scalar_type_id(sty),
+            };
             let ptr_ty = self.ensure_type_pointer(STORAGE_CLASS_FUNCTION, elem_ty);
             let var_id = self.alloc_id();
             Self::emit_op(

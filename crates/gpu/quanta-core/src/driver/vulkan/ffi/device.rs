@@ -252,6 +252,37 @@ pub struct VkPhysicalDevice8BitStorageFeatures {
     pub storage_push_constant8: u32,
 }
 
+/// `VkPhysicalDeviceCooperativeMatrixFeaturesKHR`. Chained into
+/// `vkCreateDevice` when the extension is advertised; only
+/// `cooperative_matrix` is enabled (robust buffer access is not needed
+/// by Quanta's bounds-checked kernels).
+#[repr(C)]
+pub struct VkPhysicalDeviceCooperativeMatrixFeaturesKHR {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub cooperative_matrix: u32,
+    pub cooperative_matrix_robust_buffer_access: u32,
+}
+
+/// `VkCooperativeMatrixPropertiesKHR` — one natively supported
+/// `D = A·B + C` shape. Component types are `VkComponentTypeKHR`,
+/// `scope` is `VkScopeKHR`.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VkCooperativeMatrixPropertiesKHR {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub m_size: u32,
+    pub n_size: u32,
+    pub k_size: u32,
+    pub a_type: u32,
+    pub b_type: u32,
+    pub c_type: u32,
+    pub result_type: u32,
+    pub saturating_accumulation: u32,
+    pub scope: u32,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct VkQueueFamilyProperties {

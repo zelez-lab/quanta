@@ -602,47 +602,54 @@ impl SpvEmitter {
                 // Dynamic parallelism not supported in Vulkan compute
             }
 
+            // SPV_KHR_cooperative_matrix — see `coopmat.rs` (twin of the JIT
+            // emitter). The scalar `a*b+c` fallback and placeholder zeros
+            // these replace were silent wrong answers behind the gate.
             KernelOp::CooperativeMMA {
-                dst, a, b, c, ty, ..
+                dst,
+                a,
+                b,
+                c,
+                m,
+                n,
+                k,
+                ty,
             } => {
-                // Scalar fallback: D = A * B + C
-                let a_val = self.reg_value_id(*a)?;
-                let b_val = self.reg_value_id(*b)?;
-                let c_val = self.reg_value_id(*c)?;
-                let result_ty = self.scalar_type_id(*ty);
-                let op_mul = if matches!(ty, ScalarType::F32 | ScalarType::F16) {
-                    OP_FMUL
-                } else {
-                    OP_IMUL
-                };
-                let op_add = if matches!(ty, ScalarType::F32 | ScalarType::F16) {
-                    OP_FADD
-                } else {
-                    OP_IADD
-                };
-                let mul = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    op_mul,
-                    &[result_ty, mul, a_val, b_val],
-                );
-                let result = self.alloc_id();
-                Self::emit_op(
-                    &mut self.sec_function,
-                    op_add,
-                    &[result_ty, result, mul, c_val],
-                );
-                self.set_reg(*dst, result, result_ty);
+                self.emit_coop_mma(*dst, *a, *b, *c, *m, *n, *k, *ty)?;
             }
-            KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
-                // SPV_KHR_cooperative_matrix codegen is a later (post-Metal) arm;
-                // placeholder zero so the op is total.
-                let result_ty = self.scalar_type_id(*ty);
-                let zero = self.emit_constant_f32(0.0);
-                self.set_reg(*dst, zero, result_ty);
+            KernelOp::CooperativeMatrixLoad {
+                dst,
+                field,
+                index,
+                stride,
+                frag,
+                from_shared,
+                m,
+                n,
+                k,
+                ty,
+            } => {
+                self.emit_coop_load(
+                    *dst,
+                    *field,
+                    *index,
+                    *stride,
+                    *frag,
+                    *from_shared,
+                    *m,
+                    *n,
+                    *k,
+                    *ty,
+                )?;
             }
-            KernelOp::CooperativeMatrixStore { .. } => {
-                // Placeholder no-op until native cooperative-matrix store lands.
+            KernelOp::CooperativeMatrixStore {
+                field,
+                index,
+                stride,
+                src,
+                ..
+            } => {
+                self.emit_coop_store(*field, *index, *stride, *src)?;
             }
         }
 

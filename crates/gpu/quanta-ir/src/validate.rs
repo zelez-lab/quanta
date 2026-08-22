@@ -197,6 +197,25 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
                 reason: "dynamic shared memory: its size reaches no dispatch on any backend (no setThreadgroupMemoryLength / SPIR-V spec constant); declare a sized `#[shared]` array",
             });
         }
+        // Cooperative matrices have native lowerings on Metal
+        // (`simdgroup_matrix`) and SPIR-V (`SPV_KHR_cooperative_matrix`);
+        // WGSL has no type for them and the CPU executor no subgroup-
+        // collective fragment model. Whether a GPU device enumerates the
+        // kernel's SHAPE is the driver's check at wave creation.
+        CooperativeMatrixLoad { ty, .. }
+        | CooperativeMatrixStore { ty, .. }
+        | CooperativeMMA { ty, .. }
+            if matches!(
+                caps.backend,
+                crate::caps::Backend::WebGpu | crate::caps::Backend::Cpu
+            ) =>
+        {
+            report.issues.push(ValidationIssue {
+                location: format!("{}: {}", loc, op_name(op)),
+                ty: *ty,
+                reason: "cooperative matrix has no lowering on this backend (WGSL has no matrix type; the CPU executor has no fragment model) — Metal and Vulkan only",
+            });
+        }
         // In-kernel debug print has no working GPU lowering: SPIR-V and WGSL
         // emit nothing, and the MSL `_debug_buf` at buffer(30) is never
         // bound by the Metal driver (an unbound-buffer fault, not a print).

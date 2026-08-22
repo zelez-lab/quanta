@@ -199,6 +199,12 @@ jobs:
           cargo test --test gpu_subgroup_intrinsics --features software --no-default-features
           cargo test --test gpu_subgroup_intrinsics_typed --features software --no-default-features
 
+      # Cooperative matrices: the CPU device enumerates no shape, so this
+      # lane pins the probe + the refusal path (a kernel on an
+      # unenumerated shape is refused at wave creation, never dispatched).
+      - name: Cooperative-matrix probe + refusal (software lane)
+        run: cargo test --test gpu_coopmat --features software,compute --no-default-features -- --nocapture
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
@@ -274,6 +280,7 @@ jobs:
           cargo test --test texture_write_region --features metal,render -- --test-threads=1
           cargo test --test shader_parity_draw --features metal,render -- --test-threads=1
           cargo test --test icb_metal --features metal,compute -- --test-threads=1
+          cargo test --test gpu_coopmat --features metal,compute,jit -- --test-threads=1 --nocapture
           cargo test -p quanta-nn --features metal -- --test-threads=1
 
   # ─── Companion-crate suites (CPU software executor) ─────────────────
@@ -810,6 +817,11 @@ jobs:
           cargo test --test gpu_deferred --no-default-features --features vulkan,jit,compute
           cargo test --test gpu_int_div_zero --no-default-features --features vulkan,jit,compute
           cargo test --test ray_tracing_vulkan --no-default-features --features vulkan,render,compute,jit
+          # SPV_KHR_cooperative_matrix on lavapipe: the probe line prints
+          # what this runner's Mesa enumerates; the oracle check runs
+          # only when a uniform-f32 shape is listed, and skips loudly
+          # otherwise. The refusal path asserts on every device.
+          cargo test --test gpu_coopmat --no-default-features --features vulkan,jit,compute -- --nocapture
 
       # Memory surface on a real Vulkan implementation: topology
       # (lavapipe = CPU type → Unified), zero-copy host import (native

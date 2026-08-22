@@ -104,7 +104,71 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// callers (e.g. `quanta-blas`'s tensor-core GEMM) fall back to a scalar
     /// kernel there.
     fn supports_cooperative_matrix(&self) -> bool {
-        false
+        !self.cooperative_matrix_shapes().is_empty()
+    }
+
+    /// The cooperative-matrix shapes this device executes natively, at
+    /// subgroup scope. Empty when the backend has no native path — the
+    /// default, and what [`Self::supports_cooperative_matrix`] reads.
+    fn cooperative_matrix_shapes(&self) -> alloc::vec::Vec<crate::CoopMatrixShape> {
+        alloc::vec::Vec::new()
+    }
+
+    /// Refuse a JIT kernel whose cooperative-matrix shapes this device
+    /// did not enumerate. Quanta's ops carry one element type for `A`,
+    /// `B`, `C` and `D`, so a device shape matches only when all four of
+    /// its types equal the op's. Drivers call this after the backend
+    /// validator and before building the pipeline — the error names the
+    /// shape the kernel wants and the shapes the device has.
+    fn check_cooperative_matrix_shapes(
+        &self,
+        kernel: &quanta_ir::KernelDef,
+    ) -> Result<(), QuantaError> {
+        let used = quanta_ir::cooperative_matrix_shapes_used(kernel);
+        if used.is_empty() {
+            return Ok(());
+        }
+        let have = self.cooperative_matrix_shapes();
+        for (m, n, k, ty) in used {
+            let ok = have.iter().any(|s| {
+                s.m == m
+                    && s.n == n
+                    && s.k == k
+                    && s.ab_ty == ty
+                    && s.c_ty == ty
+                    && s.result_ty == ty
+            });
+            if !ok {
+                let listed: alloc::vec::Vec<alloc::string::String> = have
+                    .iter()
+                    .map(|s| {
+                        alloc::format!(
+                            "{}x{}x{} {:?}/{:?}->{:?}",
+                            s.m,
+                            s.n,
+                            s.k,
+                            s.ab_ty,
+                            s.c_ty,
+                            s.result_ty
+                        )
+                    })
+                    .collect();
+                return Err(QuantaError::not_supported(alloc::format!(
+                    "kernel `{}` uses {}x{}x{} {:?} cooperative matrices; this device enumerates [{}]",
+                    kernel.name,
+                    m,
+                    n,
+                    k,
+                    ty,
+                    if listed.is_empty() {
+                        alloc::string::String::from("none — no cooperative-matrix support")
+                    } else {
+                        listed.join(", ")
+                    }
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Which precompiled artifact this driver loads. Required — every

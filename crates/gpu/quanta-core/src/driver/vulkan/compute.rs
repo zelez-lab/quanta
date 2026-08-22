@@ -94,6 +94,11 @@ impl VulkanDevice {
             .with_context(&format!("{}", report)));
         }
 
+        // The module will declare `CooperativeMatrixKHR` for any fragment
+        // it uses; only a device that enumerated that exact shape (and so
+        // enabled the extension) can create the pipeline.
+        crate::GpuDevice::check_cooperative_matrix_shapes(self, &kernel)?;
+
         let spirv = quanta_ir::emit_spirv::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT SPIR-V emit: {}", e)))?;
         let mut wave = self.wave_impl(&spirv)?;
@@ -125,6 +130,24 @@ impl VulkanDevice {
         }
         // LLVM's SPIR-V backend may emit a trailing byte — truncate to word boundary.
         let kernel = &kernel[..kernel.len() & !3];
+        // A precompiled module that declares `CooperativeMatrixKHR` can only
+        // be loaded where the extension was enabled — which this driver does
+        // exactly when the device enumerated at least one shape. Refuse with
+        // a clear error instead of a pipeline-creation failure.
+        if self.cooperative_matrix_shapes.is_empty() {
+            let words: Vec<u32> = kernel
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            if crate::driver::spirv_meta::declares_capability(
+                &words,
+                crate::driver::spirv_meta::CAPABILITY_COOPERATIVE_MATRIX_KHR,
+            ) {
+                return Err(QuantaError::not_supported(
+                    "precompiled kernel declares CooperativeMatrixKHR; this device has no VK_KHR_cooperative_matrix support",
+                ));
+            }
+        }
         // Try spirv-opt optimization pass (no-op if spirv-opt not installed)
         let optimized = try_optimize_spirv(kernel);
         let spirv_words: Vec<u32> = optimized

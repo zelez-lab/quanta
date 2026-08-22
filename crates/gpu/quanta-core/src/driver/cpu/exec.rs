@@ -974,19 +974,28 @@ pub(super) fn execute_ops(
                 // Return zero for now.
                 ctx.regs.insert(dst.0, Value::U32(0));
             }
+            // The CPU executor has no subgroup-collective fragment model;
+            // the validator refuses these ops for the CPU backend and the
+            // CPU lane reports no cooperative-matrix shapes, so quanta-blas
+            // routes to the scalar tiled GEMM. Error rather than the old
+            // placeholder zero if anything reaches here anyway.
             KernelOp::CooperativeMMA { dst, .. } => {
-                // Cooperative matrix multiply-accumulate: not supported in CPU
-                // mode (the CPU lane reports supports_cooperative_matrix=false,
-                // so quanta-blas routes to the scalar tiled GEMM here).
-                ctx.regs.insert(dst.0, Value::F32(0.0));
+                return Err(format!(
+                    "CooperativeMMA(r{}): no cooperative-matrix execution on the CPU device",
+                    dst.0
+                ));
             }
             KernelOp::CooperativeMatrixLoad { dst, .. } => {
-                // Subgroup-collective fragment load: no CPU execution (gated
-                // out by capability). Placeholder so the op is total.
-                ctx.regs.insert(dst.0, Value::F32(0.0));
+                return Err(format!(
+                    "CooperativeMatrixLoad(r{}): no cooperative-matrix execution on the CPU device",
+                    dst.0
+                ));
             }
-            KernelOp::CooperativeMatrixStore { .. } => {
-                // Placeholder no-op (gated out on the CPU lane).
+            KernelOp::CooperativeMatrixStore { src, .. } => {
+                return Err(format!(
+                    "CooperativeMatrixStore(r{}): no cooperative-matrix execution on the CPU device",
+                    src.0
+                ));
             }
             KernelOp::SubgroupSize { dst } => {
                 // Cooperative warp width on the CPU lane (see SUBGROUP_SIZE).

@@ -340,6 +340,145 @@ fn subgroup_size_kernel() -> quanta_ir::KernelDef {
     }
 }
 
+/// One 8×8×8 f32 cooperative-matrix tile, `C += A·B` over a K loop — the
+/// shape of quanta-blas's tensor-core GEMM. The accumulator is reassigned
+/// inside the loop, so it is a demoted register whose `Function`-storage
+/// variable must carry the matrix type; the module must declare
+/// `SPV_KHR_cooperative_matrix` + `CooperativeMatrixKHR`. spirv-val pins
+/// all of it on the AOT twin (the JIT twin is pinned by quanta-blas's
+/// `spirv_val_tc`).
+fn cooperative_matrix_kernel() -> quanta_ir::KernelDef {
+    use quanta_ir::*;
+    let f = ScalarType::F32;
+    let u = ScalarType::U32;
+    let field = |name: &str, slot: u32, write: bool| {
+        if write {
+            KernelParam::FieldWrite {
+                name: name.into(),
+                slot,
+                scalar_type: f,
+            }
+        } else {
+            KernelParam::FieldRead {
+                name: name.into(),
+                slot,
+                scalar_type: f,
+            }
+        }
+    };
+    // r0 = 0 (tile origin), r1 = 8 (stride), r2 = K/8 loop count, r3 = k step,
+    // r4 = accumulator fragment, r5/r6 = A/B fragments, r7 = k*8 offset.
+    let k_const = |dst: u32, v: u32| KernelOp::Const {
+        dst: Reg(dst),
+        value: ConstValue::U32(v),
+    };
+    let body = vec![
+        k_const(0, 0),
+        k_const(1, 8),
+        k_const(2, 2),
+        k_const(8, 8),
+        KernelOp::CooperativeMatrixLoad {
+            dst: Reg(4),
+            field: 2,
+            index: Reg(0),
+            stride: Reg(1),
+            frag: MatrixFrag::Accumulator,
+            from_shared: false,
+            m: 8,
+            n: 8,
+            k: 8,
+            ty: f,
+        },
+        KernelOp::Loop {
+            count: Reg(2),
+            iter_reg: Reg(3),
+            body: vec![
+                KernelOp::BinOp {
+                    dst: Reg(7),
+                    op: BinOp::Mul,
+                    a: Reg(3),
+                    b: Reg(8),
+                    ty: u,
+                },
+                KernelOp::CooperativeMatrixLoad {
+                    dst: Reg(5),
+                    field: 0,
+                    index: Reg(7),
+                    stride: Reg(1),
+                    frag: MatrixFrag::A,
+                    from_shared: false,
+                    m: 8,
+                    n: 8,
+                    k: 8,
+                    ty: f,
+                },
+                KernelOp::CooperativeMatrixLoad {
+                    dst: Reg(6),
+                    field: 1,
+                    index: Reg(7),
+                    stride: Reg(1),
+                    frag: MatrixFrag::B,
+                    from_shared: false,
+                    m: 8,
+                    n: 8,
+                    k: 8,
+                    ty: f,
+                },
+                KernelOp::CooperativeMMA {
+                    dst: Reg(4),
+                    a: Reg(5),
+                    b: Reg(6),
+                    c: Reg(4),
+                    m: 8,
+                    n: 8,
+                    k: 8,
+                    ty: f,
+                },
+            ],
+        },
+        KernelOp::CooperativeMatrixStore {
+            field: 2,
+            index: Reg(0),
+            stride: Reg(1),
+            src: Reg(4),
+            m: 8,
+            n: 8,
+            k: 8,
+            ty: f,
+        },
+    ];
+    KernelDef {
+        name: "coopmat_tile".to_string(),
+        params: vec![
+            field("a", 0, false),
+            field("b", 1, false),
+            field("c", 2, true),
+        ],
+        body,
+        body_source: None,
+        next_reg: 9,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [32, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
+#[test]
+fn spirv_val_cooperative_matrix_tile() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    if compiler_path().is_none() {
+        eprintln!("skipping: quanta-compiler not built");
+        return;
+    }
+    compile_and_validate(&cooperative_matrix_kernel(), "coopmat_tile");
+}
+
 // --- Shader (vertex/fragment) SPIR-V validation ---
 
 /// Validate vertex/fragment SPIR-V by writing it to a temp file and running spirv-val.

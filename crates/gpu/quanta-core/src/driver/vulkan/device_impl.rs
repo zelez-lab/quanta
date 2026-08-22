@@ -33,6 +33,13 @@ impl GpuDevice for VulkanDevice {
         crate::ArtifactKind::Spirv
     }
 
+    /// The `VK_KHR_cooperative_matrix` shapes enumerated at discovery —
+    /// non-empty exactly when the extension and feature were enabled on
+    /// this device.
+    fn cooperative_matrix_shapes(&self) -> alloc::vec::Vec<crate::CoopMatrixShape> {
+        self.cooperative_matrix_shapes.clone()
+    }
+
     fn install_self_ref(&self, self_ref: alloc::sync::Weak<dyn GpuDevice>) {
         self.self_ref.install(self_ref);
     }

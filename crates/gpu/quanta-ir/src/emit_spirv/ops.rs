@@ -2115,21 +2115,55 @@ impl SpvEmitter {
                 // Dynamic parallelism not supported in Vulkan compute
             }
 
-            KernelOp::CooperativeMMA { dst, ty, .. } => {
-                // Cooperative matrix multiply-add not yet supported; placeholder zero.
-                let result_ty = self.scalar_type_id(*ty);
-                let zero = self.emit_constant_f32(0.0);
-                self.set_reg(*dst, zero, result_ty);
+            // SPV_KHR_cooperative_matrix — see `coopmat.rs`. These used to
+            // be placeholder zeros / a no-op, hidden behind the capability
+            // gate; the validator now refuses them on devices that did not
+            // enumerate the shape, and the emitter lowers them for real.
+            KernelOp::CooperativeMMA {
+                dst,
+                a,
+                b,
+                c,
+                m,
+                n,
+                k,
+                ty,
+            } => {
+                self.emit_coop_mma(*dst, *a, *b, *c, *m, *n, *k, *ty)?;
             }
-            KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
-                // SPV_KHR_cooperative_matrix codegen is a later arm (Metal-first);
-                // placeholder zero until then.
-                let result_ty = self.scalar_type_id(*ty);
-                let zero = self.emit_constant_f32(0.0);
-                self.set_reg(*dst, zero, result_ty);
+            KernelOp::CooperativeMatrixLoad {
+                dst,
+                field,
+                index,
+                stride,
+                frag,
+                from_shared,
+                m,
+                n,
+                k,
+                ty,
+            } => {
+                self.emit_coop_load(
+                    *dst,
+                    *field,
+                    *index,
+                    *stride,
+                    *frag,
+                    *from_shared,
+                    *m,
+                    *n,
+                    *k,
+                    *ty,
+                )?;
             }
-            KernelOp::CooperativeMatrixStore { .. } => {
-                // Placeholder no-op until native cooperative-matrix store lands.
+            KernelOp::CooperativeMatrixStore {
+                field,
+                index,
+                stride,
+                src,
+                ..
+            } => {
+                self.emit_coop_store(*field, *index, *stride, *src)?;
             }
         }
 

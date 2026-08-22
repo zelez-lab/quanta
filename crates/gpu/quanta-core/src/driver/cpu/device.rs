@@ -579,6 +579,16 @@ impl GpuDevice for CpuDevice {
         ] {
             check(&def).map_err(QuantaError::compilation_failed)?;
         }
+        // The same capability-table pass the GPU drivers run: ops with no
+        // CPU execution (cooperative matrices, dynamic shared memory) are
+        // refused here, at wave creation, rather than at the first dispatch.
+        let report = quanta_ir::validate::validate_for(&quanta_ir::caps::CPU, &def);
+        if !report.is_ok() {
+            return Err(QuantaError::not_supported(
+                "kernel uses an op the CPU device cannot execute",
+            )
+            .with_context(&format!("{}", report)));
+        }
         // Hoist barriers nested in (uniform) control flow up to the top
         // level so the cooperative segmenter sees them. A barrier under a
         // divergent branch is UB on real GPUs, so the only barriers we

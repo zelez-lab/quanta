@@ -176,6 +176,11 @@ impl MetalDevice {
             .with_context(&format!("{}", report)));
         }
 
+        // `simdgroup_matrix` exists only at the shapes this device reports
+        // (8×8×8, f32/f16, family 7+); any other shape would reach the MSL
+        // compiler as an invalid template instantiation.
+        crate::GpuDevice::check_cooperative_matrix_shapes(self, &kernel)?;
+
         let msl = quanta_ir::emit_msl::emit(&kernel)
             .map_err(|e| QuantaError::compilation_failed(format!("JIT MSL emit: {}", e)))?;
 

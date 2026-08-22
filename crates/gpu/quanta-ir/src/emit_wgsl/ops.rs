@@ -645,8 +645,11 @@ pub(super) fn emit_op(
                 c.0
             ));
         }
+        // WGSL has no cooperative-matrix type. The validator refuses these
+        // ops for the WebGPU backend before emission; the arms below only
+        // keep the match total.
         KernelOp::CooperativeMatrixLoad { dst, ty, .. } => {
-            // WGSL has no cooperative-matrix type; placeholder zero.
+            // Unreachable past the validator — placeholder zero.
             out.push_str(&format!(
                 "{}var r{}: {} = {}(0);\n",
                 pad,
