@@ -1007,6 +1007,76 @@ fn with_discovery_env<T>(backend: Option<&str>, cpu: Option<&str>, body: impl Fn
     out
 }
 
+/// Like `with_discovery_env`, also setting (or clearing) `QUANTA_DEVICE`.
+/// Same lock discipline: the caller holds `env_lock`.
+fn with_device_env<T>(backend: Option<&str>, device: Option<&str>, body: impl FnOnce() -> T) -> T {
+    let prev_device = std::env::var("QUANTA_DEVICE").ok();
+    unsafe {
+        match device {
+            Some(v) => std::env::set_var("QUANTA_DEVICE", v),
+            None => std::env::remove_var("QUANTA_DEVICE"),
+        }
+    }
+    let out = with_discovery_env(backend, None, body);
+    unsafe {
+        match prev_device {
+            Some(v) => std::env::set_var("QUANTA_DEVICE", v),
+            None => std::env::remove_var("QUANTA_DEVICE"),
+        }
+    }
+    out
+}
+
+/// `QUANTA_DEVICE` selects by index into the discovered list: index 0 of a
+/// `QUANTA_BACKEND=cpu` list is the CPU device.
+#[test]
+fn quanta_device_index_selects_from_the_discovered_list() {
+    let _guard = env_lock();
+    let gpu = with_device_env(Some("cpu"), Some("0"), || quanta::init())
+        .expect("QUANTA_DEVICE=0 must select the first discovered device");
+    assert_eq!(gpu.name(), "Quanta CPU (software)");
+}
+
+/// `QUANTA_DEVICE` selects by case-insensitive name substring.
+#[test]
+fn quanta_device_name_substring_selects_case_insensitively() {
+    let _guard = env_lock();
+    let gpu = with_device_env(Some("cpu"), Some("SOFTWARE"), || quanta::init())
+        .expect("QUANTA_DEVICE=SOFTWARE must match `Quanta CPU (software)`");
+    assert_eq!(gpu.name(), "Quanta CPU (software)");
+}
+
+/// A selector that matches nothing never falls through: `init` fails with
+/// an error that names the lever and lists the devices that were found.
+#[test]
+fn quanta_device_no_match_is_a_named_error_listing_devices() {
+    let _guard = env_lock();
+    for bad in ["no-such-gpu", "7"] {
+        let err = match with_device_env(Some("cpu"), Some(bad), || quanta::init()) {
+            Ok(g) => panic!("QUANTA_DEVICE={bad} must not select `{}`", g.name()),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err.kind, quanta::QuantaErrorKind::InvalidParam(_)),
+            "expected InvalidParam, got {:?}",
+            err.kind
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("QUANTA_DEVICE") && msg.contains("Quanta CPU (software)"),
+            "error must name the lever and list the discovered devices, got: {msg}"
+        );
+    }
+}
+
+/// Blank is the same as unset.
+#[test]
+fn quanta_device_blank_is_unset() {
+    let _guard = env_lock();
+    let gpu = with_device_env(Some("cpu"), Some("  "), || quanta::init()).expect("blank = unset");
+    assert_eq!(gpu.name(), "Quanta CPU (software)");
+}
+
 /// `QUANTA_BACKEND=cpu` selects exactly the CPU software device — even with
 /// `QUANTA_CPU` unset, and regardless of any GPU present on the host.
 #[test]

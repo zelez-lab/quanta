@@ -105,6 +105,71 @@ fn forced_backend() -> Result<Option<ForcedBackend>, QuantaError> {
     }
 }
 
+/// The `QUANTA_DEVICE` selection lever, parsed.
+#[cfg(feature = "std")]
+enum DeviceSelector {
+    /// A zero-based index into the [`devices`] order (after any
+    /// `QUANTA_BACKEND` narrowing).
+    Index(usize),
+    /// A case-insensitive substring of the device name.
+    Name(alloc::string::String),
+}
+
+/// Parse `QUANTA_DEVICE`. Unset or blank → `None` (first device). A
+/// decimal integer is an index; anything else is a name substring. Never
+/// an error by itself — an index or name that matches nothing is reported
+/// by [`init`] together with the names that were discovered, which is the
+/// information the user actually needs on a new machine.
+#[cfg(feature = "std")]
+fn device_selector() -> Option<DeviceSelector> {
+    let raw = std::env::var("QUANTA_DEVICE").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(match raw.parse::<usize>() {
+        Ok(i) => DeviceSelector::Index(i),
+        Err(_) => DeviceSelector::Name(raw.to_ascii_lowercase()),
+    })
+}
+
+/// Apply the `QUANTA_DEVICE` lever to a discovered list. The list is
+/// consumed; the chosen device is returned, the rest dropped.
+#[cfg(feature = "std")]
+fn select_device(
+    mut devs: alloc::vec::Vec<Gpu>,
+    selector: Option<DeviceSelector>,
+) -> Result<Gpu, QuantaError> {
+    let Some(selector) = selector else {
+        return devs.drain(..).next().ok_or_else(QuantaError::no_device);
+    };
+    let names: alloc::vec::Vec<alloc::string::String> = devs
+        .iter()
+        .map(|g| alloc::string::String::from(g.name()))
+        .collect();
+    let pos = match &selector {
+        DeviceSelector::Index(i) if *i < devs.len() => Some(*i),
+        DeviceSelector::Index(_) => None,
+        DeviceSelector::Name(needle) => names
+            .iter()
+            .position(|n| n.to_ascii_lowercase().contains(needle.as_str())),
+    };
+    match pos {
+        Some(i) => Ok(devs.swap_remove(i)),
+        None => {
+            let want = match selector {
+                DeviceSelector::Index(i) => alloc::format!("index {i}"),
+                DeviceSelector::Name(n) => alloc::format!("name containing {n:?}"),
+            };
+            Err(QuantaError::invalid_param(alloc::format!(
+                "QUANTA_DEVICE asks for {want}, but discovery found {} device(s): [{}]",
+                names.len(),
+                names.join(", ")
+            )))
+        }
+    }
+}
+
 /// Discover available GPU devices, in the platform's fixed preference
 /// order (see [`init`] for the contract).
 ///
@@ -234,7 +299,17 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
 ///
 /// `init` returns the first device [`devices`] enumerates in that order.
 /// To choose a different one, call [`devices`] and pick from the list —
-/// that is the programmatic override; there is no separate selection API.
+/// that is the programmatic override — or set `QUANTA_DEVICE` (below).
+///
+/// # The `QUANTA_DEVICE` selection lever
+///
+/// On a host with several devices of the same backend (an integrated GPU
+/// plus a discrete card on Vulkan, say) `QUANTA_DEVICE` picks which one
+/// `init` returns: a zero-based **index** into the [`devices`] order, or a
+/// case-insensitive **substring of the device name** (`QUANTA_DEVICE=radeon`).
+/// It composes with `QUANTA_BACKEND`, which narrows the list first. A value
+/// that matches nothing fails `init` with an error listing the discovered
+/// names — the lever never falls through to a different device.
 ///
 /// # The `QUANTA_BACKEND` forcing lever
 ///
@@ -251,11 +326,11 @@ pub fn init() -> Result<Gpu, QuantaError> {
     // is present.
     let forced = forced_backend()?;
 
-    let mut devs = devices();
-    match devs.drain(..).next() {
-        Some(dev) => Ok(dev),
-        None => Err(no_device_after_discovery(forced)),
+    let devs = devices();
+    if devs.is_empty() {
+        return Err(no_device_after_discovery(forced));
     }
+    select_device(devs, device_selector())
 }
 
 /// The `init` family's terminal error when discovery yields nothing.
