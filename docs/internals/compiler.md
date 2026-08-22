@@ -391,15 +391,21 @@ fetches them.
   per-push. It builds, verifies, and publishes in one click.
 - **The naming contract (the whole point).** `<rev>` in the asset name is
   the string `quanta-compiler --rev` prints for that checkout, i.e. the
-  `QUANTA_BUILD_REV` stamp. A build step derives it with the *identical*
-  command `quanta-compiler/build.rs` uses — `git describe --always --dirty
-  --exclude '*'`, run in the crate dir behind the same `git ls-files`
-  tracked guard — so the asset name and the binary's own `--rev` agree by
-  construction. `quanta-dsl-core/build.rs` (the downloader side) derives
+  `QUANTA_BUILD_REV` stamp. A build step derives it the same way
+  `quanta-compiler/build.rs` does — the **full** `git rev-parse HEAD` sha,
+  `-dirty` appended on tracked modifications, in the crate dir behind the
+  same `git ls-files` tracked guard — so the asset name and the binary's
+  own `--rev` agree by construction. Full shas, not `git describe`
+  abbreviations: an abbreviation's length depends on the clone it runs
+  in, and a 7-char release stamp against an 8-char dependency-checkout
+  stamp of the same commit was once declared a proven mismatch (dija
+  R12). The handshake's comparison is prefix-tolerant for binaries
+  stamped the old way. `quanta-dsl-core/build.rs` (the downloader side) derives
   the consumer's own rev with the same command, so the download URL the
   consumer builds matches the published asset. This identity is the single
   correctness point of the whole feature; the checkout uses `fetch-depth:
-  0` so git's abbreviation length matches a consumer's full checkout.
+  0` so a bare sha is resolvable (and the stamp is the full sha, so no
+  abbreviation length is involved any more).
 - **The exact-rev verify gate.** Before any asset is published, a `verify`
   job on clean runners (no LLVM, no Rust) downloads each archive, checks
   its sha256, runs `--rev`, and **asserts the output equals the `<rev>` in

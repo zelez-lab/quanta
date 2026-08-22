@@ -57,6 +57,7 @@ import Quanta.Wasm.LowerInvariants
 import Quanta.Wasm.LowerScopeValid
 import Quanta.Wasm.PreservationInduction
 import Quanta.Wasm.WellFormed
+import Quanta.Wasm.PreservationWhile
 
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb

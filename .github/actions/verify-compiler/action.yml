@@ -43,7 +43,8 @@ runs:
       run: |
         set -euo pipefail
         cd crates/lang/quanta-compiler
-        REV=$(git describe --always --dirty --exclude '*')
+        REV=$(git rev-parse HEAD)
+        if [ -n "$(git status --porcelain --untracked-files=no)" ]; then REV="$REV-dirty"; fi
         echo "rev=$REV" >> "$GITHUB_OUTPUT"
 
     - name: Resolve artifact name

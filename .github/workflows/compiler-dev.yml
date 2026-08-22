@@ -26,9 +26,10 @@ name: Compiler Dev Binary (per-rev, on demand)
 #
 # A full commit SHA works as the `ref` input, not just branches and tags:
 # the composite checks out with fetch-depth 0, so a bare SHA is resolvable
-# (a shallow clone cannot resolve an arbitrary SHA). The same full history
-# also keeps `git describe`'s hash abbreviation the same length a consumer's
-# checkout produces, so the derived <rev> matches QUANTA_BUILD_REV.
+# (a shallow clone cannot resolve an arbitrary SHA). The derived <rev> is
+# the FULL sha (`git rev-parse HEAD`, `-dirty` on tracked changes) — the
+# earlier `git describe` abbreviation was only as long as THIS clone made
+# it, and a consumer's dependency checkout abbreviated differently (R12).
 
 on:
   workflow_dispatch:
@@ -72,7 +73,7 @@ jobs:
       # bundle-compiler composite. This workflow's whole reason to exist is the
       # per-rev asset name, so embed-rev + assert-exact-rev are both true: the
       # composite derives <rev> exactly as crates/lang/quanta-compiler/build.rs does
-      # (git describe --always --dirty --exclude '*' under a tracked-guard),
+      # (git rev-parse HEAD + `-dirty`, under a tracked-guard),
       # names the asset quanta-compiler-<rev>-<target>, and asserts the built
       # binary's --rev equals that <rev> before upload — the download-URL
       # contract with crates/lang/quanta-dsl-core/src/binary.rs.
@@ -162,8 +163,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $rev = (git describe --always --dirty --exclude '*' | Out-String).Trim()
-          if ([string]::IsNullOrWhiteSpace($rev)) { Write-Error "git describe produced no rev"; exit 1 }
+          $rev = (git rev-parse HEAD | Out-String).Trim()
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=no | Out-String))) { $rev = "$rev-dirty" }
+          if ([string]::IsNullOrWhiteSpace($rev)) { Write-Error "git rev-parse produced no rev"; exit 1 }
           Write-Host "derived rev: $rev"
           echo "REV=$rev" >> $env:GITHUB_ENV
 
@@ -272,7 +274,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $rev = (git describe --always --dirty --exclude '*').Trim()
+          $rev = (git rev-parse HEAD | Out-String).Trim()
+          if (-not [string]::IsNullOrWhiteSpace((git status --porcelain --untracked-files=no | Out-String))) { $rev = "$rev-dirty" }
           Write-Host "expected rev: $rev"
           cd dl
           $zip = "quanta-compiler-$rev-${{ matrix.target }}.zip"
@@ -352,7 +355,7 @@ jobs:
           rev-exact archive automatically when your consumer pins a main-tip rev.
 
           Assets are named `quanta-compiler-<rev>-<target>.tar.gz` (+ `.sha256`),
-          where `<rev>` is the `git describe --always --dirty --exclude '*'` stamp
+          where `<rev>` is the full-sha `QUANTA_BUILD_REV` stamp (`git rev-parse HEAD`, `-dirty` on tracked changes)
           the compiler reports via `--rev`. Only the **10 most-recent revs** are
           kept here — this is a moving window, not an archive. For a stable,
           version-tagged binary use a tagged GitHub Release instead.

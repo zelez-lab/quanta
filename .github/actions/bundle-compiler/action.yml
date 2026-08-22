@@ -70,7 +70,7 @@ runs:
     #
     # crates/lang/quanta-compiler/build.rs derives that stamp as, verbatim:
     #     git ls-files --error-unmatch Cargo.toml   (the "tracked" guard)
-    #     git describe --always --dirty --exclude '*'   (else "unknown")
+    #     git rev-parse HEAD (+ `-dirty` on tracked changes)   (else "unknown")
     # run with current_dir = the crate's manifest dir. quanta-dsl-core's
     # build.rs (the downloader side of the handshake) uses the IDENTICAL
     # command, so the two agree by construction. quanta-compiler's
@@ -99,9 +99,13 @@ runs:
                "never fetches. Aborting." >&2
           exit 1
         fi
-        REV=$(git describe --always --dirty --exclude '*')
+        # Full sha + `-dirty` on tracked modifications: the exact
+        # derivation both build.rs scripts stamp (an abbreviation's length
+        # depends on the clone it runs in — dija R12).
+        REV=$(git rev-parse HEAD)
+        if [ -n "$(git status --porcelain --untracked-files=no)" ]; then REV="$REV-dirty"; fi
         if [ -z "$REV" ]; then
-          echo "ERROR: git describe produced an empty rev" >&2
+          echo "ERROR: git rev-parse produced an empty rev" >&2
           exit 1
         fi
         echo "rev=$REV" >> "$GITHUB_OUTPUT"

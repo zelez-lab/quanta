@@ -53,11 +53,23 @@ fn stamp_build_rev() {
     let rev = match git(&["rev-parse", "--is-inside-work-tree"]) {
         Ok(_) => {
             if git(&["ls-files", "--error-unmatch", "Cargo.toml"]).is_ok() {
-                match git(&["describe", "--always", "--dirty", "--exclude", "*"]) {
-                    Ok(rev) => Some(rev),
+                // The FULL 40-char sha, never an abbreviation: `git describe`'s
+                // auto-abbreviation length is a property of the repo it runs
+                // in (a shallow CI clone abbreviates shorter than a consumer's
+                // dependency checkout), so two stamps of the SAME commit could
+                // differ and the handshake would call that a proven mismatch
+                // (dija R12). `-dirty` is appended on tracked modifications,
+                // exactly as `describe --dirty` did.
+                match git(&["rev-parse", "HEAD"]) {
+                    Ok(sha) => {
+                        let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+                            .map(|out| !out.trim().is_empty())
+                            .unwrap_or(false);
+                        Some(if dirty { format!("{sha}-dirty") } else { sha })
+                    }
                     Err(reason) => {
                         println!(
-                            "cargo:warning=QUANTA_BUILD_REV stamps `unknown`: git describe \
+                            "cargo:warning=QUANTA_BUILD_REV stamps `unknown`: git rev-parse \
                              failed in a tracked checkout: {reason}"
                         );
                         None

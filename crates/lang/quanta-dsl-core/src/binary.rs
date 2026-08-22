@@ -243,10 +243,12 @@ fn cached_compiler_path() -> Option<std::path::PathBuf> {
 
 /// This build's source revision — the SAME stamp `quanta-compiler --rev`
 /// prints. `quanta-dsl-core/build.rs` and `quanta-compiler/build.rs` derive
-/// it with the identical `git describe --always --dirty --exclude '*'`
-/// command, so an exact-rev asset published by `.github/workflows/
-/// compiler-dev.yml` (whose name embeds the compiler's `--rev`) matches
-/// this string by construction.
+/// it the same way — the full `git rev-parse HEAD` sha, `-dirty` appended
+/// on tracked modifications — so an exact-rev asset published by
+/// `.github/workflows/compiler-dev.yml` (whose name embeds the compiler's
+/// `--rev`) matches this string by construction. Full shas, never
+/// abbreviations: an abbreviation's length is a property of the repo the
+/// command runs in, and two stamps of one commit used to disagree (R12).
 fn own_rev() -> &'static str {
     env!("QUANTA_BUILD_REV")
 }
@@ -693,13 +695,36 @@ pub fn compile_shader(
     }))
 }
 
+/// Split a stamp into `(sha, dirty)`.
+fn rev_parts(rev: &str) -> (&str, bool) {
+    match rev.strip_suffix("-dirty") {
+        Some(sha) => (sha, true),
+        None => (rev, false),
+    }
+}
+
+/// Whether two stamps name the same build: same dirty flag, and one sha
+/// a prefix of the other. Prefix, not equality — a binary stamped before
+/// full shas (a 7- or 8-char `git describe` abbreviation) must still
+/// agree with a full-sha build of the same commit, and the abbreviation
+/// length was never stable across repos (R12: the published
+/// `aarch64-apple-darwin` alpha.12 binary said `8c1bdd4`, the dependency
+/// checkout said `8c1bdd4f`, and the handshake called that a proven
+/// mismatch). A clean and a `-dirty` stamp of one commit do NOT agree:
+/// the dirty tree's emitters may differ.
+fn revs_agree(a: &str, b: &str) -> bool {
+    let (sa, da) = rev_parts(a);
+    let (sb, db) = rev_parts(b);
+    da == db && !sa.is_empty() && !sb.is_empty() && (sa.starts_with(sb) || sb.starts_with(sa))
+}
+
 /// Whether a probed rev pair constitutes a PROVEN mismatch — the only
 /// case the handshake may treat as fatal. `unknown` on either side
 /// (the build script's git probe failed, or the binary was built
 /// outside a tracked checkout) proves nothing, exactly like a
 /// pre-stamp binary that lacks `--rev`: unprovable stays a warning.
 fn rev_mismatch_is_provable(own_rev: &str, bin_rev: &str) -> bool {
-    own_rev != bin_rev && own_rev != "unknown" && bin_rev != "unknown"
+    own_rev != "unknown" && bin_rev != "unknown" && !revs_agree(own_rev, bin_rev)
 }
 
 /// Outcome of probing a resolved compiler binary once with `--rev`.
@@ -1008,6 +1033,28 @@ mod rev_taxonomy_tests {
     fn only_stamped_differing_revs_prove_a_mismatch() {
         // The one fatal case: both sides stamped, different.
         assert!(rev_mismatch_is_provable("aa9ce6c", "288ad4e"));
+        // R12: abbreviations of one commit agree, whatever their length,
+        // and with a full sha on either side.
+        assert!(!rev_mismatch_is_provable("8c1bdd4", "8c1bdd4f"));
+        assert!(!rev_mismatch_is_provable(
+            "8c1bdd4fc00490059d07c91925d5e0a8242dd2c1",
+            "8c1bdd4"
+        ));
+        assert!(!rev_mismatch_is_provable(
+            "8c1bdd4f",
+            "8c1bdd4fc00490059d07c91925d5e0a8242dd2c1"
+        ));
+        // A different commit sharing a short prefix is still different.
+        assert!(rev_mismatch_is_provable(
+            "8c1bdd4fc00490059d07c91925d5e0a8242dd2c1",
+            "8c1bdd4fdeadbeef"
+        ));
+        // Dirty vs clean of the same commit is a mismatch; dirty vs dirty agrees.
+        assert!(rev_mismatch_is_provable("8c1bdd4f-dirty", "8c1bdd4f"));
+        assert!(!rev_mismatch_is_provable(
+            "8c1bdd4f-dirty",
+            "8c1bdd4fc004-dirty"
+        ));
         // Equal never proves — including unknown==unknown, the silent
         // crates.io/vendored case where neither side has a rev.
         assert!(!rev_mismatch_is_provable("aa9ce6c", "aa9ce6c"));
@@ -1096,9 +1143,12 @@ mod download_url_tests {
 
     #[test]
     fn clean_committed_revs_are_publishable() {
-        // The forms `git describe --always --exclude '*'` yields on a
-        // clean checkout: a bare abbreviated hash, or (defensively) a
+        // A clean stamp: the full `rev-parse` sha today, the bare
+        // abbreviation older binaries carry, or (defensively) a
         // tag-relative describe without the -dirty suffix.
+        assert!(rev_is_publishable(
+            "8c1bdd4fc00490059d07c91925d5e0a8242dd2c1"
+        ));
         assert!(rev_is_publishable("77e51d9"));
         assert!(rev_is_publishable("deadbeef"));
         assert!(rev_is_publishable("v0.1.0-3-g77e51d9"));
