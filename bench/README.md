@@ -8,9 +8,10 @@ Linux lane is dispatch-only); a ≥25% move in either direction fails the job.
 ```
 bench/
   baselines/
-    macos-aarch64.json    # Apple M1 Pro reference (M-series macOS, arm64)
-    linux-x86_64.json     # lavapipe (llvmpipe) reference, recorded on the ubuntu CI runner
-    windows-x86_64.json   # Intel Iris Xe reference (self-hosted Windows rig)
+    <os>-<arch>-<device-slug>.json   # one baseline PER DEVICE per OS/arch:
+    macos-aarch64-apple-m1-pro.json                    # Apple M1 Pro
+    linux-x86_64-llvmpipe-llvm-20-1-2-256-bits.json    # lavapipe on the ubuntu CI runner
+    windows-x86_64-intel-r-iris-r-xe-graphics.json     # Intel Iris Xe (self-hosted Windows rig)
   README.md               # this file
 
 crates/tools/quanta-bench/      # the harness binary
@@ -30,9 +31,21 @@ Direct invocation:
 ```sh
 cargo run --release -p quanta-bench -- run --out /tmp/cur.json
 cargo run --release -p quanta-bench -- compare \
-    --baseline bench/baselines/macos-aarch64.json \
+    --baseline-dir bench/baselines \
     --current /tmp/cur.json \
     --threshold 5
+```
+
+`compare --baseline-dir` picks `<platform>-<device-slug>.json` from the
+device named in the current report (the slug is the GPU name lowercased with
+punctuation collapsed to `-`); `--baseline PATH` still names a file
+explicitly. A device with no file leaves the gate unarmed — the run passes
+and says so — until `quanta-bench run --out-dir bench/baselines` records one.
+That is how a host with two GPUs (an integrated one and an eGPU, say) keeps a
+baseline for each, and why llvmpipe's LLVM version is part of its name: a
+Mesa bump is a different device and unarms the gate until re-recorded.
+
+```sh
 ```
 
 ## Workloads
@@ -51,7 +64,7 @@ cargo run --release -p quanta-bench -- compare \
   `perf-regression-linux`'s lavapipe alike. Shared runners have neighbor
   noise; tightening below 25% produces flaky failures.
 - **Windows (Iris Xe rig):** no CI job yet — `just bench-check` on the rig
-  picks `windows-x86_64.json` up by host OS.
+  resolves the Iris Xe file from the device name.
 - **Improvements ≥threshold also fail.** Legitimate optimizations land with
   a baseline update in the same PR. This forces every speedup to be
   consciously committed, not silently masked by future regressions.
@@ -62,9 +75,9 @@ Improvements ≥threshold fail by design — the same PR must update the
 baseline:
 
 ```sh
-just bench-record       # overwrite baseline JSON
-git diff bench/baselines/macos-aarch64.json
-git add bench/baselines/macos-aarch64.json
+just bench-record       # rewrites bench/baselines/<platform>-<device>.json for this device
+git diff bench/baselines/
+git add bench/baselines/
 ```
 
 The PR description should explain *why* the change in numbers — which
@@ -82,8 +95,8 @@ optimization landed, which workload moved, and ideally a flame graph.
   backend. The Linux numbers come from lavapipe — a CPU *Vulkan*
   implementation, not Quanta's own CPU executor: the `perf-regression-linux`
   job (`workflow_dispatch` only) runs the smoke and the full release suite
-  on the ubuntu runner's lavapipe and compares against
-  `linux-x86_64.json` at a 25% threshold. Smoke on the `software` backend
+  on the ubuntu runner's lavapipe and compares against the llvmpipe
+  baseline at a 25% threshold. Smoke on the `software` backend
   still requires fixing the CPU executor first.
 - **No public dashboard.** `perf.quanta.rs` / GitHub Pages with historical
   trend lines is described in the roadmap but not built yet.

@@ -57,18 +57,20 @@ example-bench-nbody:
     cargo run --example bench_nbody --release
 
 # Performance regression suite (step 069)
-# Records JSON results; gated by `bench-check` against committed baseline.
-BENCH_BASELINE := if os() == "macos" { "bench/baselines/macos-aarch64.json" } else if os() == "windows" { "bench/baselines/windows-x86_64.json" } else { "bench/baselines/linux-x86_64.json" }
-
+# Records JSON results; gated by `bench-check` against the committed
+# baseline for THE DEVICE THAT RAN: bench/baselines/<os>-<arch>-<device>.json,
+# picked by quanta-bench from the report's own GPU name (an integrated GPU
+# and a discrete card on one host each keep their own file; a device with
+# no file leaves the gate unarmed, loudly, until `just bench-record`).
 bench:
     cargo run --release -p quanta-bench -- run
 
 bench-record:
-    cargo run --release -p quanta-bench -- run --out {{BENCH_BASELINE}}
+    cargo run --release -p quanta-bench -- run --out-dir bench/baselines
 
 bench-check:
     cargo run --release -p quanta-bench -- run --out /tmp/quanta-bench-current.json
-    cargo run --release -p quanta-bench -- compare --baseline {{BENCH_BASELINE}} --current /tmp/quanta-bench-current.json
+    cargo run --release -p quanta-bench -- compare --baseline-dir bench/baselines --current /tmp/quanta-bench-current.json
 
 bench-smoke:
     cargo run --release -p quanta-bench --no-default-features -- run --smoke

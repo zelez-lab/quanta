@@ -514,7 +514,7 @@ jobs:
       - name: Compare against baseline
         # Threshold widened to 25% in CI (shared runners are noisy). Tighten
         # locally with `just bench-check` for tighter regression detection.
-        run: cargo run --release -p quanta-bench -- compare --baseline bench/baselines/macos-aarch64.json --current /tmp/quanta-bench-current.json --threshold 25
+        run: cargo run --release -p quanta-bench -- compare --baseline-dir bench/baselines --current /tmp/quanta-bench-current.json --threshold 25
 
       - name: Upload bench results
         if: always()
@@ -556,7 +556,7 @@ jobs:
   # The linux arm of the perf gate, on the machine class that IS this
   # project's linux bench box: the ubuntu runner's lavapipe. It records
   # the current numbers (download the `bench-results-linux` artifact to
-  # refresh `bench/baselines/linux-x86_64.json`) and, once that baseline
+  # refresh the llvmpipe baseline in `bench/baselines/`) and, once that baseline
   # is committed, compares against it — so the first dispatch seeds the
   # gate and every later one runs it. A linux box with a real GPU
   # intentionally stays unarmed (the device-mismatch gate: llvmpipe is
@@ -621,9 +621,11 @@ jobs:
           gdb -batch -ex run -ex bt -ex 'info registers' \
             --args target/debug/quanta-bench run --smoke 2>&1 | tail -80
 
+      # The baseline is keyed by the device that ran (llvmpipe's name
+      # carries its LLVM version, so a Mesa bump unarms the gate until the
+      # baseline is re-recorded — the compare step says so and passes).
       - name: Compare against baseline
-        if: ${{ hashFiles('bench/baselines/linux-x86_64.json') != '' }}
-        run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- compare --baseline bench/baselines/linux-x86_64.json --current /tmp/quanta-bench-current.json --threshold 25
+        run: cargo run --release -p quanta-bench --no-default-features --features vulkan -- compare --baseline-dir bench/baselines --current /tmp/quanta-bench-current.json --threshold 25
 
       - name: Upload bench results
         if: always()
