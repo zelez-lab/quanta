@@ -32,17 +32,29 @@ structured recursion gives the same behavior a simpler shape:
 Multiple records compose exactly like production's
 `reconstruct_block_brifs`: a later br_if lowers inside the earlier
 one's wrapped tail, so the inner wrap nests inside the outer one
-for free; sibling entries consumed at the same `End` fold
-newest-innermost (`foldl`), matching positions `p1 < p2` ⇒ p2's
-wrap inside p1's.
+for free; sibling entries consumed at the same `End` fold with the
+EARLIER site outermost (`foldr` over the site-ordered list),
+matching positions `p1 < p2` ⇒ p2's wrap inside p1's — production
+walks its records in reverse position order, building the later
+wrap first.
 
 The chain check mirrors production: every frame from the current
 one to the target must be a Block (`lower.rs` fails loudly on
-crossings of If/Else/Loop-labelled frames on this route — the Loop
-crossings take the exit-flag route, which stays refused here, see
-the Stage-A comments). Consequently a body recursion can never
-return a pending entry across a `wloop`/`wif` close; those arms
+crossings of If/Else/Loop-labelled frames on this route). A plain
+entry therefore never reaches a `wloop`/`wif` close; those arms
 refuse defensively if one ever appears.
+
+**The exit-flag route** (`emit_loop_crossing_exit`: a `br`/`br_if`
+to a Block with exactly ONE Loop between — rustc's `while`) is
+modeled by the same entries with `flag := true`: a fresh flag
+register is set `true` and the loop broken out of at the site; the
+entry skips the frames below the loop, is consumed at the loop
+close and at each Block close between the loop and the target (each
+wrapping its post ops in the flag), and its last consumer declares
+the flag `false` ahead of its own ops — the target frame's position
+just before the consumer's composite, where production's
+`insert_decl_at_target` puts it. An If frame between the loop and
+the target stays refused (production records nothing on If frames).
 
 ## Status and the road to preservation
 
@@ -82,6 +94,18 @@ open Quanta.KOps.KernelOp (scopeValid scopeValidOps)
 structure PendingWrap where
   levels : Nat
   cond   : Reg
+  /-- Exit-flag record (the loop-crossing route, production's
+      `emit_loop_crossing_exit`): `cond` is the flag register, set
+      `true` at the site just before the `Break` that leaves the loop.
+      The close that consumes the LAST level declares it `false`
+      ahead of its own ops (`insert_decl_at_target`: the target
+      frame, just before where the consumer's composite lands). -/
+  flag   : Bool := false
+  /-- Frame closes to pass through untouched before the entry starts
+      consuming: the frames between the site and the loop it exits
+      (production records nothing below the loop — the `Break` leaves
+      them). -/
+  skip   : Nat := 0
   deriving Repr, DecidableEq
 
 /-- Stage-A `LowerState` plus the in-flight pending wraps. Kept as a
@@ -93,19 +117,57 @@ structure LowerStateP where
   pending : List PendingWrap
   deriving Repr, DecidableEq
 
-/-- Wrap `tail` once per pending entry, newest entry innermost.
-    Newest-first list order + `foldl` = the latest-position record
-    wraps closest to the tail, mirroring `reconstruct_block_brifs`'
-    "later positions wrap inside earlier ones". -/
-def applyWraps (entries : List PendingWrap) (tail : List KernelOp) : List KernelOp :=
-  entries.foldl (fun acc w => [.branch w.cond [] acc]) tail
+/-- The entries a frame close acts on: those with no frames left to
+    skip. -/
+def activeWraps (entries : List PendingWrap) : List PendingWrap :=
+  entries.filter (·.skip = 0)
 
-/-- Split returned-from-body entries at a Block close: every entry
-    wraps this close's post ops; entries with more levels to go
-    survive with `levels - 1`. -/
+/-- Wrap `tail` once per active entry, EARLIER site outermost. The
+    list is in site order (an arm puts its own entry before the ones
+    its rest produced), and `foldr` wraps the last — latest — site
+    closest to the tail. Mirrors `reconstruct_block_brifs`: records
+    are walked in reverse position order, so the later record's wrap
+    is built first and the earlier one engulfs it. -/
+def applyWraps (entries : List PendingWrap) (tail : List KernelOp) : List KernelOp :=
+  (activeWraps entries).foldr (fun w acc => [.branch w.cond [] acc]) tail
+
+/-- The flag declarations a close emits ahead of its own ops: one
+    `const flag false` per exit-flag entry whose last level this close
+    consumes, in site order (`insert_decl_at_target` inserts each new
+    declaration after the previous ones, before the composite). -/
+def closeDecls (entries : List PendingWrap) : List KernelOp :=
+  entries.filterMap fun w =>
+    if w.skip = 0 ∧ w.flag ∧ w.levels ≤ 1 then some (.const w.cond (.bool false)) else none
+
+/-- Step returned-from-body entries at a frame close: an entry with
+    frames still to skip passes through with one fewer; an active
+    entry has wrapped this close's post ops and survives with
+    `levels - 1` if more closes must wrap, else is dropped. -/
 def stepPending (entries : List PendingWrap) : List PendingWrap :=
   entries.filterMap fun w =>
-    if w.levels ≤ 1 then none else some ⟨w.levels - 1, w.cond⟩
+    if w.skip > 0 then some { w with skip := w.skip - 1 }
+    else if w.levels ≤ 1 then none
+    else some { w with levels := w.levels - 1 }
+
+/-- Index of the innermost `loopK` among the frames above `depth` —
+    the loop an exit-flag record leaves; meaningful when
+    `loopsAbove frames depth = 1`. -/
+def loopIndex (frames : List FrameKind) (depth : Nat) : Nat :=
+  ((frames.take depth).findIdx (· = .loopK))
+
+/-- An exit-flag record for a `br`/`brIf depth` site whose single
+    crossed loop sits at `loopIndex`: skips the frames below the loop,
+    then consumes one level per close from the loop up to (not
+    including) the target. -/
+def exitFlagEntry (frames : List FrameKind) (depth : Nat) (flag : Reg) : PendingWrap :=
+  { levels := depth - loopIndex frames depth, cond := flag, flag := true,
+    skip := loopIndex frames depth }
+
+/-- A plain (non-flag) entry still active at a `wloop` / `wif` close:
+    the record-and-wrap route cannot cross those frames (its chain
+    check is all-Block), so one arriving there is a model bug. -/
+def hasPlainActive (entries : List PendingWrap) : Bool :=
+  entries.any fun w => w.skip = 0 ∧ !w.flag
 
 -- ════════════════════════════════════════════════════════════════════
 -- The pending-wrap translator
@@ -149,7 +211,7 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                   let (s2, postOps) ←
                     lowerInstrsP f frames ⟨s_close, []⟩ post
                   pure (⟨s2.base, s.pending ++ s2.pending ++ stepPending s1.pending⟩,
-                        innerOps ++ applyWraps s1.pending postOps)
+                        closeDecls s1.pending ++ innerOps ++ applyWraps s1.pending postOps)
       | .wloop _ =>
           match fuel with
           | 0 => none
@@ -164,16 +226,22 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                   let s_entry : LowerState := { s.base with currentReg := [] }
                   let (s1, bodyOps) ←
                     lowerInstrsP f (.loopK :: frames) ⟨s_entry, []⟩ body
-                  -- The chain check forbids records crossing a Loop
-                  -- frame; production routes those through the
-                  -- exit-flag mechanism (still refused, Stage A
-                  -- comments apply). Guard loudly.
-                  if s1.pending ≠ [] then none
+                  -- Exit-flag records leaving THIS loop consume their
+                  -- first level here: the loop's post ops (the code
+                  -- between the loop's and the target's `end`) wrap in
+                  -- the flag, and a record with no level left declares
+                  -- its flag ahead of the loop op (production: the
+                  -- record at the loop's parent frame, whose sink
+                  -- `bump_parent_brifs` moved past the loop op). A
+                  -- plain record cannot cross a loop: guard loudly.
+                  if hasPlainActive s1.pending then none
                   else
                     let s_close : LowerState := { s1.base with currentReg := [] }
                     let (s2, postOps) ←
-                      lowerInstrsP f frames ⟨s_close, s.pending⟩ post
-                    pure (s2, [.loopOp bodyOps] ++ postOps)
+                      lowerInstrsP f frames ⟨s_close, []⟩ post
+                    pure (⟨s2.base, s.pending ++ s2.pending ++ stepPending s1.pending⟩,
+                          closeDecls s1.pending ++ [.loopOp bodyOps]
+                            ++ applyWraps s1.pending postOps)
       | .wif _ =>
           match fuel with
           | 0 => none
@@ -189,7 +257,14 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                   let entry_currentReg := s_cast.currentReg
                   let (s2, thenOps) ←
                     lowerInstrsP f (.wif :: frames) ⟨s_cast, []⟩ thenBody
-                  if s2.pending ≠ [] then none
+                  -- An exit-flag record born inside a branch passes
+                  -- through this close on its way to the loop it
+                  -- leaves (the `Break` propagates out of the
+                  -- `branch`). A record that would consume a level
+                  -- HERE — an If frame between the loop and the
+                  -- target — is not modeled: production records
+                  -- nothing on If frames. Guard loudly.
+                  if (s2.pending.any (·.skip = 0)) then none
                   else
                     let s2_restored : LowerState :=
                       { s2.base with localReg := entry_localReg,
@@ -197,12 +272,14 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                                      currentReg := entry_currentReg }
                     let (s3, elseOps) ←
                       lowerInstrsP f (.wif :: frames) ⟨s2_restored, []⟩ elseBody
-                    if s3.pending ≠ [] then none
+                    if (s3.pending.any (·.skip = 0)) then none
                     else
                       let s3_close : LowerState := { s3.base with currentReg := [] }
                       let (s4, postOps) ←
-                        lowerInstrsP f frames ⟨s3_close, s.pending⟩ post
-                      pure (s4, opsCommit
+                        lowerInstrsP f frames ⟨s3_close, []⟩ post
+                      pure (⟨s4.base, s.pending ++ s4.pending
+                                        ++ stepPending s2.pending ++ stepPending s3.pending⟩,
+                            opsCommit
                                 ++ [.cast cond_bool cond .u32 .bool,
                                     .branch cond_bool thenOps elseOps]
                                 ++ postOps)
@@ -216,7 +293,15 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
           | some k =>
               if hasLoopAbove frames depth then
                 if loopsAbove frames depth = 1 ∧ k = .block then
-                  none  -- exit-flag route: still refused (Stage A).
+                  -- Exit-flag route, unconditional
+                  -- (`emit_loop_crossing_exit(depth, None)`): set the
+                  -- flag, break out of the loop; the current scope's
+                  -- rest is dead. The flag's declaration and the wraps
+                  -- of the frames between the loop and the target are
+                  -- the record's.
+                  let (flag, sb) := s.base.alloc
+                  some (⟨sb, exitFlagEntry frames depth flag :: s.pending⟩,
+                        [.const flag (.bool true), .breakOp])
                 else some (s, [.breakOp])
               else
                 -- Record-and-wrap, unconditional. Production
@@ -228,7 +313,7 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                 if k = .block ∧ (frames.take depth).all (· = .block) then
                   let (creg, sb) := s.base.alloc
                   let entry : List PendingWrap :=
-                    if depth = 0 then [] else [⟨depth, creg⟩]
+                    if depth = 0 then [] else [{ levels := depth, cond := creg }]
                   some (⟨sb, entry ++ s.pending⟩,
                         [.const creg (.bool true)])
                 else none
@@ -261,8 +346,23 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                 pure (s2, opsCommit ++ postOps)
           | some k =>
               if hasLoopAbove frames depth then
-                if loopsAbove frames depth = 1 ∧ k = .block then
-                  none  -- exit-flag route: still refused (Stage A).
+                if loopsAbove frames depth = 1 ∧ k = .block then do
+                  -- Exit-flag route, conditional
+                  -- (`emit_loop_crossing_exit(depth, Some cond)`): on
+                  -- the condition, set the flag and break out of the
+                  -- loop; the rest of the current scope follows
+                  -- sequentially (it is the fall-through path — the
+                  -- `Break` makes it unreachable on the exit path, so
+                  -- no inline wrap). rustc's `while`: the exit `br_if`
+                  -- to the block around the loop.
+                  let (cond_bool, s_cast) := s1.alloc
+                  let (flag, s_flag) := s_cast.alloc
+                  let (s2, restOps) ← lowerInstrsP fuel frames ⟨s_flag, s.pending⟩ rest
+                  pure (⟨s2.base, exitFlagEntry frames depth flag :: s2.pending⟩,
+                    opsCommit
+                    ++ [.cast cond_bool cond .u32 .bool,
+                        .branch cond_bool [.const flag (.bool true), .breakOp] []]
+                    ++ restOps)
                 else do
                   let (cond_bool, s_cast) := s1.alloc
                   let (s2, postOps) ← lowerInstrsP fuel frames ⟨s_cast, s.pending⟩ rest
@@ -280,7 +380,7 @@ def lowerInstrsP (fuel : Nat) (frames : List FrameKind) (s : LowerStateP) :
                   let (s2, restOps) ←
                     lowerInstrsP fuel frames ⟨s_cast, s.pending⟩ rest
                   let entry : List PendingWrap :=
-                    if depth = 0 then [] else [⟨depth, cond_bool⟩]
+                    if depth = 0 then [] else [{ levels := depth, cond := cond_bool }]
                   pure (⟨s2.base, entry ++ s2.pending⟩,
                         opsCommit
                         ++ [.cast cond_bool cond .u32 .bool,
@@ -387,6 +487,133 @@ example :
          .branch 0 [] [.const 1 (.i32 5), .const 2 (.i32 0), .copy 2 1, .copy 3 2]])) = true := by
   native_decide
 
+-- ── The exit-flag route (rustc's `while`) ──────────────────────────
+--
+-- The pins below are the first contact with production's shape:
+-- `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs`
+-- lowers the same kernels with the production translator and pins the
+-- same op structure (flag declared `false` ahead of the loop op, the
+-- site's `branch cond [flag := true, break] []`, the block tail wrapped
+-- in the flag after the loop, two sites = two declarations in site
+-- order and the EARLIER site's wrap outermost). The per-op differences
+-- are the documented model↔production ones (the alias-breaking Copy of
+-- `localGet`, the eager bool→u32 cast of comparisons, the inline
+-- placement of the frame-0 zero-init).
+
+/-- The entry state of a kernel whose scalar param `n` is local 1, held
+    in register 0 (production's param `Load`). -/
+private def s_n : LowerState :=
+  { LowerState.empty with nextReg := 1, localReg := [(1, 0)], localTy := [(1, .u32)] }
+
+/-- `i = 0; while i < n { i += 1 }` — the canonical shape:
+    `block { loop { i; n; ge_u; br_if 1; i; 1; add; set i; br 0 } }`.
+    The flag (reg 9) is declared ahead of the loop op, set and broken
+    on at the exit site, and the empty block tail wraps as a no-op;
+    the continue `br 0` emits nothing; `i` ends up read through its
+    stable register 3 (bindings merged at every close). -/
+example :
+    pinEq
+      (lowerInstrsP 4 [] ⟨s_n, []⟩
+        [.i32Const 0, .localSet 2,
+         .block 0, .wloop 0,
+           .localGet 2, .localGet 1, .i32GeU, .brIf 1,
+           .localGet 2, .i32Const 1, .i32Add, .localSet 2,
+           .br 0,
+         .wend, .wend])
+      (some (⟨{ nextReg := 14, stack := [],
+                 localReg := [(2, 3), (1, 0)],
+                 localTy := [(2, .i32), (1, .u32)],
+                 bufferSlots := [], currentReg := [] }, []⟩,
+        [.const 1 (.i32 0), .const 2 (.i32 0), .copy 2 1, .copy 3 2,
+         .const 9 (.bool false),
+         .loopOp
+           [.copy 4 3, .copy 5 0,
+            .cmp 6 4 5 .ge .bool, .cast 7 6 .bool .u32,
+            .cast 8 7 .u32 .bool,
+            .branch 8 [.const 9 (.bool true), .breakOp] [],
+            .copy 10 3, .const 11 (.i32 1), .binOp 12 10 11 .add .i32,
+            .const 13 (.i32 0), .copy 13 12, .copy 3 13],
+         .branch 9 [] []])) = true := by native_decide
+
+/-- Two exit sites in one loop and a tail inside the block after the
+    loop: two declarations in site order, the tail wrapped with the
+    earlier site's flag outermost (production's
+    `reconstruct_block_brifs` walks records in reverse). -/
+example :
+    pinEq
+      ((lowerInstrsP 4 [] ⟨s_n, []⟩
+        [.block 0, .wloop 0,
+           .localGet 1, .brIf 1,
+           .localGet 1, .brIf 1,
+           .br 0,
+         .wend, .nop, .i32Const 7, .localSet 2, .wend]).map (·.2))
+      (some
+        [.const 3 (.bool false), .const 6 (.bool false),
+         .loopOp
+           [.copy 1 0, .cast 2 1 .u32 .bool,
+            .branch 2 [.const 3 (.bool true), .breakOp] [],
+            .copy 4 0, .cast 5 4 .u32 .bool,
+            .branch 5 [.const 6 (.bool true), .breakOp] []],
+         .branch 3 []
+           [.branch 6 []
+             [.const 7 (.i32 7), .const 8 (.i32 0), .copy 8 7, .copy 9 8]]]) = true := by
+  native_decide
+
+/-- Depth-2 target — `block { block { loop { br_if 2; br 0 } T } Y } Z`:
+    the loop close wraps `T`, the inner block close wraps `Y` and, as
+    the last consumer, declares the flag ahead of its own ops (the
+    target block's position just before the inner block's composite);
+    `Z`, after the target, runs unwrapped. -/
+example :
+    pinEq
+      ((lowerInstrsP 4 [] ⟨s_n, []⟩
+        [.block 0, .block 0, .wloop 0,
+           .localGet 1, .brIf 2, .br 0,
+         .wend, .i32Const 1, .localSet 3,
+         .wend, .i32Const 2, .localSet 4,
+         .wend, .i32Const 3, .localSet 5]).map (·.2))
+      (some
+        [.const 3 (.bool false),
+         .loopOp [.copy 1 0, .cast 2 1 .u32 .bool,
+                  .branch 2 [.const 3 (.bool true), .breakOp] []],
+         .branch 3 [] [.const 4 (.i32 1), .const 5 (.i32 0), .copy 5 4, .copy 6 5],
+         .branch 3 [] [.const 7 (.i32 2), .const 8 (.i32 0), .copy 8 7, .copy 9 8],
+         .const 10 (.i32 3), .const 11 (.i32 0), .copy 11 10, .copy 12 11]) = true := by
+  native_decide
+
+/-- The site inside an `if` inside the loop: the record passes the
+    `wif` close untouched (the `break` propagates out of the `branch`)
+    and is consumed at the loop close. -/
+example :
+    pinEq
+      ((lowerInstrsP 4 [] ⟨s_n, []⟩
+        [.block 0, .wloop 0,
+           .localGet 1, .wif 0, .localGet 1, .brIf 2, .wend,
+           .br 0,
+         .wend, .wend]).map (·.2))
+      (some
+        [.const 5 (.bool false),
+         .loopOp
+           [.copy 1 0, .cast 2 1 .u32 .bool,
+            .branch 2
+              [.copy 3 0, .cast 4 3 .u32 .bool,
+               .branch 4 [.const 5 (.bool true), .breakOp] []]
+              []],
+         .branch 5 [] []]) = true := by native_decide
+
+/-- Unconditional `br 1` out of the loop: flag set and break, the rest
+    of the loop body dropped as dead, the block tail (here symbolic —
+    no ops) wrapped. -/
+example :
+    pinEq
+      ((lowerInstrsP 4 [] ⟨s_n, []⟩
+        [.block 0, .wloop 0, .localGet 1, .drop, .br 1, .wend,
+         .i32Const 7, .drop, .wend]).map (·.2))
+      (some
+        [.const 2 (.bool false),
+         .loopOp [.copy 1 0, .const 2 (.bool true), .breakOp],
+         .branch 2 [] []]) = true := by native_decide
+
 /-- Old-subset agreement witness: a body with locals, a `block`,
     and a `wif` (all inside Stage A's accepted subset) lowers
     identically under Stage A and Stage B, with empty pending in
@@ -431,6 +658,8 @@ end Pins
     applyWraps [] tail = tail := rfl
 
 @[simp] theorem stepPending_nil : stepPending [] = [] := rfl
+@[simp] theorem closeDecls_nil : closeDecls [] = [] := rfl
+@[simp] theorem hasPlainActive_nil : hasPlainActive [] = false := rfl
 
 /-- The inert-pending agreement theorem. When Stage A accepts, Stage
     B with empty in-pending produces the same base state and ops and
@@ -476,7 +705,7 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
     unfold lowerInstrsP
     rw [hsplit]
     simp only [ih2 hb, Option.bind_eq_bind, Option.some_bind, e1,
-               applyWraps_nil, stepPending_nil, List.append_nil, List.nil_append,
+               applyWraps_nil, stepPending_nil, closeDecls_nil, List.append_nil, List.nil_append,
                pure, Pure.pure]
   | case5 _ _ _ _ =>
     intro s' ops h; simp [lowerInstrs] at h
@@ -513,6 +742,8 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
            bufferSlots := s1.bufferSlots, currentReg := [] }, []⟩
         post = some (⟨s2, []⟩, postOps) := ih1 s1 hp
     simp only [lowerInstrsP, hsplit, e2, Option.bind_eq_bind, Option.some_bind,
+               hasPlainActive_nil, applyWraps_nil, stepPending_nil, closeDecls_nil,
+               List.append_nil, List.nil_append, Bool.false_eq_true, ↓reduceIte,
                ne_eq, not_true_eq_false, if_false, e1, pure, Pure.pure]
   | case8 _ _ _ _ =>
     intro s' ops h; simp [lowerInstrs] at h
@@ -578,6 +809,8 @@ theorem lowerInstrsP_agrees_with_lowerInstrs :
       ih1 s3 hpo
     simp only [lowerInstrsP, hsplit, hpop, Option.bind_eq_bind, Option.some_bind,
                hc, LowerState.alloc, e3, ne_eq, not_true_eq_false, if_false,
+               List.any_nil, Bool.false_eq_true, ↓reduceIte, stepPending_nil,
+               List.append_nil, List.nil_append,
                e2, e1, pure, Pure.pure]
   | case11 _ _ _ _ _ hg =>
     intro s' ops h; simp only [lowerInstrs] at h; rw [hg] at h; simp at h

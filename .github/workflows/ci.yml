@@ -123,6 +123,12 @@ jobs:
       - name: IR roundtrip tests
         run: cargo test -p quanta-ir
 
+      # The wasm→IR lowering crate's own suite: the production shapes
+      # (loop-carried shl, backedge exit tails, the while exit flag, …)
+      # the Lean model in specs/verify/lean/Quanta/Wasm pins against.
+      - name: Wasm lowering tests
+        run: cargo test -p quanta-wasm-lowering
+
       # Step D / Step 077: differential CI. Software lane runs on every
       # PR via the `software` feature. WGSL lane runs in `web-smoke.yml`.
       # Metal nightly + label-gated lanes land in D.5.
