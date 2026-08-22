@@ -1188,6 +1188,7 @@ fn emit_op<'a, 'ctx>(ectx: &mut EmitCtx<'a, 'ctx>, op: &KernelOp) -> Result<(), 
         | KernelOp::SubgroupInclusiveAdd { .. }
         | KernelOp::TextureLoad2D { .. }
         | KernelOp::SubgroupSize { .. }
+        | KernelOp::SubgroupLaneId { .. }
         | KernelOp::SharedDeclDyn { .. }
         | KernelOp::DebugPrint { .. }
         | KernelOp::CooperativeMMA { .. }

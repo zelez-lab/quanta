@@ -287,7 +287,7 @@ fn check_uses(op: &KernelOp, env: &HashSet<Reg>) -> Result<(), ScopeViolation> {
             check(*b, "Dot.b")
         }
         // Subgroup.
-        KernelOp::SubgroupSize { .. } => Ok(()),
+        KernelOp::SubgroupSize { .. } | KernelOp::SubgroupLaneId { .. } => Ok(()),
         KernelOp::SubgroupReduceAdd { src, .. } => check(*src, "SubgroupReduceAdd.src"),
         KernelOp::SubgroupReduceMin { src, .. } => check(*src, "SubgroupReduceMin.src"),
         KernelOp::SubgroupReduceMax { src, .. } => check(*src, "SubgroupReduceMax.src"),
@@ -346,6 +346,7 @@ pub fn defined_reg(op: &KernelOp) -> Option<Reg> {
         | KernelOp::PopCount { dst, .. }
         | KernelOp::Dot { dst, .. }
         | KernelOp::SubgroupSize { dst }
+        | KernelOp::SubgroupLaneId { dst }
         | KernelOp::SubgroupReduceAdd { dst, .. }
         | KernelOp::SubgroupReduceMin { dst, .. }
         | KernelOp::SubgroupReduceMax { dst, .. }
@@ -471,7 +472,7 @@ pub fn used_regs(op: &KernelOp) -> Vec<Reg> {
         // Dot.
         KernelOp::Dot { a, b, .. } => vec![*a, *b],
         // Subgroup.
-        KernelOp::SubgroupSize { .. } => vec![],
+        KernelOp::SubgroupSize { .. } | KernelOp::SubgroupLaneId { .. } => vec![],
         KernelOp::SubgroupReduceAdd { src, .. }
         | KernelOp::SubgroupReduceMin { src, .. }
         | KernelOp::SubgroupReduceMax { src, .. }

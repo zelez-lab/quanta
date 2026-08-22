@@ -52,6 +52,8 @@ pub(crate) struct SpvEmitter {
     // Read through `OpLoad` at every use — never a constant: the real
     // width is 4/8 on lavapipe, 8-32 on Intel, 32 on NVIDIA, 32/64 on AMD.
     pub(crate) subgroup_size_var: Option<u32>,
+    // Same for `BuiltIn SubgroupLocalInvocationId` (the lane index).
+    pub(crate) subgroup_lane_var: Option<u32>,
 
     // `SPV_KHR_cooperative_matrix`: declared once per module, and the
     // fragment shape of every register a cooperative-matrix op writes
@@ -157,6 +159,7 @@ impl SpvEmitter {
             glsl_ext_id: None,
             loop_merge_stack: Vec::new(),
             subgroup_size_var: None,
+            subgroup_lane_var: None,
             coopmat_declared: false,
             coop_frag_regs: HashMap::new(),
             reg_ids: HashMap::new(),

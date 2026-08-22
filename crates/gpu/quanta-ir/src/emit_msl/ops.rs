@@ -1006,6 +1006,13 @@ pub(super) fn emit_op(
                 ));
             }
         }
+        KernelOp::SubgroupLaneId { dst } => {
+            out.push_str(&format!(
+                "{}{} = _simd_lane;\n",
+                pad,
+                dst_lv(mutable, "uint", dst.0)
+            ));
+        }
         KernelOp::SubgroupSize { dst } => {
             out.push_str(&format!(
                 "{}{} = _simd_width;\n",

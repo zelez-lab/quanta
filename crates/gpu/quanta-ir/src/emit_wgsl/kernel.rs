@@ -176,6 +176,13 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     out.push_str("    @builtin(local_invocation_id) lid: vec3<u32>,\n");
     out.push_str("    @builtin(workgroup_id) wid: vec3<u32>,\n");
     out.push_str("    @builtin(num_workgroups) ngroups: vec3<u32>,\n");
+    // The subgroup builtins are entry-point parameters in WGSL (there is
+    // no `subgroupSize()` function); they need `enable subgroups;`, so
+    // they ride the same gate as the subgroup ops.
+    if needs_subgroups {
+        out.push_str("    @builtin(subgroup_size) _sg_size: u32,\n");
+        out.push_str("    @builtin(subgroup_invocation_id) _sg_lane: u32,\n");
+    }
     out.push_str(") {\n");
     out.push_str("    let _quark_id = gid.x;\n");
     out.push_str("    let _proton_id = lid.x;\n");
@@ -239,6 +246,7 @@ fn body_uses_subgroups(ops: &[KernelOp]) -> bool {
                 | KernelOp::WaveAny { .. }
                 | KernelOp::WaveAll { .. }
                 | KernelOp::SubgroupSize { .. }
+                | KernelOp::SubgroupLaneId { .. }
                 | KernelOp::SubgroupReduceAdd { .. }
                 | KernelOp::SubgroupReduceMin { .. }
                 | KernelOp::SubgroupReduceMax { .. }

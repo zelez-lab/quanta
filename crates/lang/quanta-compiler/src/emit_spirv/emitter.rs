@@ -96,6 +96,8 @@ pub(crate) struct SpvEmitter {
     // when the kernel (body or a device function) reads `SubgroupSize`.
     // Loaded at every use — never a constant (twin of the JIT emitter).
     pub(crate) subgroup_size_var: Option<u32>,
+    // Same for `BuiltIn SubgroupLocalInvocationId` (the lane index).
+    pub(crate) subgroup_lane_var: Option<u32>,
 
     // `SPV_KHR_cooperative_matrix`: declared once per module, plus the
     // fragment shape of every register a cooperative-matrix op writes
@@ -202,6 +204,7 @@ impl SpvEmitter {
             varying_inputs: HashMap::new(),
             loop_merge_stack: Vec::new(),
             subgroup_size_var: None,
+            subgroup_lane_var: None,
             coopmat_declared: false,
             coop_frag_regs: HashMap::new(),
             reg_ids: HashMap::new(),

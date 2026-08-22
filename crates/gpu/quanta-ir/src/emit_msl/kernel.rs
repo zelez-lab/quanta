@@ -133,6 +133,7 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     param_lines.push("    uint _nucleus_id [[threadgroup_position_in_grid]]".to_string());
     param_lines.push("    uint _proton_size [[threads_per_threadgroup]]".to_string());
     param_lines.push("    uint _simd_width [[threads_per_simdgroup]]".to_string());
+    param_lines.push("    uint _simd_lane [[thread_index_in_simdgroup]]".to_string());
 
     out.push_str(&param_lines.join(",\n"));
     out.push_str("\n) {\n");

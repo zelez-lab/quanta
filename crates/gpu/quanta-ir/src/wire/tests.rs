@@ -809,6 +809,7 @@ fn roundtrip_subgroup_size_and_dynamic_shared() {
         params: Vec::new(),
         body: vec![
             KernelOp::SubgroupSize { dst: Reg(0) },
+            KernelOp::SubgroupLaneId { dst: Reg(0) },
             KernelOp::SharedDeclDyn {
                 id: 0,
                 ty: ScalarType::F32,
@@ -829,7 +830,11 @@ fn roundtrip_subgroup_size_and_dynamic_shared() {
     };
     let bytes = serialize_kernel(&k);
     let k2 = deserialize_kernel(&bytes).unwrap();
-    assert_eq!(k2.body.len(), 3);
+    assert_eq!(k2.body.len(), 4);
+    assert!(matches!(
+        k2.body[1],
+        KernelOp::SubgroupLaneId { dst: Reg(0) }
+    ));
     assert_eq!(k2.subgroup_size, Some(32));
     assert_eq!(k2.dynamic_shared_bytes, 4096);
 }

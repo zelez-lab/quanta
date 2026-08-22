@@ -171,7 +171,8 @@ impl SpvEmitter {
                 | KernelOp::SubgroupExclusiveAdd { dst, .. }
                 | KernelOp::SubgroupInclusiveAdd { dst, .. }
                 | KernelOp::TextureLoad2D { dst, .. }
-                | KernelOp::SubgroupSize { dst, .. } => Some(dst.0),
+                | KernelOp::SubgroupSize { dst, .. }
+                | KernelOp::SubgroupLaneId { dst, .. } => Some(dst.0),
                 _ => None,
             };
             if let Some(reg_num) = dst_reg {

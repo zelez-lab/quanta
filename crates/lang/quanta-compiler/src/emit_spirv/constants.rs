@@ -206,6 +206,8 @@ pub const BUILTIN_LOCAL_INVOCATION_ID: u32 = 27;
 pub const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
 /// `SubgroupSize` (requires the `GroupNonUniform` capability).
 pub const BUILTIN_SUBGROUP_SIZE: u32 = 36;
+/// `SubgroupLocalInvocationId` (requires the `GroupNonUniform` capability).
+pub const BUILTIN_SUBGROUP_LOCAL_INVOCATION_ID: u32 = 41;
 // Vulkan's vertex-stage index builtins. NOT the OpenGL-flavoured
 // VertexId(5)/InstanceId(6), which spirv-val rejects under a Vulkan
 // target environment.

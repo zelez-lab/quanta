@@ -334,7 +334,8 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         | WaveAll { .. }
         | TextureSize { .. }
         | Dispatch { .. }
-        | SubgroupSize { .. } => {}
+        | SubgroupSize { .. }
+        | SubgroupLaneId { .. } => {}
     }
 }
 
@@ -390,6 +391,7 @@ fn op_name(op: &KernelOp) -> &'static str {
         PopCount { .. } => "PopCount",
         Dot { .. } => "Dot",
         SubgroupSize { .. } => "SubgroupSize",
+        SubgroupLaneId { .. } => "SubgroupLaneId",
         SubgroupReduceAdd { .. } => "SubgroupReduceAdd",
         SubgroupReduceMin { .. } => "SubgroupReduceMin",
         SubgroupReduceMax { .. } => "SubgroupReduceMax",

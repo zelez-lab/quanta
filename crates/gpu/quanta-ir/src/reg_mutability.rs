@@ -185,7 +185,8 @@ impl MutScan {
                 | KernelOp::ProtonId { dst }
                 | KernelOp::NucleusId { dst }
                 | KernelOp::ProtonSize { dst }
-                | KernelOp::SubgroupSize { dst } => {
+                | KernelOp::SubgroupSize { dst }
+                | KernelOp::SubgroupLaneId { dst } => {
                     self.write(*dst, Some(ScalarType::U32));
                 }
                 KernelOp::Barrier | KernelOp::Fence { .. } | KernelOp::Break => {}

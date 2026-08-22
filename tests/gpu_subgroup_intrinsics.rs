@@ -98,6 +98,44 @@ fn subgroup_id_compiles_and_runs() {
     let _result = out.read().unwrap();
 }
 
+/// `subgroup_id()` is the lane within the subgroup, not the local thread
+/// index: it stays `< subgroup_size()` across a workgroup wider than one
+/// subgroup, and wraps at the subgroup boundary. (It lowered to `ProtonId`
+/// for a long time, which passed the test above and was wrong past lane
+/// `subgroup_size`.)
+#[test]
+fn subgroup_id_is_the_lane_not_the_local_id() {
+    let Some(gpu) = try_gpu() else { return };
+    const N: usize = 256; // the kernel's default workgroup is 64 wide
+    let lanes = gpu.field::<u32>(N).unwrap();
+    let sizes = gpu.field::<u32>(N).unwrap();
+    lanes.write(&[0u32; N]).unwrap();
+    sizes.write(&[0u32; N]).unwrap();
+    let mut w = k_subgroup_id(&gpu).unwrap();
+    w.bind(0, &lanes);
+    gpu.dispatch(&w, N as u32).unwrap().wait().unwrap();
+    let mut w = k_subgroup_size(&gpu).unwrap();
+    w.bind(0, &sizes);
+    gpu.dispatch(&w, N as u32).unwrap().wait().unwrap();
+    let lanes = lanes.read().unwrap();
+    let sizes = sizes.read().unwrap();
+    let size = sizes[0] as usize;
+    assert!(size >= 1 && size <= N, "subgroup_size = {size}");
+    for (i, &lane) in lanes.iter().enumerate() {
+        assert!(
+            (lane as usize) < size,
+            "thread {i}: lane {lane} >= subgroup_size {size} — that is a local id, not a lane"
+        );
+    }
+    // Lane ids wrap at the subgroup boundary: thread `size` is lane 0 again.
+    if size < 64 {
+        assert_eq!(
+            lanes[size], 0,
+            "thread {size} must be lane 0 of the second subgroup"
+        );
+    }
+}
+
 #[test]
 fn reduce_add_compiles_and_runs() {
     let Some(gpu) = try_gpu() else { return };

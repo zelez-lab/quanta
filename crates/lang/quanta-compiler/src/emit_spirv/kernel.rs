@@ -31,6 +31,25 @@ impl SpvEmitter {
         false
     }
 
+    /// Does any op read the `SubgroupLocalInvocationId` builtin (the lane)?
+    pub(crate) fn uses_subgroup_lane(ops: &[KernelOp]) -> bool {
+        for op in ops {
+            match op {
+                KernelOp::SubgroupLaneId { .. } => return true,
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } if Self::uses_subgroup_lane(then_ops) || Self::uses_subgroup_lane(else_ops) => {
+                    return true;
+                }
+                KernelOp::Loop { body, .. } if Self::uses_subgroup_lane(body) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn uses_subgroup_ops(ops: &[KernelOp]) -> bool {
         for op in ops {
             match op {
@@ -87,6 +106,11 @@ impl SpvEmitter {
                 .device_functions
                 .iter()
                 .any(|f| Self::uses_subgroup_size(&f.body));
+        let uses_lane = Self::uses_subgroup_lane(&kernel.body)
+            || kernel
+                .device_functions
+                .iter()
+                .any(|f| Self::uses_subgroup_lane(&f.body));
         if Self::uses_subgroup_ops(&kernel.body) {
             Self::emit_op(
                 &mut self.sec_capability,
@@ -98,8 +122,8 @@ impl SpvEmitter {
                 OP_CAPABILITY,
                 &[CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC],
             );
-        } else if uses_size {
-            // The `SubgroupSize` builtin alone still needs the base capability.
+        } else if uses_size || uses_lane {
+            // The subgroup builtins alone still need the base capability.
             Self::emit_op(
                 &mut self.sec_capability,
                 OP_CAPABILITY,
@@ -180,6 +204,24 @@ impl SpvEmitter {
             self.decorate(sg_var, DECORATION_BUILTIN, &[BUILTIN_SUBGROUP_SIZE]);
             interface_ids.push(sg_var);
             self.subgroup_size_var = Some(sg_var);
+        }
+        if uses_lane {
+            let uint_ty = self.ensure_type_u32();
+            let ptr_input_uint = self.ensure_type_pointer(STORAGE_CLASS_INPUT, uint_ty);
+            let lane_var = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_uint, lane_var, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(lane_var, "gl_SubgroupInvocationID");
+            self.decorate(
+                lane_var,
+                DECORATION_BUILTIN,
+                &[BUILTIN_SUBGROUP_LOCAL_INVOCATION_ID],
+            );
+            interface_ids.push(lane_var);
+            self.subgroup_lane_var = Some(lane_var);
         }
 
         // 4. Set up storage buffers for each field parameter
@@ -296,6 +338,7 @@ impl SpvEmitter {
                 | KernelOp::SubgroupInclusiveAdd { dst, .. }
                 | KernelOp::TextureLoad2D { dst, .. }
                 | KernelOp::SubgroupSize { dst, .. }
+                | KernelOp::SubgroupLaneId { dst, .. }
                 | KernelOp::CooperativeMMA { dst, .. } => {
                     dsts.push(dst.0);
                 }

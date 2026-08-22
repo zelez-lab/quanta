@@ -530,6 +530,12 @@ fn read_kernel_op(r: &mut Reader) -> Result<KernelOp, &'static str> {
             Ok(KernelOp::SubgroupSize { dst })
         }
 
+        // 57 — SubgroupLaneId
+        57 => {
+            let dst = read_reg(r)?;
+            Ok(KernelOp::SubgroupLaneId { dst })
+        }
+
         // 48 — SharedDeclDyn
         48 => {
             let id = r.u32()?;

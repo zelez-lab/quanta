@@ -683,6 +683,15 @@ pub enum KernelOp {
     SubgroupSize {
         dst: Reg,
     },
+    /// This thread's lane index within its subgroup, `0..SubgroupSize`.
+    /// A real builtin on every backend (`SubgroupLocalInvocationId`,
+    /// `thread_index_in_simdgroup`, `subgroup_invocation_id`); on the CPU
+    /// executor it is `proton_id % SUBGROUP_SIZE`, the grouping its warp
+    /// cohorts use. Never `ProtonId` — the two agree only while the
+    /// workgroup fits in one subgroup.
+    SubgroupLaneId {
+        dst: Reg,
+    },
 
     // Subgroup scan/reduce
     SubgroupReduceAdd {

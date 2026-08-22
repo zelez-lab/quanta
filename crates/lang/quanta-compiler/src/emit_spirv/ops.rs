@@ -570,6 +570,17 @@ impl SpvEmitter {
                 self.emit_op_texture_load_2d(*dst, *texture, *x, *y, *ty)?;
             }
 
+            KernelOp::SubgroupLaneId { dst } => {
+                // `SubgroupLocalInvocationId`, declared in the prologue.
+                let var = self.subgroup_lane_var.ok_or_else(|| {
+                    "SubgroupLaneId read but no builtin declared (prologue scan missed it)"
+                        .to_string()
+                })?;
+                let uint_ty = self.ensure_type_u32();
+                let val = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_LOAD, &[uint_ty, val, var]);
+                self.set_reg(*dst, val, uint_ty);
+            }
             KernelOp::SubgroupSize { dst } => {
                 // Loaded from the `SubgroupSize` builtin declared in the
                 // prologue — never a constant (twin of the JIT emitter).

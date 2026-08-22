@@ -269,6 +269,7 @@ fn every_kernel_op_variant_compiles() {
         KernelOp::NucleusId { dst: Reg(4) },
         KernelOp::ProtonSize { dst: Reg(5) },
         KernelOp::SubgroupSize { dst: Reg(6) },
+        KernelOp::SubgroupLaneId { dst: Reg(6) },
         KernelOp::Load {
             dst: Reg(7),
             field: 0,

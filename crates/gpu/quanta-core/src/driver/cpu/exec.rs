@@ -1001,6 +1001,13 @@ pub(super) fn execute_ops(
                 // Cooperative warp width on the CPU lane (see SUBGROUP_SIZE).
                 ctx.regs.insert(dst.0, Value::U32(SUBGROUP_SIZE));
             }
+            KernelOp::SubgroupLaneId { dst } => {
+                // Lane within the warp cohort: the cohorts are consecutive
+                // SUBGROUP_SIZE-wide slices of the workgroup (device.rs), so
+                // the lane is the local id modulo the width.
+                ctx.regs
+                    .insert(dst.0, Value::U32(ctx.local_id % SUBGROUP_SIZE));
+            }
             KernelOp::SharedDeclDyn { id, ty } => {
                 // No dispatch path carries a dynamic shared size to this
                 // executor; the old behaviour silently capped the buffer at

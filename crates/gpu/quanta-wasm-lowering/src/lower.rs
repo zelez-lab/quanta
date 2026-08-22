@@ -2426,13 +2426,12 @@ impl<'a> LowerCtx<'a> {
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
                     Some("subgroup_id") => {
-                        // No dedicated SubgroupId op yet; the lane
-                        // index is `proton_id % subgroup_size` per
-                        // the cross-backend convention. Emit ProtonId
-                        // as the closest analog — refine to a
-                        // dedicated op once a backend needs it.
+                        // The lane index within the subgroup — a real
+                        // builtin on every backend. (It was `ProtonId` for
+                        // a long time, which is the lane only while the
+                        // workgroup fits in one subgroup.)
                         let dst = self.alloc_reg();
-                        self.emit(KernelOp::ProtonId { dst });
+                        self.emit(KernelOp::SubgroupLaneId { dst });
                         self.stack.push(SymVal::Reg(dst, ScalarType::U32));
                     }
                     Some("shuffle_u32") => self.wave_shuffle(ScalarType::U32)?,

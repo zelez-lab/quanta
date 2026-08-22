@@ -65,6 +65,7 @@ use super::helpers::{
 //  49  DebugPrint
 //  50  CooperativeMMA
 //  51  Fence
+//  57  SubgroupLaneId
 
 fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
     match op {
@@ -575,6 +576,12 @@ fn write_kernel_op(w: &mut Writer, op: &KernelOp) {
         // 47 — SubgroupSize { dst }
         KernelOp::SubgroupSize { dst } => {
             w.u8(47);
+            write_reg(w, dst);
+        }
+
+        // 57 — SubgroupLaneId { dst }
+        KernelOp::SubgroupLaneId { dst } => {
+            w.u8(57);
             write_reg(w, dst);
         }
 

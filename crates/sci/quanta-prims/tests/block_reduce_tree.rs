@@ -245,6 +245,7 @@ fn tree_kernels_are_subgroup_free_in_ir() {
             | KernelOp::SubgroupExclusiveAdd { .. }
             | KernelOp::SubgroupInclusiveAdd { .. }
             | KernelOp::SubgroupSize { .. }
+            | KernelOp::SubgroupLaneId { .. }
             | KernelOp::WaveShuffle { .. }
             | KernelOp::WaveBallot { .. } => true,
             KernelOp::Branch {

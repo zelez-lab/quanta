@@ -611,7 +611,12 @@ pub(super) fn emit_op(
             ));
         }
         KernelOp::SubgroupSize { dst } => {
-            out.push_str(&format!("{}let r{} = subgroupSize();\n", pad, dst.0));
+            // `@builtin(subgroup_size)` entry parameter (see kernel.rs).
+            out.push_str(&format!("{}let r{} = _sg_size;\n", pad, dst.0));
+        }
+        KernelOp::SubgroupLaneId { dst } => {
+            // `@builtin(subgroup_invocation_id)` entry parameter.
+            out.push_str(&format!("{}let r{} = _sg_lane;\n", pad, dst.0));
         }
         KernelOp::DebugPrint { src, .. } => {
             // WGSL has no print primitive. Emit a comment so the op is
