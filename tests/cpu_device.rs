@@ -1063,20 +1063,27 @@ fn quanta_backend_bogus_is_a_named_error() {
     );
 }
 
-/// Unset behavior is unchanged: with neither `QUANTA_BACKEND` nor `QUANTA_CPU`
-/// set, the CPU software device is not part of normal discovery (it joins only
-/// under `QUANTA_CPU=1` or when explicitly forced). Holds on every host.
+/// Unforced discovery: with neither `QUANTA_BACKEND` nor `QUANTA_CPU` set,
+/// the CPU software device is in discovery **exactly when no GPU backend
+/// produced a device** — absent while a Metal/Vulkan device is present
+/// (the CPU joins only under `QUANTA_CPU=1` or when forced), present as the
+/// announced last resort on a host with no GPU lane (a software-only build,
+/// a machine without drivers). Holds on every host; on the software lane it
+/// is the fallback leg that runs.
 #[test]
-fn unset_quanta_backend_leaves_discovery_unchanged() {
+fn unset_quanta_backend_cpu_joins_only_as_last_resort() {
     let _guard = env_lock();
-    let has_cpu = with_discovery_env(None, None, || {
+    let names: Vec<String> = with_discovery_env(None, None, || {
         quanta::devices()
             .iter()
-            .any(|g| g.name() == "Quanta CPU (software)")
+            .map(|g| g.name().to_string())
+            .collect()
     });
-    assert!(
-        !has_cpu,
-        "with QUANTA_BACKEND and QUANTA_CPU unset, the CPU device must not \
-         appear in discovery"
+    let has_cpu = names.iter().any(|n| n == "Quanta CPU (software)");
+    let has_gpu = names.iter().any(|n| n != "Quanta CPU (software)");
+    assert_eq!(
+        has_cpu, !has_gpu,
+        "with QUANTA_BACKEND and QUANTA_CPU unset, the CPU device must appear \
+         exactly when no GPU backend found a device; discovery returned {names:?}"
     );
 }

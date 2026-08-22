@@ -205,6 +205,13 @@ jobs:
       - name: Cooperative-matrix probe + refusal (software lane)
         run: cargo test --test gpu_coopmat --features software,compute --no-default-features -- --nocapture
 
+      # The CPU device itself: executor + field round-trips + the
+      # QUANTA_BACKEND discovery contract (forced `cpu`, case, bogus value,
+      # and the last-resort fallback leg — this lane is the one host where
+      # no GPU backend exists, so the CPU must join discovery unforced).
+      - name: CPU device tests (software lane)
+        run: cargo test --test cpu_device --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
