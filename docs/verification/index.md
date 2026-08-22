@@ -10,14 +10,14 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 981 — 601 across the core / companion chains + 380 in the wasm-route arm (step 059); grep-counted over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1010 — 599 across the core / companion chains + 411 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
 | **Verus `external_body`**  |   1 (hazard tracking) |
 | **Tools used**             |   5    |
 | **Backends covered**       |   5    |
-| **Source preservation** | two arms: route a / step E (T590-T5B0) + wasm route (step 059, `framework_preservation_kernel`) — each within its stated boundary |
+| **Source preservation** | two arms: route a / step E (T590-T5B0) + wasm route (step 059, `framework_preservation_kernel_while`) — each within its stated boundary |
 | **Headless smoke tests** | 3 in CI (per-PR) — `web_triangle` + `web_textured` also assert framebuffer SHA-256 against vendored golden bytes |
 | **Differential CI kernels** | 4 (saxpy, reduce_sum, counter, race) × {software, WGSL, Metal*, Vulkan*, AMDGPU**} |
 | **Memory-order primitives** | 5 (Relaxed, Acquire, Release, AcqRel, SeqCst) × {AtomicOp, AtomicCas, Fence} |
@@ -112,16 +112,18 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 380
+                                step 059 — Lean `Quanta/Wasm/*`: 411
                                 theorems, 0 sorries.
-                                `framework_preservation_kernel` over
-                                `KernelInstrs` = straight-line
+                                `framework_preservation_kernel_while`
+                                over `KernelInstrsW` = straight-line
                                 instructions interleaved with
-                                `WloopBodyShape`-shaped `wloop 0`
-                                segments; general nested
-                                block/wif/br is OUTSIDE the theorem.
-                                Verus `quanta-wasm-lowering/` V7
-                                closed; ScaledIdx-domain +
+                                `WhileBody` `wloop 0` segments —
+                                real while loops, any iteration
+                                count, memory-carried state; a local
+                                written inside a loop body and general
+                                nested block/wif/br are OUTSIDE the
+                                theorem. Verus `quanta-wasm-lowering/`
+                                V7 closed; ScaledIdx-domain +
                                 nested-streaming residual.)
             │
    Race freedom                (T606/T607 — Verus; step 057.
@@ -269,37 +271,51 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **380 theorems and lemmas, 0
-sorries**, every file imported from `specs/verify/lean/Quanta.lean`
-(`PreservationFuel` transitively, via `PreservationList`):
+Lean, `specs/verify/lean/Quanta/Wasm/` — **411 theorems, 0 sorries**
+(`grep -c '^theorem'`), every file imported from
+`specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
+`PreservationList`):
 
-| File | Theorems/lemmas |
-|------|----------------:|
+| File | Theorems |
+|------|---------:|
 | `LowerScopeValid.lean` | 117 |
-| `PreservationBridge.lean` | 72 |
-| `Preservation.lean` | 61 |
+| `PreservationBridge.lean` | 71 |
+| `Preservation.lean` | 60 |
 | `PreservationList.lean` | 57 |
+| `PreservationWhile.lean` | 33 |
 | `PreservationFuel.lean` | 27 |
 | `PreservationInduction.lean` | 16 |
-| `LowerInvariants.lean` | 14 |
+| `LowerInvariants.lean` | 15 |
 | `WellFormed.lean` | 7 |
 | `TranslatePending.lean` | 5 |
-| `Semantics.lean` | 3 |
+| `Semantics.lean` | 2 |
 | `Translate.lean` | 1 |
 | `Syntax.lean` / `Structured.lean` | 0 (definitions) |
 
-The apex is `framework_preservation_kernel` (L10v7,
-`PreservationBridge.lean:6269`), built from two narrower framework
-theorems: `framework_preservation_straightLine` (L10, `:5095`) and
-`framework_preservation_wloopThenStraightLine` (L10v6, `:5446`).
+The apex is `framework_preservation_kernel_while` (L11,
+`PreservationWhile.lean`), which subsumes L10v7's
+`framework_preservation_kernel` (`PreservationBridge.lean:6269`; every
+`KernelInstrs` embeds via `KernelInstrs.toW` at the same depth). Both
+are built from `framework_preservation_straightLine` (L10, `:5095`) and
+the N-iteration loop theorem
+`preservation_evalInstrs_cons_wloop_nIterExit` (L8.3, `:4446`).
 
 **Scope — read this before quoting the number.** The apex admits
-exactly `KernelInstrs`: straight-line instructions interleaved with
-`wloop 0` segments whose bodies match `WloopBodyShape` (an IR-empty
-prefix followed by the single-iteration exit `[.i32Const 0, .brIf 0]`).
-**General nested `block` / `wif` / `br` is outside the theorem** — the
+exactly `KernelInstrsW`: straight-line instructions interleaved with
+`wloop 0` segments whose bodies are a `WhileBody` — a straight-line
+prefix that **writes no local**, computes exactly one value on top of
+the entry stack (the continue condition) and is closed by `brIf 0`.
+Such a loop runs **any number of iterations** the WASM fuel allows;
+its loop-carried state lives in memory (`i32.load` / `i32.store`
+through a buffer local), which is what a `*p += 1; while *p < n` loop
+compiles to. Two things are **outside the theorem**: a `local.set` /
+`local.tee` inside a loop body (register-carried loop variables — the
+wloop arm of the Lean lowering model snapshots and restores the local
+bindings around the body, which for an in-body write is not what
+production's `force_locals_to_stable` does; L12 has to align the model
+before proving it), and general nested `block` / `wif` / `br` (the
 structured arms are lowered and mechanized, but the preservation claim
-does not reach them. Per-instruction scope is narrower still:
+does not reach them). Per-instruction scope is narrower still:
 `WellFormed.lean` admits only the unsigned-i32 slice, refusing `i64` /
 `f32` constants and arithmetic, every signed-i32 op (`i32DivS`,
 `i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type

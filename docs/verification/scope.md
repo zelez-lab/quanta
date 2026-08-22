@@ -189,11 +189,15 @@ deserialize is identity), and per-operation CPU-GPU equivalence (T610).
 **Second arm — wasm route (step 059):** A separate corpus covers the route
 kernels actually take today: `rustc` compiles the kernel body to wasm32, and
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps. Lean
-(`specs/verify/lean/Quanta/Wasm/`) carries **380 theorems and lemmas, 0
+(`specs/verify/lean/Quanta/Wasm/`) carries **411 theorems, 0
 sorries**, every file imported from `Quanta.lean`. The apex is
-`framework_preservation_kernel` (`PreservationBridge.lean:6269`), composed from
-`framework_preservation_straightLine` (`:5095`) and
-`framework_preservation_wloopThenStraightLine` (`:5446`). Verus
+`framework_preservation_kernel_while` (`PreservationWhile.lean`): straight-line
+code interleaved with while loops whose bodies write no local and carry their
+state through memory, any iteration count; it subsumes
+`framework_preservation_kernel` (`PreservationBridge.lean:6269`) and is composed
+from `framework_preservation_straightLine` (`:5095`) and the N-iteration loop
+theorem `preservation_evalInstrs_cons_wloop_nIterExit` (`:4446`). Locals written
+inside a loop body and nested `block` / `wif` / `br` are outside it. Verus
 (`specs/verify/verus/quanta-wasm-lowering/`, 13 files) proves the *production*
 translator refines that Lean spec: V7's `refine_lower_instructions` closes the
 top-level list fold, and all four recorded production-spec divergences (V8 #1-#4)
@@ -208,12 +212,17 @@ heap projection); everything above it in the chain is a theorem.
 
 **Boundary of the wasm arm (explicitly not covered):**
 
-- **Nested control flow.** `framework_preservation_kernel` admits exactly
-  `KernelInstrs` — straight-line instructions interleaved with `wloop 0`
-  segments whose bodies match `WloopBodyShape` (an IR-empty prefix then the
-  single-iteration exit `[.i32Const 0, .brIf 0]`). General nested `block` /
-  `wif` / `br` is lowered and mechanized but **outside the preservation
-  theorem**.
+- **Loop bodies that write a local, and nested control flow.**
+  `framework_preservation_kernel_while` admits exactly `KernelInstrsW` —
+  straight-line instructions interleaved with `wloop 0` segments whose bodies
+  are a `WhileBody` (a straight-line prefix with no `local.set` / `local.tee`,
+  of stack height one, closed by `brIf 0`). A register-carried loop variable
+  is **outside the theorem**: the Lean lowering model's wloop arm restores the
+  entry `localReg` / `currentReg` after the body, which is not what the
+  production translator's `force_locals_to_stable` + `merge_locals_post_frame`
+  do for a local written inside the loop (the model must be aligned first —
+  L12). General nested `block` / `wif` / `br` is lowered and mechanized but
+  likewise outside the preservation theorem.
 - **Ops outside the unsigned-i32 slice.** `WellFormed.lean` admits only that
   slice; `i64` / `f32` constants and arithmetic, every signed-i32 op
   (`i32DivS`, `i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type
@@ -323,13 +332,13 @@ plus 8 in `crates/gpu/quanta-ir/src/wire/kani_proofs.rs`
 | 4 | Emitter Correctness | T100-T119, T200-T217, T300-T307, T400-T403, T500-T504, T600-T610, T700-T705, T1000-T1003, T1100-T1102 | 72 | all proven |
 | 3 | Memory Ordering | T900-T904, T1200-T1204, T1300-T1301, T1400-T1413, T1500-T1504 | 31 | all proven (scope limited -- see gap) |
 | 2 | Race Freedom | -- | 0 | analyzer not implemented |
-| 1 | Source Preservation | T590-T5B0 + Wasm corpus (380) | see [dashboard](index.md) | proven for the modeled subset (route a / step E) + the wasm route (step 059), each within its own boundary |
+| 1 | Source Preservation | T590-T5B0 + Wasm corpus (411) | see [dashboard](index.md) | proven for the modeled subset (route a / step E) + the wasm route (step 059), each within its own boundary |
 | -- | Cross-level total (Levels 3-5) | T100-T2060 | **147** | **all 147 proven** |
 
 Note: the 147 count is the level-gated total (Levels 3-5). The Level-1
 source-preservation theorems (T590-T5B0, route a / step E) are a separate chain
 tracked on the [dashboard](index.md), not folded into this 147. The wasm-route
-corpus (step 059) adds a further **380** Lean theorems and lemmas, 0 sorries, in
+corpus (step 059) adds a further **411** Lean theorems, 0 sorries, in
 `specs/verify/lean/Quanta/Wasm/`; it is likewise not level-summed, and it is a
 second Level-1 arm rather than more of the first. T606-T607, T609
 are counted once at Level 4 (where they are proven) but are also relevant to

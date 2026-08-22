@@ -4505,9 +4505,10 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
                        s1.stack = s.stack ∧ s1.bufferSlots = s.bufferSlots ∧
                        s1.currentReg = s.currentReg ∧
                        s.nextReg ≤ s1.nextReg)
-    -- Fuel constraints: bt ≥ n + 2 (iterLoop needs n+1 continues +
-    -- exit; opLoop needs n + 2 iter check + body runs).
-    (h_fuel_bound : bt ≥ n + 2)
+    -- Fuel constraint: bt ≥ n + 1 — the n+1 body runs `iterLoop`
+    -- replays (the IR side picks its own fuel, `max … (n + 2)`).
+    -- Exactly the bound `iterLoop_trace_of_eval` hands back.
+    (h_fuel_bound : bt ≥ n + 1)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs (bt + 1) ws (.wloop 0 :: rest) = some ws')
     (hl : lowerInstrs (bt + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
