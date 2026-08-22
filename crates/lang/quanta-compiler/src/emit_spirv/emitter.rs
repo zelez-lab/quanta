@@ -92,6 +92,11 @@ pub(crate) struct SpvEmitter {
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
+    // `Input` variable decorated `BuiltIn SubgroupSize`, declared only
+    // when the kernel (body or a device function) reads `SubgroupSize`.
+    // Loaded at every use — never a constant (twin of the JIT emitter).
+    pub(crate) subgroup_size_var: Option<u32>,
+
     // Register → SPIR-V ID mapping (function-scoped variables)
     pub(crate) reg_ids: HashMap<u32, u32>,
     pub(crate) reg_types: HashMap<u32, u32>,
@@ -190,6 +195,7 @@ impl SpvEmitter {
             varyings: None,
             varying_inputs: HashMap::new(),
             loop_merge_stack: Vec::new(),
+            subgroup_size_var: None,
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
             demoted_regs: HashMap::new(),

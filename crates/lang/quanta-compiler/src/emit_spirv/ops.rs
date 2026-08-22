@@ -571,17 +571,31 @@ impl SpvEmitter {
             }
 
             KernelOp::SubgroupSize { dst } => {
+                // Loaded from the `SubgroupSize` builtin declared in the
+                // prologue — never a constant (twin of the JIT emitter).
+                let var = self.subgroup_size_var.ok_or_else(|| {
+                    "SubgroupSize read but no builtin declared (prologue scan missed it)"
+                        .to_string()
+                })?;
                 let uint_ty = self.ensure_type_u32();
-                let val = self.emit_constant_u32(32);
+                let val = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_LOAD, &[uint_ty, val, var]);
                 self.set_reg(*dst, val, uint_ty);
             }
 
-            KernelOp::SharedDeclDyn { .. } => {
-                // Handled during shared decl scan phase.
+            // Refused by the validator before emission; backstop arms (twin
+            // of the JIT emitter) — neither has a SPIR-V lowering.
+            KernelOp::SharedDeclDyn { id, .. } => {
+                return Err(format!(
+                    "SharedDeclDyn(id={}) has no SPIR-V lowering (dynamic shared size reaches no dispatch)",
+                    id
+                ));
             }
-
-            KernelOp::DebugPrint { src, ty } => {
-                let _ = (src, ty);
+            KernelOp::DebugPrint { src, .. } => {
+                return Err(format!(
+                    "DebugPrint(r{}) has no SPIR-V lowering; in-kernel print runs on the CPU device only",
+                    src.0
+                ));
             }
 
             KernelOp::Dispatch { .. } => {

@@ -62,7 +62,9 @@ pub(super) enum SubgroupMode<'r> {
     },
 }
 
-/// The reduction/scan a subgroup op performs across a warp's lanes.
+/// The reduction/scan/exchange a subgroup op performs across a warp's
+/// lanes. The wave-intrinsic kinds carry their per-lane operand where
+/// hardware allows it to differ per lane (the XOR delta of a shuffle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SubgroupKind {
     ReduceAdd,
@@ -70,6 +72,17 @@ pub(super) enum SubgroupKind {
     ReduceMax,
     InclusiveAdd,
     ExclusiveAdd,
+    /// `shuffle_xor`: read the value of lane `self ^ delta`. A lane whose
+    /// partner is outside the cohort reads its own value (hardware leaves
+    /// it undefined; own-value is the conservative choice).
+    ShuffleXor {
+        delta: u32,
+    },
+    /// `ballot`: bit `lane` set for every lane whose predicate is true.
+    Ballot,
+    /// `any` / `all` over the lanes' predicates.
+    Any,
+    All,
 }
 
 /// Per-thread execution state.
@@ -738,23 +751,36 @@ pub(super) fn execute_ops(
                 }
                 ctx.regs.insert(dst.0, old_val);
             }
-            // Wave/subgroup intrinsics: return identity values in sequential mode
-            KernelOp::WaveShuffle { dst, src, .. } => {
-                // Single-thread: shuffle returns own value
+            // Wave/subgroup intrinsics resolve over the warp cohort exactly
+            // like the reductions (Collect/Resolve two-pass). They used to
+            // return identity values — shuffle = own value, ballot = 1 —
+            // which was silently wrong once the reductions went cooperative.
+            KernelOp::WaveShuffle {
+                dst,
+                src,
+                lane_delta,
+                ..
+            } => {
                 let v = reg(ctx, src)?;
-                ctx.regs.insert(dst.0, v);
+                let delta = reg(ctx, lane_delta)?.as_u32();
+                let r = subgroup_value(ctx, SubgroupKind::ShuffleXor { delta }, v);
+                ctx.regs.insert(dst.0, r);
             }
-            KernelOp::WaveBallot { dst, .. } => {
-                // Single-thread ballot: bit 0 set
-                ctx.regs.insert(dst.0, Value::U32(1));
+            KernelOp::WaveBallot { dst, predicate } => {
+                let v = reg(ctx, predicate)?;
+                let own = Value::U32(u32::from(v.as_bool()));
+                let r = subgroup_value(ctx, SubgroupKind::Ballot, own);
+                ctx.regs.insert(dst.0, r);
             }
             KernelOp::WaveAny { dst, predicate } => {
                 let v = reg(ctx, predicate)?;
-                ctx.regs.insert(dst.0, Value::Bool(v.as_bool()));
+                let r = subgroup_value(ctx, SubgroupKind::Any, Value::Bool(v.as_bool()));
+                ctx.regs.insert(dst.0, r);
             }
             KernelOp::WaveAll { dst, predicate } => {
                 let v = reg(ctx, predicate)?;
-                ctx.regs.insert(dst.0, Value::Bool(v.as_bool()));
+                let r = subgroup_value(ctx, SubgroupKind::All, Value::Bool(v.as_bool()));
+                ctx.regs.insert(dst.0, r);
             }
             KernelOp::SubgroupReduceAdd { dst, src, .. } => {
                 let v = reg(ctx, src)?;
@@ -967,12 +993,37 @@ pub(super) fn execute_ops(
                 ctx.regs.insert(dst.0, Value::U32(SUBGROUP_SIZE));
             }
             KernelOp::SharedDeclDyn { id, ty } => {
-                // Dynamic shared memory: allocate a default-sized buffer.
-                let size = scalar_size(ty) * 64;
-                ctx.shared.entry(*id).or_insert_with(|| vec![0u8; size]);
+                // No dispatch path carries a dynamic shared size to this
+                // executor; the old behaviour silently capped the buffer at
+                // 64 elements. Refuse, the same way the validator does for
+                // the GPU backends.
+                return Err(format!(
+                    "SharedDeclDyn(id={}, {:?}): dynamic shared memory size reaches no dispatch; \
+                     declare a sized `#[shared]` array",
+                    id, ty
+                ));
             }
-            KernelOp::DebugPrint { .. } => {
-                // No-op in CPU mode.
+            KernelOp::DebugPrint { src, ty } => {
+                // The CPU executor is the one backend where an in-kernel
+                // print can be honest: write it to stderr with the thread id.
+                // (GPU backends refuse the op at validation.)
+                let v = reg(ctx, src)?;
+                let rendered = match ty {
+                    ScalarType::F32 => format!("{}", f32::from_bits(v.as_u32())),
+                    ScalarType::F64 => format!("{}", f64::from_bits(v.as_u64())),
+                    ScalarType::I32 => format!("{}", v.as_u32() as i32),
+                    ScalarType::I64 => format!("{}", v.as_u64() as i64),
+                    ScalarType::Bool => format!("{}", v.as_u32() != 0),
+                    ScalarType::U64 => format!("{}", v.as_u64()),
+                    _ => format!("{}", v.as_u32()),
+                };
+                std::eprintln!(
+                    "[quanta gpu_print] quark={} r{}: {:?} = {}",
+                    ctx.quark_id,
+                    src.0,
+                    ty,
+                    rendered
+                );
             }
         }
     }
@@ -1047,7 +1098,11 @@ pub(super) fn segment_has_subgroup(ops: &[KernelOp]) -> bool {
         | KernelOp::SubgroupReduceMin { .. }
         | KernelOp::SubgroupReduceMax { .. }
         | KernelOp::SubgroupInclusiveAdd { .. }
-        | KernelOp::SubgroupExclusiveAdd { .. } => true,
+        | KernelOp::SubgroupExclusiveAdd { .. }
+        | KernelOp::WaveShuffle { .. }
+        | KernelOp::WaveBallot { .. }
+        | KernelOp::WaveAny { .. }
+        | KernelOp::WaveAll { .. } => true,
         KernelOp::Branch {
             then_ops, else_ops, ..
         } => segment_has_subgroup(then_ops) || segment_has_subgroup(else_ops),
@@ -1073,19 +1128,20 @@ pub(super) fn resolve_warp(cohort: &[Vec<(SubgroupKind, Value)>]) -> Vec<Vec<Val
     let num_sites = cohort.iter().map(|s| s.len()).max().unwrap_or(0);
     for site in 0..num_sites {
         // Gather this site's (kind, input) across the lanes that have it.
-        let mut kind = None;
+        // Kinds are kept per lane: the op variant is uniform across a site
+        // (non-divergent use), but a shuffle's XOR delta may differ per lane.
+        let mut kinds: Vec<SubgroupKind> = Vec::with_capacity(lanes);
         let mut inputs: Vec<Value> = Vec::with_capacity(lanes);
         let mut present: Vec<usize> = Vec::with_capacity(lanes);
         for (lane, sites) in cohort.iter().enumerate() {
             if let Some((k, v)) = sites.get(site).copied() {
-                kind.get_or_insert(k);
+                kinds.push(k);
                 inputs.push(v);
                 present.push(lane);
             }
         }
-        let kind = kind.unwrap_or(SubgroupKind::ReduceAdd);
         // Compute the per-lane result for the lanes present at this site.
-        let results = reduce_site(kind, &inputs);
+        let results = reduce_site(&kinds, &inputs, &present);
         for (slot, &lane) in present.iter().enumerate() {
             out[lane].push(results[slot]);
         }
@@ -1093,12 +1149,51 @@ pub(super) fn resolve_warp(cohort: &[Vec<(SubgroupKind, Value)>]) -> Vec<Vec<Val
     out
 }
 
-/// Apply a subgroup reduction/scan over `inputs` (the lanes present at a
-/// site, in lane order). Returns one result per input lane.
-fn reduce_site(kind: SubgroupKind, inputs: &[Value]) -> Vec<Value> {
-    // Type follows the first input's variant.
+/// Apply a subgroup reduction/scan/exchange over `inputs` (the lanes
+/// present at a site, in lane order; `present[slot]` is each input's
+/// warp-local lane index). Returns one result per input lane.
+fn reduce_site(kinds: &[SubgroupKind], inputs: &[Value], present: &[usize]) -> Vec<Value> {
+    // Type follows the first input's variant; the op variant follows the
+    // first lane's kind (uniform across a site).
     let proto = inputs.first().copied().unwrap_or(Value::U32(0));
+    let kind = kinds.first().copied().unwrap_or(SubgroupKind::ReduceAdd);
     match kind {
+        SubgroupKind::ShuffleXor { .. } => {
+            // Per-lane partner lookup: slot of lane `self ^ delta`, own
+            // value when the partner is not in the cohort.
+            present
+                .iter()
+                .zip(kinds)
+                .zip(inputs)
+                .map(|((&lane, k), &own)| {
+                    let delta = match k {
+                        SubgroupKind::ShuffleXor { delta } => *delta as usize,
+                        _ => 0,
+                    };
+                    let partner = lane ^ delta;
+                    present
+                        .iter()
+                        .position(|&l| l == partner)
+                        .map_or(own, |slot| inputs[slot])
+                })
+                .collect()
+        }
+        SubgroupKind::Ballot => {
+            let mask = present
+                .iter()
+                .zip(inputs)
+                .filter(|(_, v)| v.as_u32() != 0)
+                .fold(0u32, |m, (&lane, _)| m | (1u32 << (lane & 31)));
+            vec![Value::U32(mask); inputs.len()]
+        }
+        SubgroupKind::Any => {
+            let any = inputs.iter().any(|v| v.as_bool());
+            vec![Value::Bool(any); inputs.len()]
+        }
+        SubgroupKind::All => {
+            let all = inputs.iter().all(|v| v.as_bool());
+            vec![Value::Bool(all); inputs.len()]
+        }
         SubgroupKind::ReduceAdd | SubgroupKind::ReduceMin | SubgroupKind::ReduceMax => {
             let acc = fold_all(kind, inputs, proto);
             vec![acc; inputs.len()]

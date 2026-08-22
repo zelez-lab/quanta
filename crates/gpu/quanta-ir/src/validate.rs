@@ -185,6 +185,29 @@ fn walk_ops(caps: &BackendCaps, report: &mut ValidationReport, ops: &[KernelOp],
 fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc: &str) {
     use KernelOp::*;
     match op {
+        // Dynamic shared memory: the size never reaches a dispatch on ANY
+        // backend — no `setThreadgroupMemoryLength`, no SPIR-V
+        // specialization constant, no WGSL spelling, and the CPU executor
+        // would silently cap it at 64 elements. Until the dispatch half
+        // exists, refuse rather than run with a wrong-sized buffer.
+        SharedDeclDyn { ty, .. } => {
+            report.issues.push(ValidationIssue {
+                location: format!("{}: {}", loc, op_name(op)),
+                ty: *ty,
+                reason: "dynamic shared memory: its size reaches no dispatch on any backend (no setThreadgroupMemoryLength / SPIR-V spec constant); declare a sized `#[shared]` array",
+            });
+        }
+        // In-kernel debug print has no working GPU lowering: SPIR-V and WGSL
+        // emit nothing, and the MSL `_debug_buf` at buffer(30) is never
+        // bound by the Metal driver (an unbound-buffer fault, not a print).
+        // The CPU executor prints; every GPU backend refuses.
+        DebugPrint { ty, .. } if caps.backend != crate::caps::Backend::Cpu => {
+            report.issues.push(ValidationIssue {
+                location: format!("{}: {}", loc, op_name(op)),
+                ty: *ty,
+                reason: "in-kernel debug print has no GPU lowering (SPIR-V/WGSL emit nothing; Metal's debug buffer is never bound) — runs on the CPU device only",
+            });
+        }
         // GLSL.std.450 transcendentals (Sin/…/Exp/Log/Pow) have no f64 variant;
         // the SPIR-V backends refuse them rather than emulate lossily. Report as
         // unsupported so callers get a clean error instead of wrong numbers.
@@ -206,7 +229,6 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         Load { ty, .. }
         | Store { ty, .. }
         | SharedDecl { ty, .. }
-        | SharedDeclDyn { ty, .. }
         | SharedLoad { ty, .. }
         | SharedStore { ty, .. }
         | BinOp { ty, .. }
@@ -497,6 +519,40 @@ mod tests {
         let report = validate_for(&METAL, &k);
         assert_eq!(report.issues.len(), 1);
         assert_eq!(report.issues[0].ty, ScalarType::F64);
+    }
+
+    #[test]
+    fn dynamic_shared_rejected_on_every_backend() {
+        let k = kernel_with_body(
+            "dyn_shared",
+            vec![KernelOp::SharedDeclDyn {
+                id: 0,
+                ty: ScalarType::F32,
+            }],
+        );
+        for caps in [&METAL, &VULKAN, &WEBGPU, &CPU] {
+            let report = validate_for(caps, &k);
+            assert_eq!(report.issues.len(), 1, "{}", caps.backend.name());
+            assert!(report.issues[0].reason.contains("dynamic shared memory"));
+        }
+    }
+
+    #[test]
+    fn debug_print_rejected_on_gpu_backends_only() {
+        let k = kernel_with_body(
+            "dbg",
+            vec![KernelOp::DebugPrint {
+                src: Reg(0),
+                ty: ScalarType::U32,
+            }],
+        );
+        for caps in [&METAL, &VULKAN, &WEBGPU] {
+            let report = validate_for(caps, &k);
+            assert_eq!(report.issues.len(), 1, "{}", caps.backend.name());
+            assert!(report.issues[0].reason.contains("debug print"));
+        }
+        // The CPU executor prints; it is the one honest home for the op.
+        assert!(validate_for(&CPU, &k).is_ok());
     }
 
     #[test]

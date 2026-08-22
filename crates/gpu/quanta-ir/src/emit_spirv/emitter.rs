@@ -47,6 +47,12 @@ pub(crate) struct SpvEmitter {
     // Stack of loop merge labels for Break support
     pub(crate) loop_merge_stack: Vec<u32>,
 
+    // `Input` variable decorated `BuiltIn SubgroupSize`, declared only
+    // when the kernel (body or a device function) reads `SubgroupSize`.
+    // Read through `OpLoad` at every use — never a constant: the real
+    // width is 4/8 on lavapipe, 8-32 on Intel, 32 on NVIDIA, 32/64 on AMD.
+    pub(crate) subgroup_size_var: Option<u32>,
+
     // Register → SPIR-V ID mapping (function-scoped variables)
     pub(crate) reg_ids: HashMap<u32, u32>,
     // Register → type ID (so we know what type a register holds)
@@ -143,6 +149,7 @@ impl SpvEmitter {
             const_cache: HashMap::new(),
             glsl_ext_id: None,
             loop_merge_stack: Vec::new(),
+            subgroup_size_var: None,
             reg_ids: HashMap::new(),
             reg_types: HashMap::new(),
             demoted_regs: HashMap::new(),

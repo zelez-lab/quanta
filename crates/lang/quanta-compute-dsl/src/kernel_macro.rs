@@ -569,13 +569,22 @@ fn parse_kernel_attrs(attr: TokenStream) -> Result<KernelAttrs, syn::Error> {
                     attrs.workgroup_size = wg;
                 }
             }
+            // `subgroup = N` asks for a REQUIRED subgroup width. No backend
+            // honors it: Metal has no control at all, Vulkan's
+            // `VK_EXT_subgroup_size_control` is not wired into pipeline
+            // creation, WGSL has no spelling. The attribute used to be
+            // parsed, stored on `KernelDesc.subgroup_size` and read by
+            // nothing — a silent no-op. Refuse it until a backend can
+            // actually deliver the width; kernels read the real one
+            // through `subgroup_size()`.
             syn::Meta::NameValue(nv) if nv.path.is_ident("subgroup") => {
-                if let Expr::Lit(expr_lit) = &nv.value
-                    && let Lit::Int(i) = &expr_lit.lit
-                    && let Ok(v) = i.base10_parse::<u32>()
-                {
-                    attrs.subgroup_size = Some(v);
-                }
+                return Err(syn::Error::new_spanned(
+                    &nv.path,
+                    "`subgroup = N` is not honored by any backend yet (Metal has no \
+                     subgroup-size control; Vulkan's VK_EXT_subgroup_size_control is \
+                     not wired). Drop the attribute and read the device's real width \
+                     with `subgroup_size()` inside the kernel.",
+                ));
             }
             // `crate = <path>` crate-root override. Consumed via the
             // shared `crate_path` helper below; the arm just keeps the

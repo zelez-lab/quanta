@@ -42,11 +42,15 @@ fn kernel_workgroup_and_opt(out: &mut [u32]) {
     out[i as usize] = i;
 }
 
-#[quanta::kernel(subgroup = 32)]
-fn kernel_subgroup(out: &mut [u32]) {
-    let i = quark_id();
-    out[i as usize] = i;
-}
+// `subgroup = N` is REFUSED by the macro: no backend honors a required
+// subgroup width, and silently accepting it was a lie. Kept as the
+// manual error-path check, same convention as the typo test below.
+//
+// #[quanta::kernel(subgroup = 32)]
+// fn kernel_subgroup(out: &mut [u32]) {
+//     let i = quark_id();
+//     out[i as usize] = i;
+// }
 
 // TYPO TEST — uncomment to verify the error path. Should
 // produce a compile error mentioning workgroup_size and

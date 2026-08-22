@@ -61,6 +61,17 @@ fn mandelbrot(output: &mut [u32], width: u32, height: u32) {
     output[idx] = iter;
 }
 
+// `subgroup_size()` reads the `SubgroupSize` builtin: a scalar `Input`
+// variable that must carry the `GroupNonUniform` capability and sit on
+// the entry-point interface. It was a constant 32 for years — valid
+// SPIR-V, wrong number — so this pins the module SHAPE, and the
+// `subgroup_size_is_loaded_not_constant` test pins the semantics.
+#[quanta::kernel(jit)]
+fn report_subgroup_size(out: &mut [u32]) {
+    let i = quark_id();
+    out[i as usize] = unsafe { subgroup_size() };
+}
+
 fn spirv_val(label: &str, words: &[u8]) {
     if !std::path::Path::new(SPIRV_VAL).exists() {
         eprintln!("skipping [{label}]: {SPIRV_VAL} not installed");
@@ -99,8 +110,63 @@ fn jit_spirv_validates_loop_kernels() {
         ("heavy_compute", HEAVY_COMPUTE_DEF),
         ("add_one", ADD_ONE_DEF),
         ("mandelbrot", MANDELBROT_DEF),
+        ("report_subgroup_size", REPORT_SUBGROUP_SIZE_DEF),
     ] {
         let words = emit(label, def);
         spirv_val(label, &words);
     }
+}
+
+/// The `SubgroupSize` read must be an `OpLoad` from a `BuiltIn 36`
+/// `Input` variable, under the `GroupNonUniform` capability — never a
+/// literal. Checked on the raw words so it holds with or without
+/// spirv-val installed.
+#[test]
+fn subgroup_size_is_loaded_not_constant() {
+    let bytes = emit("report_subgroup_size", REPORT_SUBGROUP_SIZE_DEF);
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    const OP_CAPABILITY: u32 = 17;
+    const OP_DECORATE: u32 = 71;
+    const OP_VARIABLE: u32 = 59;
+    const CAPABILITY_GROUP_NON_UNIFORM: u32 = 61;
+    const DECORATION_BUILTIN: u32 = 11;
+    const BUILTIN_SUBGROUP_SIZE: u32 = 36;
+    const STORAGE_CLASS_INPUT: u32 = 1;
+    let (mut has_cap, mut builtin_var) = (false, None);
+    let mut i = 5; // past the header
+    while i < words.len() {
+        let (wc, op) = ((words[i] >> 16) as usize, words[i] & 0xffff);
+        let ops = &words[i + 1..i + wc];
+        match op {
+            OP_CAPABILITY if ops == [CAPABILITY_GROUP_NON_UNIFORM] => has_cap = true,
+            OP_DECORATE
+                if ops.len() == 3
+                    && ops[1] == DECORATION_BUILTIN
+                    && ops[2] == BUILTIN_SUBGROUP_SIZE =>
+            {
+                builtin_var = Some(ops[0]);
+            }
+            _ => {}
+        }
+        i += wc;
+    }
+    assert!(has_cap, "GroupNonUniform capability missing");
+    let var = builtin_var.expect("no variable decorated BuiltIn SubgroupSize");
+    // The decorated id must be an `Input`-class OpVariable.
+    let mut i = 5;
+    let mut is_input_var = false;
+    while i < words.len() {
+        let (wc, op) = ((words[i] >> 16) as usize, words[i] & 0xffff);
+        if op == OP_VARIABLE && words[i + 2] == var && words[i + 3] == STORAGE_CLASS_INPUT {
+            is_input_var = true;
+        }
+        i += wc;
+    }
+    assert!(
+        is_input_var,
+        "BuiltIn SubgroupSize id {var} is not an Input OpVariable"
+    );
 }

@@ -35,14 +35,17 @@ async_copy.copy_buffer_raw(dst_handle, src_handle, byte_count)?;
 
 | Backend | Implementation                                     |
 |---------|----------------------------------------------------|
-| Vulkan  | Transfer queue (`VK_QUEUE_TRANSFER_BIT`) + `vkCmdCopyBuffer` |
-| Metal   | `MTLCommandQueue` + `MTLBlitCommandEncoder`        |
-| WebGPU  | `GPUQueue.copyBufferToBuffer` (single queue)       |
-| CPU     | Serial `memcpy`                                    |
+| Vulkan  | `NotSupported` — no transfer-queue path yet        |
+| Metal   | `NotSupported` — no blit-encoder path yet          |
+| WebGPU  | `NotSupported`                                     |
+| CPU     | Serial `memcpy` on the host thread                 |
 
-The transfer queue may run concurrently with `Graphics` and `Compute` queues
-on Vulkan and Metal — see [Multi-queue](../../rendering/tutorials/multi-queue.md) for the
-synchronization model.
+Today the typed wrapper is real on the CPU device only; every GPU backend
+returns `NotSupported` from `gpu.async_copy_queue()`. The transfer-queue
+designs above (Vulkan `VK_QUEUE_TRANSFER_BIT` + `vkCmdCopyBuffer`, Metal
+`MTLBlitCommandEncoder`) are the intended lowerings, not shipped ones —
+see [Multi-queue](../../rendering/tutorials/multi-queue.md) for the queue
+model they will sit on.
 
 ## GPU printf
 
@@ -77,10 +80,17 @@ side table. The kernel-side recording API is still under design — for now,
 
 | Backend | Implementation                                            |
 |---------|-----------------------------------------------------------|
-| Vulkan  | `VK_EXT_debug_printf` + `debug_printfEXT` SPIR-V intrinsic|
-| Metal   | `os_log` from MSL via Metal Debugger                      |
-| WebGPU  | Software ring through a storage buffer                    |
-| CPU     | Software ring buffer                                      |
+| Vulkan  | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
+| Metal   | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
+| WebGPU  | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
+| CPU     | Host ring buffer; in-kernel `DebugPrint` writes to stderr   |
+
+The host-side ring (`printf_buffer` / `record` / `drain`) exists on the CPU
+device only. The in-kernel `DebugPrint` op has no working GPU lowering
+(SPIR-V and WGSL emit nothing; the MSL debug buffer is never bound), so the
+validator refuses it for every GPU backend rather than let it run as a
+silent no-op. `VK_EXT_debug_printf` and an MSL/WGSL debug-buffer scheme are
+the intended lowerings.
 
 ## Next
 

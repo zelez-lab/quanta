@@ -12,6 +12,28 @@ impl SpvEmitter {
     /// Check if any ops in the kernel body use subgroup *arithmetic*
     /// operations (reduce/scan), which require the
     /// GroupNonUniformArithmetic capability.
+    /// Does any op (body or nested arms) read the `SubgroupSize`
+    /// builtin? Decides whether the `Input` variable is declared and
+    /// listed on the entry point, and whether `GroupNonUniform` is
+    /// required even when no reduction/shuffle op is present.
+    pub(crate) fn uses_subgroup_size(ops: &[KernelOp]) -> bool {
+        for op in ops {
+            match op {
+                KernelOp::SubgroupSize { .. } => return true,
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } if Self::uses_subgroup_size(then_ops) || Self::uses_subgroup_size(else_ops) => {
+                    return true;
+                }
+                KernelOp::Loop { body, .. } if Self::uses_subgroup_size(body) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn uses_subgroup_ops(ops: &[KernelOp]) -> bool {
         for op in ops {
             match op {
@@ -82,7 +104,12 @@ impl SpvEmitter {
         // base GroupNonUniform capability.
         let uses_arith = Self::uses_subgroup_ops(&kernel.body);
         let uses_shuffle = Self::uses_subgroup_shuffle(&kernel.body);
-        if uses_arith || uses_shuffle {
+        let uses_size = Self::uses_subgroup_size(&kernel.body)
+            || kernel
+                .device_functions
+                .iter()
+                .any(|f| Self::uses_subgroup_size(&f.body));
+        if uses_arith || uses_shuffle || uses_size {
             Self::emit_op(
                 &mut self.sec_capability,
                 OP_CAPABILITY,
@@ -160,7 +187,25 @@ impl SpvEmitter {
         // Collect Input/Output interface variables for the entry point.
         // SPIR-V 1.3 requires only Input/Output variables in the interface list.
         // StorageBuffer, Uniform, and Workgroup variables must NOT be listed.
-        let interface_ids = vec![gid_var, proton_id_var, nucleus_id_var, num_wg_var];
+        let mut interface_ids = vec![gid_var, proton_id_var, nucleus_id_var, num_wg_var];
+
+        // 3b. `SubgroupSize` builtin, only when read. A scalar `Input`
+        // variable (not vec3), decorated BuiltIn 36; SPIR-V 1.3 requires
+        // it on the entry-point interface like the other Inputs.
+        if uses_size {
+            let uint_ty = self.ensure_type_u32();
+            let ptr_input_uint = self.ensure_type_pointer(STORAGE_CLASS_INPUT, uint_ty);
+            let sg_var = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_uint, sg_var, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(sg_var, "gl_SubgroupSize");
+            self.decorate(sg_var, DECORATION_BUILTIN, &[BUILTIN_SUBGROUP_SIZE]);
+            interface_ids.push(sg_var);
+            self.subgroup_size_var = Some(sg_var);
+        }
 
         // 4. Set up storage buffers for each field parameter
         self.emit_kernel_params(&kernel.params)?;

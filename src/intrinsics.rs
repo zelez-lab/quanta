@@ -153,7 +153,17 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
+    /// The device's real subgroup width (4/8 on lavapipe, 8–32 on
+    /// Intel, 32 on NVIDIA and Apple, 32 or 64 on AMD). Read it at
+    /// runtime — it is a builtin on every backend, never a constant.
     pub fn subgroup_size() -> u32;
+    /// **Lowers to the local thread index (`proton_id`), not to a
+    /// lane-within-subgroup builtin.** The two coincide only while the
+    /// workgroup fits in one subgroup (`workgroup ≤ subgroup_size()`);
+    /// for wider workgroups compute the lane as
+    /// `proton_id() % subgroup_size()` yourself. A dedicated lane-id
+    /// op (`SubgroupLocalInvocationId` / `thread_index_in_simdgroup` /
+    /// `subgroup_invocation_id`) is the documented follow-up.
     pub fn subgroup_id() -> u32;
 
     // Ballot / any / all take a predicate (any non-zero u32 == true);

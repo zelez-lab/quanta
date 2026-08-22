@@ -307,6 +307,39 @@ fn identity_kernel() -> quanta_ir::KernelDef {
     }
 }
 
+/// Reads the `SubgroupSize` builtin: declared as a scalar `Input`
+/// variable under `GroupNonUniform`, on the entry-point interface. Was
+/// a constant 32 for years; this pins the declared shape via spirv-val.
+fn subgroup_size_kernel() -> quanta_ir::KernelDef {
+    use quanta_ir::*;
+    KernelDef {
+        name: "report_subgroup_size".to_string(),
+        params: vec![KernelParam::FieldWrite {
+            name: "out".into(),
+            slot: 0,
+            scalar_type: ScalarType::U32,
+        }],
+        body: vec![
+            KernelOp::QuarkId { dst: Reg(0) },
+            KernelOp::SubgroupSize { dst: Reg(1) },
+            KernelOp::Store {
+                field: 0,
+                index: Reg(0),
+                src: Reg(1),
+                ty: ScalarType::U32,
+            },
+        ],
+        body_source: None,
+        next_reg: 2,
+        opt_level: 3,
+        device_sources: Vec::new(),
+        device_functions: Vec::new(),
+        workgroup_size: [64, 1, 1],
+        subgroup_size: None,
+        dynamic_shared_bytes: 0,
+    }
+}
+
 // --- Shader (vertex/fragment) SPIR-V validation ---
 
 /// Validate vertex/fragment SPIR-V by writing it to a temp file and running spirv-val.
@@ -499,6 +532,19 @@ fn spirv_val_identity() {
         return;
     }
     compile_and_validate(&identity_kernel(), "identity_copy");
+}
+
+#[test]
+fn spirv_val_subgroup_size_builtin() {
+    if !has_spirv_val() {
+        eprintln!("skipping: spirv-val not found at {}", SPIRV_VAL);
+        return;
+    }
+    if compiler_path().is_none() {
+        eprintln!("skipping: quanta-compiler not built");
+        return;
+    }
+    compile_and_validate(&subgroup_size_kernel(), "report_subgroup_size");
 }
 
 #[quanta::fragment]

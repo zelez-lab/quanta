@@ -52,9 +52,12 @@ async_copy.copy_buffer(&next_frame_dst, &next_frame_src, count)?;
 
 | Backend | Path |
 |---|---|
-| Vulkan  | Transfer queue (`VK_QUEUE_TRANSFER_BIT`) + `vkCmdCopyBuffer` |
-| Metal   | `MTLCommandQueue` + `MTLBlitCommandEncoder` |
-| WebGPU  | `GPUQueue.copyBufferToBuffer` (single queue, serialized) |
+| Vulkan / Metal / WebGPU | `NotSupported` from `gpu.async_copy_queue()` — no GPU lowering shipped yet |
+| CPU | `memcpy` on the host thread |
+
+The transfer-queue lowerings (Vulkan `vkCmdCopyBuffer` on a
+`VK_QUEUE_TRANSFER_BIT` queue, Metal `MTLBlitCommandEncoder`) are the
+design, not the shipped state.
 
 ## GPU printf
 
@@ -89,9 +92,8 @@ IDs up in a side table.
 
 | Backend | Path |
 |---|---|
-| Vulkan  | `VK_EXT_debug_printf` + `debug_printfEXT` SPIR-V intrinsic |
-| Metal   | `os_log` from MSL via Metal Debugger |
-| WebGPU  | Software ring through a storage buffer |
+| Vulkan / Metal / WebGPU | Host ring `NotSupported`; an in-kernel `DebugPrint` is refused at validation (no working GPU lowering) |
+| CPU | Host ring buffer; in-kernel `DebugPrint` writes `[quanta gpu_print] quark=… = value` to stderr |
 
 ## See also
 

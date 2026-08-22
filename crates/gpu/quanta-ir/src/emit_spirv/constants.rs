@@ -187,6 +187,8 @@ pub(crate) const BUILTIN_NUM_WORKGROUPS: u32 = 24;
 pub(crate) const BUILTIN_WORKGROUP_ID: u32 = 26;
 pub(crate) const BUILTIN_LOCAL_INVOCATION_ID: u32 = 27;
 pub(crate) const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
+/// `SubgroupSize` (requires the `GroupNonUniform` capability).
+pub(crate) const BUILTIN_SUBGROUP_SIZE: u32 = 36;
 
 // ── Execution model / mode ──────────────────────────────────────────────────
 

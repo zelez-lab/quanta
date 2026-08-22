@@ -11,6 +11,26 @@ use super::emitter::SpvEmitter;
 
 impl SpvEmitter {
     /// Check if any ops in the kernel body use subgroup operations.
+    /// Does any op (body or nested arms) read the `SubgroupSize`
+    /// builtin? Twin of the JIT emitter's scan.
+    pub(crate) fn uses_subgroup_size(ops: &[KernelOp]) -> bool {
+        for op in ops {
+            match op {
+                KernelOp::SubgroupSize { .. } => return true,
+                KernelOp::Branch {
+                    then_ops, else_ops, ..
+                } if Self::uses_subgroup_size(then_ops) || Self::uses_subgroup_size(else_ops) => {
+                    return true;
+                }
+                KernelOp::Loop { body, .. } if Self::uses_subgroup_size(body) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn uses_subgroup_ops(ops: &[KernelOp]) -> bool {
         for op in ops {
             match op {
@@ -55,6 +75,11 @@ impl SpvEmitter {
         );
 
         // Add subgroup capabilities if needed
+        let uses_size = Self::uses_subgroup_size(&kernel.body)
+            || kernel
+                .device_functions
+                .iter()
+                .any(|f| Self::uses_subgroup_size(&f.body));
         if Self::uses_subgroup_ops(&kernel.body) {
             Self::emit_op(
                 &mut self.sec_capability,
@@ -65,6 +90,13 @@ impl SpvEmitter {
                 &mut self.sec_capability,
                 OP_CAPABILITY,
                 &[CAPABILITY_GROUP_NON_UNIFORM_ARITHMETIC],
+            );
+        } else if uses_size {
+            // The `SubgroupSize` builtin alone still needs the base capability.
+            Self::emit_op(
+                &mut self.sec_capability,
+                OP_CAPABILITY,
+                &[CAPABILITY_GROUP_NON_UNIFORM],
             );
         }
 
@@ -124,7 +156,24 @@ impl SpvEmitter {
         // Collect Input/Output interface variables for the entry point.
         // SPIR-V 1.3 requires only Input/Output variables in the interface list.
         // StorageBuffer, Uniform, and Workgroup variables must NOT be listed.
-        let interface_ids = vec![gid_var, proton_id_var, nucleus_id_var, num_wg_var];
+        let mut interface_ids = vec![gid_var, proton_id_var, nucleus_id_var, num_wg_var];
+
+        // 3b. `SubgroupSize` builtin, only when read: a scalar `Input`
+        // variable decorated BuiltIn 36, on the entry-point interface.
+        if uses_size {
+            let uint_ty = self.ensure_type_u32();
+            let ptr_input_uint = self.ensure_type_pointer(STORAGE_CLASS_INPUT, uint_ty);
+            let sg_var = self.alloc_id();
+            Self::emit_op(
+                &mut self.sec_global_var,
+                OP_VARIABLE,
+                &[ptr_input_uint, sg_var, STORAGE_CLASS_INPUT],
+            );
+            self.emit_name(sg_var, "gl_SubgroupSize");
+            self.decorate(sg_var, DECORATION_BUILTIN, &[BUILTIN_SUBGROUP_SIZE]);
+            interface_ids.push(sg_var);
+            self.subgroup_size_var = Some(sg_var);
+        }
 
         // 4. Set up storage buffers for each field parameter
         self.emit_kernel_params(&kernel.params)?;

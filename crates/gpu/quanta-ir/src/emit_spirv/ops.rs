@@ -2080,18 +2080,35 @@ impl SpvEmitter {
             }
 
             KernelOp::SubgroupSize { dst } => {
+                // The real width, loaded from the `SubgroupSize` builtin the
+                // kernel prologue declared (see `uses_subgroup_size`). It was a
+                // constant 32 for a long time — wrong on every device whose
+                // wave is not 32 wide, and the reason lavapipe's reductions
+                // "grouped by 4 while the builtin said 32".
+                let var = self.subgroup_size_var.ok_or_else(|| {
+                    "SubgroupSize read but no builtin declared (prologue scan missed it)"
+                        .to_string()
+                })?;
                 let uint_ty = self.ensure_type_u32();
-                let val = self.emit_constant_u32(32); // placeholder: common subgroup size
+                let val = self.alloc_id();
+                Self::emit_op(&mut self.sec_function, OP_LOAD, &[uint_ty, val, var]);
                 self.set_reg(*dst, val, uint_ty);
             }
 
-            KernelOp::SharedDeclDyn { .. } => {
-                // Handled during shared decl scan phase.
+            // Both refused by the validator before emission; these arms are
+            // the backstop for any path that skips it. Neither has a SPIR-V
+            // lowering, and emitting nothing used to be a silent wrong answer.
+            KernelOp::SharedDeclDyn { id, .. } => {
+                return Err(format!(
+                    "SharedDeclDyn(id={}) has no SPIR-V lowering (dynamic shared size reaches no dispatch)",
+                    id
+                ));
             }
-
-            KernelOp::DebugPrint { src, ty } => {
-                // Debug print: no-op in SPIR-V for now.
-                let _ = (src, ty);
+            KernelOp::DebugPrint { src, .. } => {
+                return Err(format!(
+                    "DebugPrint(r{}) has no SPIR-V lowering; in-kernel print runs on the CPU device only",
+                    src.0
+                ));
             }
 
             KernelOp::Dispatch { .. } => {

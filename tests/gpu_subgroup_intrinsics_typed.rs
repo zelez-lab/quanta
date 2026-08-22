@@ -118,9 +118,11 @@ fn k_shuffle_f32(out: &mut [f32], values: &[f32]) {
 // We measure the *effective* subgroup width empirically rather than
 // trusting the `subgroup_size()` builtin: a `reduce_add` of all-ones
 // gives every lane the count of active lanes in its subgroup, which is
-// exactly the grouping the reduction ops actually use. (lavapipe's
-// `subgroup_size()` builtin reports 32 while its reductions group by 4 —
-// the builtin is unreliable, the reduction grouping is ground truth.)
+// exactly the grouping the reduction ops actually use. (The "lavapipe
+// reports 32 while its reductions group by 4" mismatch this once worked
+// around was OUR bug — both SPIR-V emitters hardcoded `SubgroupSize` to
+// 32. They now load the real builtin; the consistency check below stays
+// as a genuine cross-check of builtin vs. reduction grouping.)
 
 #[quanta::kernel]
 fn k_reduce_add_u32(out: &mut [u32], values: &[u32]) {
@@ -152,13 +154,12 @@ fn effective_subgroup_width(gpu: &quanta::Gpu, n: usize) -> Option<usize> {
 }
 
 /// Whether this device's subgroup execution can be trusted for *every*
-/// op the tests assert on. The emitter output is verified correct by
-/// `spirv-val` and passes on real hardware (Metal/NVIDIA), but software
-/// rasterizers (lavapipe) implement only a subset reliably: their
-/// `subgroup_size()` builtin disagrees with the width the reductions
-/// actually use, and shuffle / float-min-max are unreliable. We detect
-/// that inconsistency and skip the device rather than assert against a
-/// broken executor.
+/// op the tests assert on: the reductions must group consistently and
+/// the `subgroup_size()` builtin must agree with that grouping. Real
+/// hardware (Metal/NVIDIA) passes; a software rasterizer whose shuffle /
+/// float-min-max are unreliable is expected to fail the check and is
+/// skipped rather than asserted against. (Historically the check also
+/// tripped on our own emitter's constant-32 builtin — fixed; see above.)
 fn subgroup_execution_reliable(gpu: &quanta::Gpu, n: usize) -> bool {
     let Some(effective) = effective_subgroup_width(gpu, n) else {
         return false;

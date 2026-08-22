@@ -189,6 +189,16 @@ jobs:
           cargo test --test gpu_saturation --features software --no-default-features
           cargo test --test gpu_f16 --features software --no-default-features
 
+      # Subgroup intrinsics on the CPU executor's cooperative warp model
+      # (reduce/scan/shuffle/ballot/any/all + the SubgroupSize builtin).
+      # The typed suite's shuffle cases had NEVER run anywhere before this
+      # registration — which is how the CPU's identity-value shuffle
+      # survived.
+      - name: Subgroup intrinsics tests (software lane)
+        run: |
+          cargo test --test gpu_subgroup_intrinsics --features software --no-default-features
+          cargo test --test gpu_subgroup_intrinsics_typed --features software --no-default-features
+
   # ─── Tier 2: GPU tests (macOS Metal) ─────────────────────────────────
   # Gated on the `run-metal` PR label until a self-hosted Metal runner
   # is registered. GitHub-hosted macos-14 VMs don't expose the GPU.
@@ -235,7 +245,7 @@ jobs:
         run: cargo build
 
       - name: GPU compute tests
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero --test gpu_saturation --test gpu_f16 -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero --test gpu_saturation --test gpu_f16 --test gpu_subgroup_intrinsics --test gpu_subgroup_intrinsics_typed -- --test-threads=1
 
       - name: GPU texture tests
         run: cargo test --test gpu_texture -- --test-threads=1
