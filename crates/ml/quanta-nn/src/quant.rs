@@ -640,8 +640,10 @@ fn decode_codes_i8(e: &RawEntry, data: &[u8]) -> Vec<i8> {
 
 fn decode_codes_u32(e: &RawEntry, data: &[u8]) -> Vec<u32> {
     data[e.start..e.end]
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect()
 }
 

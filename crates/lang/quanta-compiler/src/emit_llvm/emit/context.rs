@@ -30,18 +30,17 @@ pub(crate) fn build_kernel<'ctx>(
     let mut param_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = Vec::new();
     for param in &kernel.params {
         match param {
-            KernelParam::FieldRead { scalar_type: _, .. }
-            | KernelParam::FieldWrite { scalar_type: _, .. } => {
+            KernelParam::FieldRead { .. } | KernelParam::FieldWrite { .. } => {
                 // Pointer to global memory
                 param_types.push(context.ptr_type(global_as).into());
             }
             KernelParam::Constant { scalar_type, .. } => {
                 param_types.push(scalar_to_llvm_type(context, scalar_type));
             }
-            KernelParam::Sampled2D { scalar_type: _, .. }
-            | KernelParam::Texture2DRead { scalar_type: _, .. }
-            | KernelParam::Texture2DReadWrite { scalar_type: _, .. }
-            | KernelParam::Sampled3D { scalar_type: _, .. } => {
+            KernelParam::Sampled2D { .. }
+            | KernelParam::Texture2DRead { .. }
+            | KernelParam::Texture2DReadWrite { .. }
+            | KernelParam::Sampled3D { .. } => {
                 // Texture handles are passed as i32 descriptor indices
                 param_types.push(context.i32_type().into());
             }

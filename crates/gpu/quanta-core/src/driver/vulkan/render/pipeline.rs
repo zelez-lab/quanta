@@ -250,12 +250,16 @@ impl VulkanDevice {
         }
 
         let vert_spirv: Vec<u32> = vertex_bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         let frag_spirv: Vec<u32> = fragment_bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
 
         let vert_module_info = ffi::VkShaderModuleCreateInfo {

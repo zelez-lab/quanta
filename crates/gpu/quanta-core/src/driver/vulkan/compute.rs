@@ -135,10 +135,8 @@ impl VulkanDevice {
         // exactly when the device enumerated at least one shape. Refuse with
         // a clear error instead of a pipeline-creation failure.
         if self.cooperative_matrix_shapes.is_empty() {
-            let words: Vec<u32> = kernel
-                .chunks_exact(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
+            let (chunks, _) = kernel.as_chunks::<4>();
+            let words: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
             if crate::driver::spirv_meta::declares_capability(
                 &words,
                 crate::driver::spirv_meta::CAPABILITY_COOPERATIVE_MATRIX_KHR,
@@ -151,8 +149,10 @@ impl VulkanDevice {
         // Try spirv-opt optimization pass (no-op if spirv-opt not installed)
         let optimized = try_optimize_spirv(kernel);
         let spirv_words: Vec<u32> = optimized
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
 
         // Read the module's declared workgroup size so thread-count

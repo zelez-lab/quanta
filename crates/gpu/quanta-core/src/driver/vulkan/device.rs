@@ -1346,36 +1346,45 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // bf16/fp8 pipelines fail creation with the capability named.
         const VK_API_VERSION_1_2: u32 = (1 << 22) | (2 << 12);
         let api_12 = props.api_version >= VK_API_VERSION_1_2;
-        let (storage16_supported, storage8_supported) = match get_features2_fn {
-            Some(get_features2) if api_12 => {
-                let mut storage8_query = ffi::VkPhysicalDevice8BitStorageFeatures {
-                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
-                    p_next: core::ptr::null_mut(),
-                    storage_buffer_8bit_access: 0,
-                    uniform_and_storage_buffer_8bit_access: 0,
-                    storage_push_constant8: 0,
-                };
-                let mut storage16_query = ffi::VkPhysicalDevice16BitStorageFeatures {
-                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
-                    p_next: &mut storage8_query as *mut _ as *mut core::ffi::c_void,
-                    storage_buffer_16bit_access: 0,
-                    uniform_and_storage_buffer_16bit_access: 0,
-                    storage_push_constant16: 0,
-                    storage_input_output16: 0,
-                };
-                let mut features2 = ffi::VkPhysicalDeviceFeatures2 {
-                    s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                    p_next: &mut storage16_query as *mut _ as *mut core::ffi::c_void,
-                    features: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() },
-                };
-                unsafe { get_features2(pd, &mut features2) };
-                (
-                    storage16_query.storage_buffer_16bit_access != 0,
-                    storage8_query.storage_buffer_8bit_access != 0,
-                )
-            }
-            _ => (false, false),
-        };
+        let (storage16_supported, storage8_supported, vulkan_memory_model_supported) =
+            match get_features2_fn {
+                Some(get_features2) if api_12 => {
+                    let mut vmm_query = ffi::VkPhysicalDeviceVulkanMemoryModelFeatures {
+                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES,
+                        p_next: core::ptr::null_mut(),
+                        vulkan_memory_model: 0,
+                        vulkan_memory_model_device_scope: 0,
+                        vulkan_memory_model_availability_visibility_chains: 0,
+                    };
+                    let mut storage8_query = ffi::VkPhysicalDevice8BitStorageFeatures {
+                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES,
+                        p_next: &mut vmm_query as *mut _ as *mut core::ffi::c_void,
+                        storage_buffer_8bit_access: 0,
+                        uniform_and_storage_buffer_8bit_access: 0,
+                        storage_push_constant8: 0,
+                    };
+                    let mut storage16_query = ffi::VkPhysicalDevice16BitStorageFeatures {
+                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+                        p_next: &mut storage8_query as *mut _ as *mut core::ffi::c_void,
+                        storage_buffer_16bit_access: 0,
+                        uniform_and_storage_buffer_16bit_access: 0,
+                        storage_push_constant16: 0,
+                        storage_input_output16: 0,
+                    };
+                    let mut features2 = ffi::VkPhysicalDeviceFeatures2 {
+                        s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                        p_next: &mut storage16_query as *mut _ as *mut core::ffi::c_void,
+                        features: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceFeatures>() },
+                    };
+                    unsafe { get_features2(pd, &mut features2) };
+                    (
+                        storage16_query.storage_buffer_16bit_access != 0,
+                        storage8_query.storage_buffer_8bit_access != 0,
+                        vmm_query.vulkan_memory_model != 0,
+                    )
+                }
+                _ => (false, false, false),
+            };
 
         // TASK 37 — subgroup arithmetic capability. Chain
         // VkPhysicalDeviceSubgroupProperties onto a properties2 query;
@@ -1446,6 +1455,14 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
                 }
                 _ => Vec::new(),
             };
+        // Cooperative-matrix SPIR-V must use the Vulkan memory model, so a
+        // device that enumerates shapes but lacks `vulkanMemoryModel` cannot
+        // run them: report no shapes rather than fail at pipeline creation.
+        let cooperative_matrix_shapes = if vulkan_memory_model_supported {
+            cooperative_matrix_shapes
+        } else {
+            Vec::new()
+        };
         let enable_coopmat = !cooperative_matrix_shapes.is_empty();
 
         // Find a queue family that supports compute + graphics
@@ -1589,9 +1606,16 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         // Cooperative matrix rides at the head of the chain, only when the
         // device enumerated usable shapes (an unadvertised feature fails
         // vkCreateDevice).
+        let vmm_enable = ffi::VkPhysicalDeviceVulkanMemoryModelFeatures {
+            s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES,
+            p_next: storage_or_sync2_p_next as *mut core::ffi::c_void,
+            vulkan_memory_model: 1,
+            vulkan_memory_model_device_scope: 0,
+            vulkan_memory_model_availability_visibility_chains: 0,
+        };
         let coopmat_enable = ffi::VkPhysicalDeviceCooperativeMatrixFeaturesKHR {
             s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
-            p_next: storage_or_sync2_p_next as *mut core::ffi::c_void,
+            p_next: &vmm_enable as *const _ as *mut core::ffi::c_void,
             cooperative_matrix: 1,
             cooperative_matrix_robust_buffer_access: 0,
         };

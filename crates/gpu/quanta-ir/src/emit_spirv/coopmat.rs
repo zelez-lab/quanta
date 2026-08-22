@@ -117,6 +117,15 @@ impl SpvEmitter {
         );
         let name_words = Self::string_words("SPV_KHR_cooperative_matrix");
         Self::emit_op(&mut self.sec_extension, OP_EXTENSION, &name_words);
+        // The Vulkan memory model is mandatory alongside CooperativeMatrixKHR;
+        // the module's OpMemoryModel already selected it (kernel prologue).
+        Self::emit_op(
+            &mut self.sec_capability,
+            OP_CAPABILITY,
+            &[CAPABILITY_VULKAN_MEMORY_MODEL],
+        );
+        let vmm_words = Self::string_words("SPV_KHR_vulkan_memory_model");
+        Self::emit_op(&mut self.sec_extension, OP_EXTENSION, &vmm_words);
         self.coopmat_declared = true;
     }
 

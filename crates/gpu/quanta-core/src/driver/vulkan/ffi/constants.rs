@@ -444,6 +444,10 @@ pub type PfnVkGetPhysicalDeviceFeatures2 = unsafe extern "C" fn(
 
 // ─── VK_KHR_cooperative_matrix (extension 507 → 1000506xxx) ─────────────────
 
+/// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES` (core
+/// 1.2; `VK_KHR_vulkan_memory_model`). Cooperative-matrix SPIR-V must use
+/// the Vulkan memory model, which needs this feature enabled.
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES: u32 = 1000211000;
 /// `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR`.
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR: u32 = 1000506000;
 /// `VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR` — one per

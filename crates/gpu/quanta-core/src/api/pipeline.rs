@@ -383,10 +383,8 @@ pub fn __check_fragment_outputs(
     if bytes.len() % 4 != 0 {
         return Ok(());
     }
-    let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let (chunks, _) = bytes.as_chunks::<4>();
+    let words: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
     let Some(writes) = crate::driver::spirv_meta::fragment_output_count(&words) else {
         return Ok(()); // not a readable fragment module — skip.
     };

@@ -204,6 +204,12 @@ pub(crate) const EXECUTION_MODE_LOCAL_SIZE: u32 = 17;
 
 pub(crate) const ADDRESSING_MODEL_LOGICAL: u32 = 0;
 pub(crate) const MEMORY_MODEL_GLSL450: u32 = 1;
+/// `MemoryModel::Vulkan` — required by `SPV_KHR_cooperative_matrix`
+/// modules (with the `VulkanMemoryModel` capability).
+pub(crate) const MEMORY_MODEL_VULKAN: u32 = 3;
+/// `Capability VulkanMemoryModel` (core in SPIR-V 1.5; the module
+/// pins 1.3, so `SPV_KHR_vulkan_memory_model` is declared alongside).
+pub(crate) const CAPABILITY_VULKAN_MEMORY_MODEL: u32 = 5345;
 
 // ── Capabilities ────────────────────────────────────────────────────────────
 

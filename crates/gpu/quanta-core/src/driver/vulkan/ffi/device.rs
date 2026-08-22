@@ -252,6 +252,19 @@ pub struct VkPhysicalDevice8BitStorageFeatures {
     pub storage_push_constant8: u32,
 }
 
+/// `VkPhysicalDeviceVulkanMemoryModelFeatures` (core Vulkan 1.2). Queried
+/// and enabled together with cooperative matrices: a module declaring
+/// `CooperativeMatrixKHR` must also declare `VulkanMemoryModel`, and that
+/// capability needs `vulkan_memory_model` enabled on the device.
+#[repr(C)]
+pub struct VkPhysicalDeviceVulkanMemoryModelFeatures {
+    pub s_type: u32,
+    pub p_next: *mut core::ffi::c_void,
+    pub vulkan_memory_model: u32,
+    pub vulkan_memory_model_device_scope: u32,
+    pub vulkan_memory_model_availability_visibility_chains: u32,
+}
+
 /// `VkPhysicalDeviceCooperativeMatrixFeaturesKHR`. Chained into
 /// `vkCreateDevice` when the extension is advertised; only
 /// `cooperative_matrix` is enabled (robust buffer access is not needed

@@ -685,8 +685,10 @@ impl Charsmap {
             });
         }
         let units = blob[4..trie_end]
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes(c.try_into().expect("chunks_exact yields 4-byte chunks")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
             .collect();
         let pool = std::str::from_utf8(&blob[trie_end..])
             .map_err(|e| CharsmapError {

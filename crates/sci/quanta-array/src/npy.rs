@@ -521,12 +521,14 @@ fn decode<T: NpyScalar>(data: &[u8], big_endian: bool) -> Vec<T> {
 /// Decode a `<f2` / `>f2` data section through the exact f16 → f32
 /// embedding. `T` is `f32` in practice (the `WIDENS_F16` gate).
 fn decode_f16<T: NpyScalar>(data: &[u8], big_endian: bool) -> Vec<T> {
-    data.chunks_exact(2)
+    data.as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             let bits = if big_endian {
-                u16::from_be_bytes([c[0], c[1]])
+                u16::from_be_bytes(*c)
             } else {
-                u16::from_le_bytes([c[0], c[1]])
+                u16::from_le_bytes(*c)
             };
             T::from_f16(bits)
         })

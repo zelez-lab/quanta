@@ -756,12 +756,6 @@ jobs:
       - name: Differential tests (vulkan lane via lavapipe)
         run: cargo test --test differential --no-default-features --features vulkan,jit,compute
 
-      # Wave-cache + lifecycle semantics on the Vulkan retire path:
-      # cached-pipeline destroys park behind the submission serial /
-      # batch pins. Isolated devices — parallel-safe.
-      - name: Wave lifecycle tests (vulkan lane via lavapipe)
-        run: cargo test --test wave_lifecycle --no-default-features --features vulkan,jit,compute
-
       # The measurement the wave/pipeline-cache follow-up is gated on
       # (roadmap design record deferred_dispatch.md): per-op pipeline
       # creation cost on lavapipe, which exists nowhere but CI. Grep the
@@ -803,6 +797,18 @@ jobs:
 
       - name: Build quanta-compiler
         run: cargo build -p quanta-compiler
+
+      # Wave-cache + lifecycle semantics on the Vulkan retire path:
+      # cached-pipeline destroys park behind the submission serial /
+      # batch pins. Isolated devices — parallel-safe. Uses a
+      # `#[quanta::kernel]`, so it needs the freshly built compiler:
+      # before this step moved here it ran ahead of the build, fell
+      # back to the version-keyed download, and only passed when the
+      # pushed rev happened to be the tagged one.
+      - name: Wave lifecycle tests (vulkan lane via lavapipe)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+        run: cargo test --test wave_lifecycle --no-default-features --features vulkan,jit,compute
 
       - name: DSL render tests (vulkan lane via lavapipe)
         env:

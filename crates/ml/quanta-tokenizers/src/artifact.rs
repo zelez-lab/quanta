@@ -698,7 +698,7 @@ fn base64_decode(s: &str, path: &str) -> Result<Vec<u8>, TokenizerError> {
             )),
         }
     };
-    for (chunk_start, chunk) in (0..b.len()).step_by(4).zip(b.chunks_exact(4)) {
+    for (chunk_start, chunk) in (0..b.len()).step_by(4).zip(b.as_chunks::<4>().0) {
         let pad = match chunk {
             [_, _, b'=', b'='] => 2,
             [_, _, _, b'='] => 1,

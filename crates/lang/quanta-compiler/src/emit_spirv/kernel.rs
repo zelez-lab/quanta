@@ -135,7 +135,20 @@ impl SpvEmitter {
         Self::emit_op(
             &mut self.sec_memory_model,
             OP_MEMORY_MODEL,
-            &[ADDRESSING_MODEL_LOGICAL, MEMORY_MODEL_GLSL450],
+            &[
+                ADDRESSING_MODEL_LOGICAL,
+                // Cooperative-matrix modules must use the Vulkan memory
+                // model (spirv-val: "If the Shader and CooperativeMatrixKHR
+                // capabilities are declared, the VulkanMemoryModel capability
+                // must also be declared"); the capability + extension ride
+                // with the first fragment type (`coopmat.rs`). Every other
+                // kernel keeps GLSL450, byte-identical to before.
+                if self.coop_frag_regs.is_empty() {
+                    MEMORY_MODEL_GLSL450
+                } else {
+                    MEMORY_MODEL_VULKAN
+                },
+            ],
         );
 
         // 3. Set up built-in: GlobalInvocationId
