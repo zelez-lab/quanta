@@ -2,14 +2,17 @@
 
 All notable changes to `quanta-tensor` are recorded here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and the project uses [Semantic Versioning](https://semver.org/).
+and versions follow [Semantic Versioning](https://semver.org/) — pre-1.0,
+which promises nothing about compatibility between releases; the
+project's contract is the [stability page](../../../docs/stability.md).
 
 ## [Unreleased]
 
 ## [0.1.0-alpha.2] — 2026-05-17
 
-Initial public substrate for the Quanta math-crate program. Locked
-public surface for the alpha cycle.
+Initial public substrate for the Quanta math-crate program. (The surface
+was called "locked for the alpha cycle" here at the time; it is not —
+pre-1.0 a ruling may reshape it, with a migration note.)
 
 ### Added
 

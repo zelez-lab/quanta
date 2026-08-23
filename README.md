@@ -422,7 +422,7 @@ The full book (both areas, reference, and the verification dashboard) builds wit
 
 ## Status
 
-Quanta is at v0.1. Compute and rendering are fully functional on Metal and Vulkan, producing identical pixel output across both platforms. The Metal and lavapipe CI lanes run clean under validation; Raspberry Pi (V3D) re-validation is pending downstream (a sampler-leak-era regression falsified the earlier "zero errors on V3D" claim).
+Quanta is at v0.1 — pre-1.0, no backward-compatibility promise; see the [stability contract](docs/stability.md). Compute and rendering are fully functional on Metal and Vulkan, producing identical pixel output across both platforms. The Metal and lavapipe CI lanes run clean under validation; Raspberry Pi (V3D) re-validation is pending downstream (a sampler-leak-era regression falsified the earlier "zero errors on V3D" claim).
 
 **Verified on hardware:**
 - Apple Silicon (M-series) via Metal

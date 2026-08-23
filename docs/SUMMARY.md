@@ -7,6 +7,7 @@
 # Getting Started
 
 - [Getting Started](getting-started.md)
+- [Stability](stability.md)
 
 ---
 

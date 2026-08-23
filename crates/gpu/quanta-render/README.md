@@ -50,8 +50,9 @@ This crate adds everything a render consumer touches on top of it:
   `create_surface`, `occlusion_query_create` / `_read`,
   `acceleration_structure_blas`, `ray_tracing_pipeline`. Bring it into scope
   (`use quanta_render::RenderGpu;` or the facade glob) to call them. Sealed:
-  implemented only for `quanta_core::Gpu`, so methods can be added after the
-  API freeze without a breaking change.
+  implemented only for `quanta_core::Gpu`, so methods can be added at any
+  time — and after 1.0, when additions must not break — without breaking
+  a consumer.
 - The chainable **`RenderBuilder`** (`gpu.render(&target)?` → record draws →
   `.pulse()?`).
 - The **typed wrappers** whose lifecycles are proven in Lean/Verus:

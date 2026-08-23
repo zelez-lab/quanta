@@ -640,11 +640,22 @@ jobs:
           name: bench-results-linux
           path: /tmp/quanta-bench-current.json
 
-  # ─── Clippy + fmt ────────────────────────────────────────────────────
+  # ─── Clippy + fmt + the advisory semver signal ───────────────────────
   lint:
     runs-on: macos-14
+    env:
+      # Pinned: an unpinned tool turns a tool release into an unexplained
+      # CI diff. The cache key below is keyed on this, so a bump
+      # rebuilds the binary once and reuses it after.
+      SEMVER_CHECKS_VERSION: "0.50.0"
     steps:
       - uses: actions/checkout@v7
+        with:
+          # cargo-semver-checks resolves its baseline from a tag in THIS
+          # checkout (`--baseline-rev`), never from crates.io — Quanta is
+          # not published. That needs tags and history, which the default
+          # single-commit clone doesn't have.
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -657,6 +668,71 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -- -D warnings
+
+      # ─── Advisory only — never a gate ──────────────────────────────
+      # Pre-1.0 there is no backward-compatibility promise (MAINTAINERS.md,
+      # docs/stability.md), so a break on the consumer surface is a
+      # licensed outcome and a red check would be pure noise. This step
+      # reports WHAT moved so the release's migration note isn't
+      # forgotten, and always passes. It becomes a blocker at 1.0.
+      - name: Cache cargo-semver-checks
+        id: semver-tool
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-semver-checks
+          key: cargo-semver-checks-${{ env.SEMVER_CHECKS_VERSION }}-${{ runner.os }}
+
+      - name: Install cargo-semver-checks
+        if: steps.semver-tool.outputs.cache-hit != 'true'
+        run: cargo install cargo-semver-checks --version ${{ env.SEMVER_CHECKS_VERSION }} --locked
+
+      - name: Semver signal (quanta-core vs the previous release tag)
+        continue-on-error: true
+        shell: bash
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "::notice::cargo-semver-checks skipped: no v* release tag reachable from this ref"
+            exit 0
+          fi
+          # The baseline must actually contain the crate: quanta-core
+          # postdates the earliest tags, so a tag from before the
+          # crate split resolves no previous version for it.
+          if ! git cat-file -e "$tag:crates/gpu/quanta-core/Cargo.toml" 2>/dev/null; then
+            echo "::notice::cargo-semver-checks skipped: quanta-core has no previous version at $tag"
+            exit 0
+          fi
+          # `--release-type patch` is what makes the lane say anything at
+          # all. The workspace version only moves at release time, so main
+          # normally carries the SAME version as the tag being compared
+          # against — and both a same-version compare and an alpha.N ->
+          # alpha.N+1 bump are read as "major", which licenses every
+          # breaking change and skips all 254 lints. Forcing `patch` asks
+          # the strictest question instead: did ANYTHING on quanta-core's
+          # public surface break since the tag. That is the question a
+          # migration note answers.
+          set +e
+          out=$(cargo semver-checks --package quanta-core \
+                  --baseline-rev "$tag" --release-type patch --color never 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$status" -eq 0 ]; then
+            echo "::notice::cargo-semver-checks: quanta-core's public surface is unchanged since $tag"
+            exit 0
+          fi
+          # Workflow annotations are single-line; fold the findings onto one.
+          clean=$(printf '%s\n' "$out" | sed -e 's/\x1b\[[0-9;]*m//g')
+          found=$(printf '%s\n' "$clean" \
+                  | sed -n 's/^[[:space:]]*--- failure \([A-Za-z_0-9]*\):.*$/\1/p' \
+                  | sort -u | paste -sd ',' - | sed 's/,/, /g')
+          if [ -n "$found" ]; then
+            summary=$(printf '%s\n' "$clean" | sed -n 's/^[[:space:]]*Summary //p' | tail -n 1)
+            echo "::warning::quanta-core breaks against ${tag} — ${found} (${summary}). Licensed pre-1.0; ship the migration note. See docs/stability.md."
+          else
+            echo "::warning::cargo-semver-checks did not complete against ${tag}: $(printf '%s\n' "$clean" | tail -n 1)"
+          fi
+          exit 0
 
   # ─── Compute/render separation invariants (step 085) ─────────────────
   # The compute/render boundary is the `render` Cargo feature. Two checks
