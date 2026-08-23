@@ -167,7 +167,7 @@ fn.
 use quanta::*;
 use quanta_prims::block_reduce_add_u32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn dot_product_step(a: &[u32], b: &[u32], out: &mut [u32]) {
     #[quanta::shared] let scratch: [u32; 32];
 

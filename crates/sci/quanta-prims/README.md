@@ -51,7 +51,7 @@ operational invariants. **Tier 2 is complete.** See
 use quanta::*;
 use quanta_prims::block_reduce_add_u32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn my_reduce(data: &[u32], out: &mut [u32]) {
     // The block_reduce_add_*_kernel device fn requires a
     // [u32; 32] shared scratch array at slot 0 (see

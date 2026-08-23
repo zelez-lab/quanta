@@ -134,6 +134,15 @@ pub(crate) fn expand_gpu_type(
     let generics = &input.generics;
     let krate = cp.types();
 
+    let msl_const_doc = format!(
+        " MSL declaration of [`{struct_name_str}`], for hand-written Metal \
+         shader sources that name the type."
+    );
+    let wgsl_const_doc = format!(
+        " WGSL declaration of [`{struct_name_str}`], for hand-written WGSL \
+         shader sources that name the type."
+    );
+
     Ok(quote! {
         #(#existing_attrs)*
         #repr_attr
@@ -143,7 +152,10 @@ pub(crate) fn expand_gpu_type(
         }
 
         impl #struct_name {
+            /// Byte size of this struct on the GPU (host `repr(C)` layout).
             pub const GPU_SIZE: usize = core::mem::size_of::<Self>();
+            /// Field metadata: `(name, type_string, byte_offset)` per field,
+            /// offsets resolved by the compiler from the `repr(C)` layout.
             pub const GPU_FIELDS: &'static [(&'static str, &'static str, usize)] = &[
                 #(#field_entries,)*
             ];
@@ -154,7 +166,9 @@ pub(crate) fn expand_gpu_type(
             fn scalar_type() -> #krate::ScalarType { #krate::ScalarType::U8 }
         }
 
+        #[doc = #msl_const_doc]
         pub const #msl_const_name: &str = #msl_decl;
+        #[doc = #wgsl_const_doc]
         pub const #wgsl_const_name: &str = #wgsl_decl;
     })
 }

@@ -43,7 +43,7 @@ kernel."
 use quanta::*;
 use quanta_prims::block_reduce_add_u32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn dot_block(x: &[u32], y: &[u32], partials: &mut [u32]) {
     #[quanta::shared] let scratch: [u32; 32];
 
@@ -81,7 +81,7 @@ preprocessing step:
 use quanta::*;
 use quanta_prims::block_reduce_max_f32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn block_max_abs(data: &[f32], out: &mut [f32]) {
     #[quanta::shared] let scratch: [f32; 32];
 
@@ -118,7 +118,7 @@ Foundation for radix-sort variants and image processing.
 use quanta::*;
 use quanta_prims::block_reduce_add_u32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn histogram_4_bins(data: &[u32], counts: &mut [u32]) {
     #[quanta::shared] let scratch: [u32; 32];
 
@@ -168,7 +168,7 @@ indicator is 1.
 use quanta::*;
 use quanta_prims::block_scan_add_u32_kernel;
 
-#[quanta::kernel(workgroup_size = [256, 1, 1])]
+#[quanta::kernel(workgroup = [256, 1, 1])]
 fn compact_even(data: &[u32], out: &mut [u32], counts: &mut [u32]) {
     #[quanta::shared] let scratch: [u32; 32];
 

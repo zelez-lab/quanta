@@ -324,7 +324,7 @@ Compile a Rust function into a GPU compute kernel.
 #### Syntax
 
 ```rust
-#[quanta::kernel]                              // Default: O3, driver-chosen workgroup
+#[quanta::kernel]                              // Default: O3, workgroup [64, 1, 1]
 #[quanta::kernel(opt = "O2")]                  // Explicit optimization level
 #[quanta::kernel(opt = "O0")]                  // No optimization (debug)
 #[quanta::kernel(workgroup = [256, 1, 1])]     // 1D workgroup size
@@ -340,8 +340,14 @@ fn name(params...) { body }
 | Attribute | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `opt` | `"O0"`, `"O1"`, `"O2"`, `"O3"` | `"O3"` | LLVM optimization level |
-| `workgroup` | `[x, y, z]` | driver-chosen | Workgroup dimensions (1D/2D/3D) |
+| `workgroup` | `[x, y, z]` | `[64, 1, 1]` | Workgroup dimensions (1D/2D/3D) |
 | `jit` | flag | off | Serialize KernelDef for runtime compilation |
+| `crate` | path | `::quanta` | Crate root the generated code resolves against (for crates that depend on a Quanta layer directly) |
+
+`subgroup = N` is **rejected at compile time**: no backend can deliver a
+required subgroup width (Metal has no control, Vulkan's
+`VK_EXT_subgroup_size_control` is not wired, WGSL has no spelling). Read
+the device's real width with `subgroup_size()` inside the kernel.
 
 #### Parameters
 
@@ -531,7 +537,12 @@ fn name(params...) -> ReturnType { body }
 
 #### Produces
 
-- `const __QUANTA_DEVICE_NAME: &str` -- captured source for kernel compilation
+- the function itself, compiled for the host (callable from tests and
+  CPU code)
+- a hidden `<name>_src!` macro -- invoke it once at file scope in a
+  downstream crate to let that crate's `#[quanta::kernel]` bodies call
+  the device function (it re-registers the source and brings host stubs
+  for the GPU intrinsics into scope)
 
 Device functions are inlined by LLVM. They cannot be dispatched from the CPU.
 
