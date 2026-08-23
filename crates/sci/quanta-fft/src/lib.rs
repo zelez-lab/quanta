@@ -25,8 +25,10 @@
 //! - [`rfft`](rfft::rfft) / [`irfft`] — real-input FFT: real
 //!   signal of length N → the `N/2 + 1` half-spectrum (and back), via the
 //!   packed method — one half-size complex plan on the device plus an O(N)
-//!   split pass, ~2× the throughput and half the memory of transforming the
-//!   real signal as complex-with-zero-imag.
+//!   split pass: half the arithmetic and half the device memory of
+//!   transforming the real signal as complex-with-zero-imag. The measured
+//!   wall-clock gain is ~1.05–1.15× (the per-call floor dominates —
+//!   PERFORMANCE.md).
 //! - [`mod@reference`] — the pure-Rust direct DFT + real DFT (always available,
 //!   no `gpu` feature needed); the differential-test oracles.
 //!

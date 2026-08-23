@@ -79,8 +79,10 @@ let back = quanta::sci::fft::irfft(&gpu, &hr, &hi, 8)?;         // back ≈ x
 ```
 
 Under the hood this is the packed real-FFT: one half-size complex transform
-on the device plus an O(N) split pass — about twice the throughput and half
-the device memory of `fft(&x, &zeros)`. `hi[0]` and `hi[N/2]` (DC, Nyquist)
+on the device plus an O(N) split pass — half the arithmetic and half the
+device memory of `fft(&x, &zeros)`; the measured wall-clock gain is
+~1.05–1.15×, because the per-call floor dominates (the crate's
+PERFORMANCE.md has the table). `hi[0]` and `hi[N/2]` (DC, Nyquist)
 are exactly `0.0`. Length must be a power of 2 (`NotSupported` otherwise);
 `irfft` checks that the half-spectrum holds exactly `n/2 + 1` bins.
 

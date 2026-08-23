@@ -61,9 +61,10 @@
 //! data never leaves the GPU. `gemv` is a GEMM with one output column
 //! (`gemm(m, 1, n, …)`) — a gemv entry *is* a gemm entry, so it reuses the
 //! gemm kernel and the same proven bound. `gemm` uses the **tiled
-//! shared-memory** kernel — correct on every backend and matching the proven
-//! Higham §3.5 contract; the cooperative-matrix path that closes the vendor
-//! perf gap is a later increment.
+//! shared-memory** kernel by default and routes large tile-aligned f32
+//! problems onto the **cooperative-matrix** path where the device
+//! enumerates the shape (`gemm_tc` is the explicit tensor-core entry —
+//! see PERFORMANCE.md for where each wins).
 //!
 //! Off by default, the crate is a pure-Rust reference library (the
 //! differential-test oracle in [`mod@reference`]). Enable `gpu` (plus a backend
