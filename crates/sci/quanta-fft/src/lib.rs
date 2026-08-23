@@ -8,26 +8,26 @@
 //!
 //! ## This release
 //!
-//! - [`fft`](fft::fft) / [`ifft`](fft::ifft) — any N (one-shot: plan +
+//! - [`fft`](fft::fft) / [`ifft`] — any N (one-shot: plan +
 //!   execute in a single call). Power-of-2 N takes the radix-2 path;
 //!   non-power-of-2 N takes the Bluestein chirp-z convolution at
 //!   `M = next_pow2(2N−1)` (≈ three power-of-2 transforms, so 2^k input
 //!   sizes are the faster shape).
-//! - [`fft2`](fft2::fft2) / [`ifft2`](fft2::ifft2) — 2-D transform of a
+//! - [`fft2`](fft2::fft2) / [`ifft2`] — 2-D transform of a
 //!   row-major H×W grid (both dims powers of 2) by row-column decomposition:
 //!   row pass → transpose → column-as-row pass → transpose back, each pass
-//!   reusing one [`FftPlan`](plan::FftPlan).
-//! - [`FftPlan`](plan::FftPlan) — plan-based dispatch (the VkFFT pattern):
+//!   reusing one [`FftPlan`].
+//! - [`FftPlan`] — plan-based dispatch (the VkFFT pattern):
 //!   fixes size + direction once, JIT-compiles the kernels once, precomputes
 //!   the twiddle table into a device buffer, then
 //!   [`execute`](plan::FftPlan::execute)s any number of same-size transforms
 //!   without rebuilds or per-butterfly `sin`/`cos`.
-//! - [`rfft`](rfft::rfft) / [`irfft`](rfft::irfft) — real-input FFT: real
+//! - [`rfft`](rfft::rfft) / [`irfft`] — real-input FFT: real
 //!   signal of length N → the `N/2 + 1` half-spectrum (and back), via the
 //!   packed method — one half-size complex plan on the device plus an O(N)
 //!   split pass, ~2× the throughput and half the memory of transforming the
 //!   real signal as complex-with-zero-imag.
-//! - [`reference`] — the pure-Rust direct DFT + real DFT (always available,
+//! - [`mod@reference`] — the pure-Rust direct DFT + real DFT (always available,
 //!   no `gpu` feature needed); the differential-test oracles.
 //!
 //! Off by default the crate is the reference library; enable `gpu` (+ a backend
@@ -38,9 +38,10 @@
 //! (`specs/verify/lean/Quanta/Fft/`) and models the radix-2 recursion only —
 //! the Bluestein path's correctness bar is the differential oracle.
 //!
-//! [`FftPlan`](plan::FftPlan) itself remains power-of-2 (it IS the radix-2
+//! [`FftPlan`] itself remains power-of-2 (it IS the radix-2
 //! engine — Bluestein builds on it); the `fft`/`ifft` entry points are the
 //! arbitrary-N surface.
+#![deny(missing_docs)]
 
 pub mod reference;
 

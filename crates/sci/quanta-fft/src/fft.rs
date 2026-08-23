@@ -1,14 +1,14 @@
 //! FFT on the GPU (split re/im, any N ≥ 1) — the one-shot entry points.
 //!
 //! [`fft`] and [`ifft`] accept any length. Power-of-2 sizes take the radix-2
-//! Cooley-Tukey path: each call builds an [`FftPlan`](crate::FftPlan) for the
+//! Cooley-Tukey path: each call builds an [`FftPlan`] for the
 //! input size and executes it once (bit-reversal, `log₂N` butterfly stages
 //! loading precomputed twiddles, the inverse `1/N` scale — all in
 //! [`crate::plan`]). Repeated same-size power-of-2 transforms should hold a
 //! plan and call [`execute`](crate::FftPlan::execute) to skip the per-call
 //! kernel JIT and twiddle upload.
 //!
-//! Non-power-of-2 sizes route through [`crate::bluestein`] — the chirp-z
+//! Non-power-of-2 sizes route through the `bluestein` module — the chirp-z
 //! reformulation of the DFT as a power-of-2 convolution, run on the same
 //! radix-2 plans at `M = next_pow2(2N−1)`. It costs three length-M
 //! transforms, so a power-of-2 N is always the faster shape.

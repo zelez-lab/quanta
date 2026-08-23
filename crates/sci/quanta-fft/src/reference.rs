@@ -3,7 +3,7 @@
 //! The naive O(N²) discrete Fourier transform, the ground truth every GPU FFT
 //! result is checked against:
 //!
-//!   X[k] = Σⱼ x[j]·exp(∓2πi·jk/N)      (− forward, + inverse; inverse ÷ N)
+//!   `X[k] = Σⱼ x[j]·exp(∓2πi·jk/N)`      (− forward, + inverse; inverse ÷ N)
 //!
 //! Complex data is **split** into a real part and an imaginary part (two
 //! `f32` slices of equal length); the oracle returns the transformed
@@ -84,7 +84,7 @@ pub fn rdft(x: &[f32]) -> (Vec<f32>, Vec<f32>) {
 
 /// Direct 2-D DFT (forward) of a row-major `height×width` grid:
 ///
-///   X[ky][kx] = Σ_y Σ_x x[y][x]·exp(−2πi·(y·ky/H + x·kx/W))
+///   `X[ky][kx] = Σ_y Σ_x x[y][x]·exp(−2πi·(y·ky/H + x·kx/W))`
 ///
 /// Deliberately the naive O((HW)²) double sum — NOT the row-column
 /// decomposition — so it is an independent oracle for the separable GPU
