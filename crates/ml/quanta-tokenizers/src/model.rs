@@ -42,7 +42,12 @@ pub trait Model: Send + Sync {
 /// vocabulary spelling, and the byte range of the pre-token it covers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelToken {
+    /// The vocabulary id.
     pub id: u32,
+    /// The vocabulary spelling — an affixed or `unk_token` form, so not
+    /// necessarily the pre-token slice at `offsets`.
     pub value: String,
+    /// Half-open byte range into the pre-token string handed to
+    /// [`Model::tokenize`].
     pub offsets: (usize, usize),
 }

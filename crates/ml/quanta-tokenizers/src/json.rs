@@ -34,11 +34,17 @@ pub const MAX_DEPTH: usize = 64;
 /// duplicate-key-free by construction (the parser rejects duplicates).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// The `null` literal.
     Null,
+    /// A `true` / `false` literal.
     Bool(bool),
+    /// A number, kept alongside its source text.
     Number(Number),
+    /// A string with every escape already decoded.
     String(String),
+    /// An array, in document order.
     Array(Vec<Value>),
+    /// An object as `(key, value)` pairs, in source order.
     Object(Vec<(String, Value)>),
 }
 
@@ -90,10 +96,12 @@ impl Value {
         }
     }
 
+    /// Whether this is the `null` literal.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
 
+    /// The boolean, or `None` on any other kind.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
@@ -101,6 +109,7 @@ impl Value {
         }
     }
 
+    /// The number with its source text, or `None` on any other kind.
     pub fn as_number(&self) -> Option<&Number> {
         match self {
             Value::Number(n) => Some(n),
@@ -108,10 +117,13 @@ impl Value {
         }
     }
 
+    /// The number as `f64` — for the fractional consumers (Unigram
+    /// log-probabilities); ids go through [`Number::as_u32`] instead.
     pub fn as_f64(&self) -> Option<f64> {
         self.as_number().map(|n| n.value)
     }
 
+    /// The string, or `None` on any other kind.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -119,6 +131,7 @@ impl Value {
         }
     }
 
+    /// The array elements, or `None` on any other kind.
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(a) => Some(a),
@@ -126,6 +139,8 @@ impl Value {
         }
     }
 
+    /// The object's `(key, value)` pairs in source order, or `None` on
+    /// any other kind.
     pub fn as_object(&self) -> Option<&[(String, Value)]> {
         match self {
             Value::Object(o) => Some(o),

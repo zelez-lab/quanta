@@ -644,6 +644,10 @@ def main():
     e.raw("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]")
     e.raw("pub enum Script {")
     for name in script_names:
+        if name == "Unknown":
+            e.raw("    /// Not covered by any Scripts.txt range.")
+        else:
+            e.raw(f"    /// The `{name}` script.")
         e.raw(f"    {name.replace('_', '')},")
     e.raw("}\n")
     e.array(

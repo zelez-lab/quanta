@@ -93,7 +93,9 @@ pub fn char_to_byte(c: char) -> Option<u8> {
 /// tokens once tokenized (added-token splits arrive pre-tokenized).
 #[derive(Debug, Clone)]
 pub struct Split {
+    /// The slice of the input this split covers, alignment intact.
     pub normalized: NormalizedString,
+    /// The model's tokens for the split, `None` until it is tokenized.
     pub tokens: Option<Vec<ModelToken>>,
 }
 
@@ -231,33 +233,60 @@ impl PreTokenizedString {
 /// A compiled, executable pre-tokenizer (regexes parsed at load).
 #[derive(Debug)]
 pub enum PreTokenizer {
+    /// The GPT-2 pre-tokenizer: optional space prefix, the split
+    /// pattern, then the byte-to-printable-char bijection.
     ByteLevel {
+        /// Prefix a space when the text does not already start with one,
+        /// so the first word tokenizes like an interior one.
         add_prefix_space: bool,
         /// `trim_offsets` is POST-PROCESSOR semantics; carried in the
         /// artifact on this stage but consumed by `postprocess`.
         trim_offsets: bool,
+        /// The split pattern, `None` to split nothing.
         regex: Option<Regex>,
     },
+    /// Whitespace `Removed`, then punctuation `Isolated`.
     Bert,
+    /// Split on the inverse of a word/non-word pattern, dropping the
+    /// whitespace between.
     Whitespace(Regex),
+    /// Split on whitespace runs, dropping them.
     WhitespaceSplit,
+    /// Split on punctuation, one char per match.
     Punctuation(SplitBehavior),
+    /// Split on digits.
     Digits {
+        /// Isolate each digit rather than keeping a run together.
         individual_digits: bool,
     },
+    /// Split on one delimiter char, dropping it.
     CharDelimiterSplit(char),
+    /// The sentencepiece pre-tokenizer: spaces become the replacement
+    /// char, which then leads the word it belongs to.
     Metaspace {
+        /// The char that stands in for a space (`▁`).
         replacement: char,
+        /// When the replacement is prepended to the text.
         prepend_scheme: PrependScheme,
+        /// Split on the replacement, keeping it with the word that
+        /// follows.
         split: bool,
     },
+    /// Split on an arbitrary pattern.
     Split {
+        /// What to split on.
         matcher: Matcher,
+        /// What happens to the matched span.
         behavior: SplitBehavior,
+        /// Split on the NON-matching spans instead.
         invert: bool,
     },
+    /// Split between runs of different Unicode scripts, sentencepiece's
+    /// folding rules included.
     UnicodeScripts,
+    /// Split into chunks of a fixed number of chars.
     FixedLength(usize),
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<PreTokenizer>),
 }
 

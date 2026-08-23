@@ -50,13 +50,23 @@ pub struct TokenizerArtifact {
     /// The artifact's `version` field (always `"1.0"` today; a newer
     /// version string is a loud schema error, not a guess).
     pub version: Option<String>,
+    /// The saved `truncation` section; absent means truncation off.
     pub truncation: Option<TruncationConfig>,
+    /// The saved `padding` section; absent means padding off.
     pub padding: Option<PaddingConfig>,
+    /// The vocabulary the tokenizer carries outside the model's own —
+    /// matched ahead of the pipeline, in artifact order.
     pub added_tokens: Vec<AddedTokenConfig>,
+    /// The normalizer stage; absent means the text passes through.
     pub normalizer: Option<NormalizerConfig>,
+    /// The pre-tokenizer stage; absent means the text is one pre-token.
     pub pre_tokenizer: Option<PreTokenizerConfig>,
+    /// The model stage — the vocabulary-owning one, always present.
     pub model: ModelConfig,
+    /// The post-processor stage; absent means no special tokens are
+    /// added.
     pub post_processor: Option<PostProcessorConfig>,
+    /// The decoder stage; absent means tokens join with nothing between.
     pub decoder: Option<DecoderConfig>,
 }
 
@@ -136,44 +146,70 @@ impl TokenizerArtifact {
 /// through the split-regex engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternConfig {
+    /// `{"String": "…"}` — a plain substring.
     String(String),
+    /// `{"Regex": "…"}` — a pattern for the split-regex engine.
     Regex(String),
 }
 
+/// The `normalizer` section — one variant per §5 normalizer tag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizerConfig {
+    /// Canonical composition (UAX #15 NFC).
     Nfc,
+    /// Canonical decomposition (UAX #15 NFD).
     Nfd,
+    /// Compatibility composition (UAX #15 NFKC).
     Nfkc,
+    /// Compatibility decomposition (UAX #15 NFKD).
     Nfkd,
+    /// Tag `BertNormalizer`.
     Bert {
+        /// Drop NUL / U+FFFD / control chars and fold whitespace to
+        /// plain spaces.
         clean_text: bool,
+        /// Space-pad every CJK char so it pre-tokenizes alone.
         handle_chinese_chars: bool,
         /// `null` follows `lowercase` — the reference's documented
         /// default, resolved by the normalizer layer, held verbatim here.
         strip_accents: Option<bool>,
+        /// Lowercase the text.
         lowercase: bool,
     },
+    /// Lowercase the text.
     Lowercase,
+    /// Trim whitespace off one or both ends.
     Strip {
+        /// Trim leading whitespace.
         strip_left: bool,
+        /// Trim trailing whitespace.
         strip_right: bool,
     },
+    /// Drop every `Mark` char, with no decomposition step first.
     StripAccents,
+    /// Prefix the text with a fixed string.
     Prepend {
+        /// The prefix (`▁` in the sentencepiece artifacts).
         prepend: String,
     },
+    /// Substitute every match of a pattern.
     Replace {
+        /// What to look for.
         pattern: PatternConfig,
+        /// What each match becomes.
         content: String,
     },
     /// The sentencepiece charsmap, base64-decoded at load. The blob is
     /// interpreted by the normalizer layer's bounds-checked trie walker.
     Precompiled {
+        /// The decoded trie blob, base64 in the artifact.
         charsmap: Vec<u8>,
     },
+    /// The NMT codepoint filter and whitespace fold.
     Nmt,
+    /// The GPT-2 byte-to-unicode transform in normalizer position.
     ByteLevel,
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<NormalizerConfig>),
 }
 
@@ -181,58 +217,94 @@ pub enum NormalizerConfig {
 /// `add_prefix_space` serialization maps onto it at parse time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrependScheme {
+    /// Prepend the replacement to every split.
     Always,
+    /// Never prepend it.
     Never,
+    /// Prepend it only to the split that starts the text.
     First,
 }
 
 /// `behavior` for `Split` / `Punctuation` — the five reference modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitBehavior {
+    /// Drop the matched span.
     Removed,
+    /// Keep the matched span as its own split.
     Isolated,
+    /// Append the matched span to the split before it.
     MergedWithPrevious,
+    /// Prepend the matched span to the split after it.
     MergedWithNext,
+    /// Fold consecutive matches into one split.
     Contiguous,
 }
 
+/// The `pre_tokenizer` section — one variant per §5 pre-tokenizer tag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreTokenizerConfig {
+    /// The GPT-2 pre-tokenizer.
     ByteLevel {
+        /// Prefix a space when the text does not already start with one.
         add_prefix_space: bool,
+        /// Post-processor semantics, serialized on this stage.
         trim_offsets: bool,
+        /// Apply the GPT-2 split pattern; `false` splits nothing.
         use_regex: bool,
     },
     /// Tag `BertPreTokenizer`.
     Bert,
+    /// Split on the inverse of `\w+|[^\w\s]+`, dropping whitespace.
     Whitespace,
+    /// Split on whitespace runs, dropping them.
     WhitespaceSplit,
+    /// Split on punctuation, one char per match.
     Punctuation {
+        /// What happens to each matched char.
         behavior: SplitBehavior,
     },
+    /// Split on digits.
     Digits {
+        /// Isolate each digit rather than keeping a run together.
         individual_digits: bool,
     },
+    /// Split on one delimiter char, dropping it.
     CharDelimiterSplit {
+        /// The char to split on.
         delimiter: char,
     },
+    /// The sentencepiece pre-tokenizer.
     Metaspace {
+        /// The char that stands in for a space (`▁`).
         replacement: char,
+        /// When the replacement is prepended to the text.
         prepend_scheme: PrependScheme,
+        /// Split on the replacement, keeping it with the word that
+        /// follows.
         split: bool,
     },
+    /// Split on an arbitrary pattern.
     Split {
+        /// What to split on.
         pattern: PatternConfig,
+        /// What happens to the matched span.
         behavior: SplitBehavior,
+        /// Split on the NON-matching spans instead.
         invert: bool,
     },
+    /// Split between runs of different Unicode scripts.
     UnicodeScripts,
+    /// Split into chunks of a fixed number of chars.
     FixedLength {
+        /// Chars per chunk.
         length: usize,
     },
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<PreTokenizerConfig>),
 }
 
+/// The `model` section — the four vocabulary families the reference
+/// serializes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelConfig {
     /// Tag `BPE`. `cache_capacity` is accepted and ignored (a perf
@@ -244,27 +316,47 @@ pub enum ModelConfig {
         /// Merge pairs. Both serialized spellings load — legacy
         /// `"a b"` strings and current `["a", "b"]` pairs.
         merges: Vec<(String, String)>,
+        /// The token unknown pieces become; absent drops them instead.
         unk_token: Option<String>,
+        /// Marker every non-initial piece of a word carries (`##`).
         continuing_subword_prefix: Option<String>,
+        /// Marker the last piece of a word carries (`</w>`).
         end_of_word_suffix: Option<String>,
+        /// Fuse a run of unknown pieces into one `unk_token`.
         fuse_unk: bool,
+        /// Emit `<0xAB>` byte tokens instead of `unk_token` where the
+        /// vocabulary carries them.
         byte_fallback: bool,
+        /// A pre-token that is itself a vocabulary entry skips the merge
+        /// loop.
         ignore_merges: bool,
     },
+    /// Tag `WordPiece`.
     WordPiece {
+        /// Token → id, source order, duplicate-free (both directions).
         vocab: Vec<(String, u32)>,
+        /// The token a word with no valid split becomes.
         unk_token: String,
+        /// Marker every non-initial piece of a word carries (`##`).
         continuing_subword_prefix: String,
+        /// A word longer than this becomes `unk_token` outright.
         max_input_chars_per_word: usize,
     },
+    /// Tag `Unigram`.
     Unigram {
         /// `[piece, logprob]` rows, source order, duplicate-free.
         vocab: Vec<(String, f64)>,
+        /// Index into `vocab` of the unknown piece; absent means the
+        /// model has none.
         unk_id: Option<usize>,
+        /// Emit `<0xAB>` byte tokens for pieces the vocabulary lacks.
         byte_fallback: bool,
     },
+    /// Tag `WordLevel`.
     WordLevel {
+        /// Token → id, source order, duplicate-free (both directions).
         vocab: Vec<(String, u32)>,
+        /// The token a pre-token outside the vocabulary becomes.
         unk_token: String,
     },
 }
@@ -273,16 +365,28 @@ pub enum ModelConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePiece {
     /// `{"Sequence": {"id": "A"|"B", "type_id": n}}`.
-    Sequence { id: SequenceId, type_id: u32 },
+    Sequence {
+        /// Which input sequence the piece stands for.
+        id: SequenceId,
+        /// The type id every token of that sequence takes.
+        type_id: u32,
+    },
     /// `{"SpecialToken": {"id": "[CLS]", "type_id": n}}` — the id must
     /// name an entry in the processor's `special_tokens` map.
-    SpecialToken { id: String, type_id: u32 },
+    SpecialToken {
+        /// The special token's name in the processor's map.
+        id: String,
+        /// The type id its ids take.
+        type_id: u32,
+    },
 }
 
 /// Which input sequence a template piece refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceId {
+    /// The first (or only) input sequence.
     A,
+    /// The second input sequence of a pair.
     B,
 }
 
@@ -291,73 +395,126 @@ pub enum SequenceId {
 /// same length (validated at load, as the reference validates it).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpecialTokenConfig {
+    /// The name templates refer to this entry by.
     pub id: String,
+    /// The ids the entry expands to.
     pub ids: Vec<u32>,
+    /// The token spellings, one per id.
     pub tokens: Vec<String>,
 }
 
+/// The `post_processor` section — one variant per §5 processor tag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PostProcessorConfig {
+    /// Tag `TemplateProcessing`.
     Template {
+        /// The template for a lone sequence.
         single: Vec<TemplatePiece>,
+        /// The template for a sequence pair.
         pair: Vec<TemplatePiece>,
+        /// The special tokens the templates may name.
         special_tokens: Vec<SpecialTokenConfig>,
     },
     /// Tag `BertProcessing` — `(token, id)` for `sep` and `cls`.
     Bert {
+        /// The separator token and its id.
         sep: (String, u32),
+        /// The classifier token and its id.
         cls: (String, u32),
     },
+    /// Tag `RobertaProcessing`.
     Roberta {
+        /// The separator token and its id.
         sep: (String, u32),
+        /// The classifier token and its id.
         cls: (String, u32),
+        /// Shrink token offsets past their leading and trailing spaces.
         trim_offsets: bool,
+        /// The pre-tokenizer added a prefix space, so the first token
+        /// keeps one of its leading spaces under the trim.
         add_prefix_space: bool,
     },
+    /// Tag `ByteLevel` — offset trimming only; it adds no tokens.
     ByteLevel {
+        /// The pre-tokenizer added a prefix space, so the first token
+        /// keeps one of its leading spaces under the trim.
         add_prefix_space: bool,
+        /// Shrink token offsets past their leading and trailing spaces.
         trim_offsets: bool,
+        /// Carried by the shared reference struct; the processor form
+        /// does not split, so it is inert here.
         use_regex: bool,
     },
+    /// Ordered composition over the encodings list.
     Sequence(Vec<PostProcessorConfig>),
 }
 
+/// The `decoder` section — one variant per §5 decoder tag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecoderConfig {
+    /// Tag `ByteLevel` — the inverse of the GPT-2 byte bijection. The
+    /// three fields ride the shared reference struct and are inert on
+    /// the decoder form.
     ByteLevel {
+        /// Inert on this form.
         add_prefix_space: bool,
+        /// Inert on this form.
         trim_offsets: bool,
+        /// Inert on this form.
         use_regex: bool,
     },
+    /// Tag `WordPiece`.
     WordPiece {
+        /// The continuation marker to strip (`##`).
         prefix: String,
+        /// Apply the reference's punctuation-spacing cleanup.
         cleanup: bool,
     },
     /// Tag `BPEDecoder`.
     BpeDecoder {
+        /// The end-of-word marker that becomes a space (`</w>`).
         suffix: String,
     },
+    /// Tag `Metaspace`.
     Metaspace {
+        /// The char that stands in for a space (`▁`).
         replacement: char,
+        /// Which scheme the encoder prepended under; only `Never` reads
+        /// differently on decode.
         prepend_scheme: PrependScheme,
+        /// Carried from the encoder form; the decoder does not split.
         split: bool,
     },
+    /// Tag `ByteFallback` — fold `<0xAB>` token runs back into bytes.
     ByteFallback,
+    /// Tag `Fuse` — concatenate the chain into a single token.
     Fuse,
+    /// Tag `Strip`.
     Strip {
+        /// The char to trim off each token's ends.
         content: char,
+        /// At most this many copies off the front.
         start: usize,
+        /// At most this many copies off the back.
         stop: usize,
     },
+    /// Tag `Replace`.
     Replace {
+        /// What to look for.
         pattern: PatternConfig,
+        /// What each match becomes.
         content: String,
     },
+    /// Tag `CTC`.
     Ctc {
+        /// The blank token, dropped after the duplicate collapse.
         pad_token: String,
+        /// The token that becomes a space.
         word_delimiter_token: String,
+        /// Apply the reference's punctuation-spacing cleanup.
         cleanup: bool,
     },
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<DecoderConfig>),
 }
 
@@ -366,26 +523,41 @@ pub enum DecoderConfig {
 /// reference's `AddedToken::from(content, special)` builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddedTokenConfig {
+    /// The id the token encodes to.
     pub id: u32,
+    /// The text the token matches.
     pub content: String,
+    /// Only match when the span is not embedded in word characters.
     pub single_word: bool,
+    /// Extend a match leftwards over adjacent whitespace.
     pub lstrip: bool,
+    /// Extend a match rightwards over adjacent whitespace.
     pub rstrip: bool,
+    /// Match against the normalized text (pass 2) rather than the raw
+    /// text (pass 1).
     pub normalized: bool,
+    /// A special token — `add_special_tokens: false` and the special
+    /// mask key on this.
     pub special: bool,
 }
 
 /// Truncation/padding side: `Left` or `Right`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Act on the start of the sequence.
     Left,
+    /// Act on the end of the sequence.
     Right,
 }
 
+/// Which side of a pair truncation cuts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TruncationStrategy {
+    /// Cut whichever sequence is currently longer, one token at a time.
     LongestFirst,
+    /// Cut the first sequence only; erroring if it runs out.
     OnlyFirst,
+    /// Cut the second sequence only; erroring if there is none.
     OnlySecond,
 }
 
@@ -393,9 +565,14 @@ pub enum TruncationStrategy {
 /// defaults (the saved sections are the saved behavior).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TruncationConfig {
+    /// Which end the cut takes tokens from.
     pub direction: Direction,
+    /// Token budget for the whole encoding.
     pub max_length: usize,
+    /// How a pair's budget is split.
     pub strategy: TruncationStrategy,
+    /// Tokens each overflow window overlaps the previous one by; must
+    /// be strictly below the effective budget.
     pub stride: usize,
 }
 
@@ -403,18 +580,26 @@ pub struct TruncationConfig {
 /// `{"Fixed": n}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaddingStrategy {
+    /// Pad every encoding to the longest in the batch.
     BatchLongest,
+    /// Pad every encoding to this exact length.
     Fixed(usize),
 }
 
 /// The saved `padding` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaddingConfig {
+    /// What length to pad to.
     pub strategy: PaddingStrategy,
+    /// Which end the padding goes on.
     pub direction: Direction,
+    /// Round the target length up to a multiple of this.
     pub pad_to_multiple_of: Option<usize>,
+    /// The id every pad token encodes to.
     pub pad_id: u32,
+    /// The type id every pad token carries.
     pub pad_type_id: u32,
+    /// The pad token's spelling.
     pub pad_token: String,
 }
 

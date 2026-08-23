@@ -35,30 +35,58 @@ use crate::unicode::{self, Charsmap};
 /// runs (§7).
 #[derive(Debug)]
 pub enum Normalizer {
+    /// Canonical composition (UAX #15 NFC).
     Nfc,
+    /// Canonical decomposition (UAX #15 NFD).
     Nfd,
+    /// Compatibility composition (UAX #15 NFKC).
     Nfkc,
+    /// Compatibility decomposition (UAX #15 NFKD).
     Nfkd,
+    /// The BERT-family normalizer: four flags applied in the reference's
+    /// order.
     Bert {
+        /// Drop NUL / U+FFFD / control chars and fold whitespace to
+        /// plain spaces.
         clean_text: bool,
+        /// Pad every CJK char with spaces so it pre-tokenizes alone.
         handle_chinese_chars: bool,
+        /// Decompose and drop nonspacing marks; `None` follows
+        /// `lowercase`, the reference's documented coupling.
         strip_accents: Option<bool>,
+        /// Lowercase the text.
         lowercase: bool,
     },
+    /// Lowercase the text.
     Lowercase,
+    /// Trim whitespace from one or both ends.
     Strip {
+        /// Trim leading whitespace.
         strip_left: bool,
+        /// Trim trailing whitespace.
         strip_right: bool,
     },
+    /// Drop every `Mark` char, with no decomposition step first.
     StripAccents,
+    /// Prefix the (non-empty) text with this string — the sentencepiece
+    /// `▁` convention.
     Prepend(String),
+    /// Substitute every match of a pattern.
     Replace {
+        /// What to look for.
         matcher: Matcher,
+        /// What each match becomes.
         content: String,
     },
+    /// The sentencepiece charsmap, applied grapheme cluster by grapheme
+    /// cluster.
     Precompiled(Charsmap),
+    /// The NMT codepoint filter and whitespace fold.
     Nmt,
+    /// The GPT-2 byte-to-unicode transform in normalizer position, with
+    /// neither prefix nor split regex.
     ByteLevel,
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<Normalizer>),
 }
 

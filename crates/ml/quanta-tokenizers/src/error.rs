@@ -29,35 +29,78 @@ pub enum TokenizerError {
     /// An RFC 8259 violation in the artifact bytes: bad grammar,
     /// truncation, the nesting-depth cap, lone surrogates, duplicate
     /// object keys. `at` is a byte offset into the input.
-    Json { at: usize, what: String },
+    Json {
+        /// Byte offset into the artifact bytes where the parse failed.
+        at: usize,
+        /// The grammar violation, named.
+        what: String,
+    },
     /// Structurally valid JSON that is not a valid artifact at a known
     /// location: a missing required field, a wrong type, a malformed
     /// sub-structure. `path` is the JSON path (`"model.vocab"`,
     /// `"added_tokens[3].content"`).
-    Schema { path: String, what: String },
+    Schema {
+        /// JSON path to the offending location.
+        path: String,
+        /// What was expected there, and what was found.
+        what: String,
+    },
     /// A pipeline-stage `type` tag outside the pinned reference
     /// inventory — the format-growth claim boundary (§2 of the scope).
-    UnknownTag { family: &'static str, tag: String },
+    UnknownTag {
+        /// The pipeline family the tag was read under (`"normalizer"`,
+        /// `"pre_tokenizer"`, …).
+        family: &'static str,
+        /// The `type` tag as spelled in the artifact.
+        tag: String,
+    },
     /// A field that is IN the pinned inventory but whose semantics are
     /// a named exclusion (e.g. BPE `dropout` non-null).
-    UnsupportedField { path: String, why: String },
+    UnsupportedField {
+        /// JSON path to the field.
+        path: String,
+        /// Why the value is excluded, and the workaround if one exists.
+        why: String,
+    },
     /// A vocabulary-consistency fault caught at load: an id collision,
     /// an id that does not fit in `u32`, a merge naming an absent
     /// token, a Unigram `unk_id` out of range, a duplicate piece.
-    Vocab { what: String },
+    Vocab {
+        /// The inconsistency, naming the offending token or id.
+        what: String,
+    },
     /// A malformed `Precompiled` charsmap: bad base64 in the artifact,
     /// or (at run time) an out-of-bounds trie transition. `at` is an
     /// offset into the base64 text or the decoded blob respectively.
-    Charsmap { at: usize, what: String },
+    Charsmap {
+        /// Offset into the base64 text, or into the decoded blob for a
+        /// run-time trie fault.
+        at: usize,
+        /// The malformation, named.
+        what: String,
+    },
     /// A pattern using a regex construct outside the engine's closed
     /// set (§6 of the scope), or a backtracking-budget trip on a
     /// hostile pattern. Names both the pattern and the construct.
-    RegexConstruct { pattern: String, construct: String },
+    RegexConstruct {
+        /// The pattern as spelled in the artifact.
+        pattern: String,
+        /// The construct outside the closed set, or the budget that tripped.
+        construct: String,
+    },
     /// A pipeline-time encode fault: a stage failing on its input, a
     /// template referencing an id the vocab lacks.
-    Encode { what: String },
+    Encode {
+        /// The fault, naming the stage that raised it.
+        what: String,
+    },
     /// A decode id outside the vocabulary.
-    Decode { id: u32, vocab_size: usize },
+    Decode {
+        /// The id that has no vocabulary entry.
+        id: u32,
+        /// The vocabulary size it was checked against.
+        vocab_size: usize,
+    },
 }
 
 impl fmt::Display for TokenizerError {

@@ -1105,176 +1105,347 @@ pub(super) const WHITE_SPACE_ENDS: &[u32] = &[
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Script {
+    /// The `Adlam` script.
     Adlam,
+    /// The `Ahom` script.
     Ahom,
+    /// The `Anatolian_Hieroglyphs` script.
     AnatolianHieroglyphs,
+    /// The `Arabic` script.
     Arabic,
+    /// The `Armenian` script.
     Armenian,
+    /// The `Avestan` script.
     Avestan,
+    /// The `Balinese` script.
     Balinese,
+    /// The `Bamum` script.
     Bamum,
+    /// The `Bassa_Vah` script.
     BassaVah,
+    /// The `Batak` script.
     Batak,
+    /// The `Bengali` script.
     Bengali,
+    /// The `Bhaiksuki` script.
     Bhaiksuki,
+    /// The `Bopomofo` script.
     Bopomofo,
+    /// The `Brahmi` script.
     Brahmi,
+    /// The `Braille` script.
     Braille,
+    /// The `Buginese` script.
     Buginese,
+    /// The `Buhid` script.
     Buhid,
+    /// The `Canadian_Aboriginal` script.
     CanadianAboriginal,
+    /// The `Carian` script.
     Carian,
+    /// The `Caucasian_Albanian` script.
     CaucasianAlbanian,
+    /// The `Chakma` script.
     Chakma,
+    /// The `Cham` script.
     Cham,
+    /// The `Cherokee` script.
     Cherokee,
+    /// The `Chorasmian` script.
     Chorasmian,
+    /// The `Common` script.
     Common,
+    /// The `Coptic` script.
     Coptic,
+    /// The `Cuneiform` script.
     Cuneiform,
+    /// The `Cypriot` script.
     Cypriot,
+    /// The `Cypro_Minoan` script.
     CyproMinoan,
+    /// The `Cyrillic` script.
     Cyrillic,
+    /// The `Deseret` script.
     Deseret,
+    /// The `Devanagari` script.
     Devanagari,
+    /// The `Dives_Akuru` script.
     DivesAkuru,
+    /// The `Dogra` script.
     Dogra,
+    /// The `Duployan` script.
     Duployan,
+    /// The `Egyptian_Hieroglyphs` script.
     EgyptianHieroglyphs,
+    /// The `Elbasan` script.
     Elbasan,
+    /// The `Elymaic` script.
     Elymaic,
+    /// The `Ethiopic` script.
     Ethiopic,
+    /// The `Garay` script.
     Garay,
+    /// The `Georgian` script.
     Georgian,
+    /// The `Glagolitic` script.
     Glagolitic,
+    /// The `Gothic` script.
     Gothic,
+    /// The `Grantha` script.
     Grantha,
+    /// The `Greek` script.
     Greek,
+    /// The `Gujarati` script.
     Gujarati,
+    /// The `Gunjala_Gondi` script.
     GunjalaGondi,
+    /// The `Gurmukhi` script.
     Gurmukhi,
+    /// The `Gurung_Khema` script.
     GurungKhema,
+    /// The `Han` script.
     Han,
+    /// The `Hangul` script.
     Hangul,
+    /// The `Hanifi_Rohingya` script.
     HanifiRohingya,
+    /// The `Hanunoo` script.
     Hanunoo,
+    /// The `Hatran` script.
     Hatran,
+    /// The `Hebrew` script.
     Hebrew,
+    /// The `Hiragana` script.
     Hiragana,
+    /// The `Imperial_Aramaic` script.
     ImperialAramaic,
+    /// The `Inherited` script.
     Inherited,
+    /// The `Inscriptional_Pahlavi` script.
     InscriptionalPahlavi,
+    /// The `Inscriptional_Parthian` script.
     InscriptionalParthian,
+    /// The `Javanese` script.
     Javanese,
+    /// The `Kaithi` script.
     Kaithi,
+    /// The `Kannada` script.
     Kannada,
+    /// The `Katakana` script.
     Katakana,
+    /// The `Kawi` script.
     Kawi,
+    /// The `Kayah_Li` script.
     KayahLi,
+    /// The `Kharoshthi` script.
     Kharoshthi,
+    /// The `Khitan_Small_Script` script.
     KhitanSmallScript,
+    /// The `Khmer` script.
     Khmer,
+    /// The `Khojki` script.
     Khojki,
+    /// The `Khudawadi` script.
     Khudawadi,
+    /// The `Kirat_Rai` script.
     KiratRai,
+    /// The `Lao` script.
     Lao,
+    /// The `Latin` script.
     Latin,
+    /// The `Lepcha` script.
     Lepcha,
+    /// The `Limbu` script.
     Limbu,
+    /// The `Linear_A` script.
     LinearA,
+    /// The `Linear_B` script.
     LinearB,
+    /// The `Lisu` script.
     Lisu,
+    /// The `Lycian` script.
     Lycian,
+    /// The `Lydian` script.
     Lydian,
+    /// The `Mahajani` script.
     Mahajani,
+    /// The `Makasar` script.
     Makasar,
+    /// The `Malayalam` script.
     Malayalam,
+    /// The `Mandaic` script.
     Mandaic,
+    /// The `Manichaean` script.
     Manichaean,
+    /// The `Marchen` script.
     Marchen,
+    /// The `Masaram_Gondi` script.
     MasaramGondi,
+    /// The `Medefaidrin` script.
     Medefaidrin,
+    /// The `Meetei_Mayek` script.
     MeeteiMayek,
+    /// The `Mende_Kikakui` script.
     MendeKikakui,
+    /// The `Meroitic_Cursive` script.
     MeroiticCursive,
+    /// The `Meroitic_Hieroglyphs` script.
     MeroiticHieroglyphs,
+    /// The `Miao` script.
     Miao,
+    /// The `Modi` script.
     Modi,
+    /// The `Mongolian` script.
     Mongolian,
+    /// The `Mro` script.
     Mro,
+    /// The `Multani` script.
     Multani,
+    /// The `Myanmar` script.
     Myanmar,
+    /// The `Nabataean` script.
     Nabataean,
+    /// The `Nag_Mundari` script.
     NagMundari,
+    /// The `Nandinagari` script.
     Nandinagari,
+    /// The `New_Tai_Lue` script.
     NewTaiLue,
+    /// The `Newa` script.
     Newa,
+    /// The `Nko` script.
     Nko,
+    /// The `Nushu` script.
     Nushu,
+    /// The `Nyiakeng_Puachue_Hmong` script.
     NyiakengPuachueHmong,
+    /// The `Ogham` script.
     Ogham,
+    /// The `Ol_Chiki` script.
     OlChiki,
+    /// The `Ol_Onal` script.
     OlOnal,
+    /// The `Old_Hungarian` script.
     OldHungarian,
+    /// The `Old_Italic` script.
     OldItalic,
+    /// The `Old_North_Arabian` script.
     OldNorthArabian,
+    /// The `Old_Permic` script.
     OldPermic,
+    /// The `Old_Persian` script.
     OldPersian,
+    /// The `Old_Sogdian` script.
     OldSogdian,
+    /// The `Old_South_Arabian` script.
     OldSouthArabian,
+    /// The `Old_Turkic` script.
     OldTurkic,
+    /// The `Old_Uyghur` script.
     OldUyghur,
+    /// The `Oriya` script.
     Oriya,
+    /// The `Osage` script.
     Osage,
+    /// The `Osmanya` script.
     Osmanya,
+    /// The `Pahawh_Hmong` script.
     PahawhHmong,
+    /// The `Palmyrene` script.
     Palmyrene,
+    /// The `Pau_Cin_Hau` script.
     PauCinHau,
+    /// The `Phags_Pa` script.
     PhagsPa,
+    /// The `Phoenician` script.
     Phoenician,
+    /// The `Psalter_Pahlavi` script.
     PsalterPahlavi,
+    /// The `Rejang` script.
     Rejang,
+    /// The `Runic` script.
     Runic,
+    /// The `Samaritan` script.
     Samaritan,
+    /// The `Saurashtra` script.
     Saurashtra,
+    /// The `Sharada` script.
     Sharada,
+    /// The `Shavian` script.
     Shavian,
+    /// The `Siddham` script.
     Siddham,
+    /// The `SignWriting` script.
     SignWriting,
+    /// The `Sinhala` script.
     Sinhala,
+    /// The `Sogdian` script.
     Sogdian,
+    /// The `Sora_Sompeng` script.
     SoraSompeng,
+    /// The `Soyombo` script.
     Soyombo,
+    /// The `Sundanese` script.
     Sundanese,
+    /// The `Sunuwar` script.
     Sunuwar,
+    /// The `Syloti_Nagri` script.
     SylotiNagri,
+    /// The `Syriac` script.
     Syriac,
+    /// The `Tagalog` script.
     Tagalog,
+    /// The `Tagbanwa` script.
     Tagbanwa,
+    /// The `Tai_Le` script.
     TaiLe,
+    /// The `Tai_Tham` script.
     TaiTham,
+    /// The `Tai_Viet` script.
     TaiViet,
+    /// The `Takri` script.
     Takri,
+    /// The `Tamil` script.
     Tamil,
+    /// The `Tangsa` script.
     Tangsa,
+    /// The `Tangut` script.
     Tangut,
+    /// The `Telugu` script.
     Telugu,
+    /// The `Thaana` script.
     Thaana,
+    /// The `Thai` script.
     Thai,
+    /// The `Tibetan` script.
     Tibetan,
+    /// The `Tifinagh` script.
     Tifinagh,
+    /// The `Tirhuta` script.
     Tirhuta,
+    /// The `Todhri` script.
     Todhri,
+    /// The `Toto` script.
     Toto,
+    /// The `Tulu_Tigalari` script.
     TuluTigalari,
+    /// The `Ugaritic` script.
     Ugaritic,
+    /// The `Vai` script.
     Vai,
+    /// The `Vithkuqi` script.
     Vithkuqi,
+    /// The `Wancho` script.
     Wancho,
+    /// The `Warang_Citi` script.
     WarangCiti,
+    /// The `Yezidi` script.
     Yezidi,
+    /// The `Yi` script.
     Yi,
+    /// The `Zanabazar_Square` script.
     ZanabazarSquare,
+    /// Not covered by any Scripts.txt range.
     Unknown,
 }
 

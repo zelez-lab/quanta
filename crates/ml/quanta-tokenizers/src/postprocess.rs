@@ -30,27 +30,45 @@ use std::collections::HashMap;
 /// A compiled, executable post-processor.
 #[derive(Debug)]
 pub enum PostProcessor {
+    /// The general template processor: a piece list per arity, with the
+    /// special tokens it may name.
     Template {
+        /// The template for a lone sequence.
         single: Vec<TemplatePiece>,
+        /// The template for a sequence pair.
         pair: Vec<TemplatePiece>,
         /// Special-token name → (ids, tokens), lengths equal (validated
         /// at the artifact layer).
         special_tokens: HashMap<String, (Vec<u32>, Vec<String>)>,
     },
+    /// The fixed `[CLS] A [SEP]` / `+ B [SEP]` form.
     Bert {
+        /// The separator token and its id.
         sep: (String, u32),
+        /// The classifier token and its id.
         cls: (String, u32),
     },
+    /// The fixed `<s> A </s>` / `</s> B </s>` form, every type id 0.
     Roberta {
+        /// The separator token and its id.
         sep: (String, u32),
+        /// The classifier token and its id.
         cls: (String, u32),
+        /// Shrink token offsets past their leading and trailing spaces.
         trim_offsets: bool,
+        /// The pre-tokenizer added a prefix space, so the first token
+        /// keeps one of its leading spaces under the trim.
         add_prefix_space: bool,
     },
+    /// Offset trimming only — it adds no tokens.
     ByteLevel {
+        /// The pre-tokenizer added a prefix space, so the first token
+        /// keeps one of its leading spaces under the trim.
         add_prefix_space: bool,
+        /// Shrink token offsets past their leading and trailing spaces.
         trim_offsets: bool,
     },
+    /// Ordered composition over the encodings list.
     Sequence(Vec<PostProcessor>),
 }
 

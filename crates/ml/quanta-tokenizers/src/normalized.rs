@@ -61,6 +61,7 @@ pub enum Matcher {
     /// Plain substring find (the reference escapes the string into its
     /// regex engine; the match set is identical).
     Literal(String),
+    /// A regex over the crate's closed-construct engine.
     Regex(Regex),
 }
 

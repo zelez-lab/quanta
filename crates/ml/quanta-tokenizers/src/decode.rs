@@ -33,36 +33,62 @@ use crate::tokenizer::Tokenizer;
 /// A compiled, executable decoder chain element.
 #[derive(Debug)]
 pub enum Decoder {
+    /// Inverse of the GPT-2 byte bijection, over the whole token list at
+    /// once so multibyte chars split across ids survive.
     ByteLevel,
+    /// Join WordPiece tokens, dropping the continuation prefix.
     WordPiece {
+        /// The continuation marker to strip (`##`).
         prefix: String,
+        /// Apply the reference's punctuation-spacing cleanup.
         cleanup: bool,
     },
+    /// Turn the end-of-word suffix into a space, except on the last
+    /// token.
     BpeDecoder {
+        /// The end-of-word marker (`</w>`).
         suffix: String,
     },
+    /// Turn the sentencepiece replacement char back into a space.
     Metaspace {
+        /// The char that stands in for a space (`▁`).
         replacement: char,
         /// `true` when the prepend scheme is `always` or `first` — the
         /// decoder only distinguishes `never`.
         prepend: bool,
     },
+    /// Fold `<0xAB>` token runs back into bytes, one `�` per byte of an
+    /// invalid run.
     ByteFallback,
+    /// Concatenate the whole chain into a single token.
     Fuse,
+    /// Trim repeats of one char off each token's ends.
     Strip {
+        /// The char to trim.
         content: char,
+        /// At most this many copies off the front.
         start: usize,
+        /// At most this many copies off the back.
         stop: usize,
     },
+    /// Substitute every match of a pattern, per token.
     Replace {
+        /// What to look for.
         matcher: Matcher,
+        /// What each match becomes.
         content: String,
     },
+    /// The CTC decoder: collapse consecutive duplicates, drop pads,
+    /// turn the word delimiter into a space.
     Ctc {
+        /// The blank token, dropped after the collapse.
         pad_token: String,
+        /// The token that becomes a space.
         word_delimiter_token: String,
+        /// Apply the reference's punctuation-spacing cleanup.
         cleanup: bool,
     },
+    /// Ordered composition; nests arbitrarily.
     Sequence(Vec<Decoder>),
 }
 

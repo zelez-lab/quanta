@@ -59,6 +59,7 @@
 //! `TOKENIZER_CONTRACT.md` at the crate root.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 pub mod artifact;
 pub mod bpe;
