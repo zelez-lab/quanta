@@ -4192,8 +4192,6 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit_core
     -- IR-side iteration trace: lowering state s1 (after body lowering,
     -- from the loop-entry state) + IR body-output state sequence.
     (s1 : LowerState) (bodyOps : List KernelOp)
-    (h_lb : lowerInstrs bt (.loopK :: frames) { s with currentReg := [] } body
-              = some (s1, bodyOps))
     (kstStates : Fin (n + 2) → Quanta.KOps.State)
     (h_kst_start : kstStates 0 = kst)
     (F_b : Nat)
@@ -4206,25 +4204,21 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit_core
     -- Per-iteration Refines preservation across body iterations.
     (h_per_iter_refines : ∀ i : Fin (n + 1),
         Refines (wasmBodyOuts i) s1 (kstStates i.succ) layout)
-    -- Post-loop bridge, from the loop-close state.
+    -- Post-loop bridge: the post's lowering (by whichever translator)
+    -- is `(s2, postOps)` from the loop-close state, and running it from
+    -- any refining state preserves.
     (s2 : LowerState) (postOps : List KernelOp)
-    (h_lp : lowerInstrs bt frames { s1 with currentReg := [] } post = some (s2, postOps))
-    -- Stated at the loop-close state the post is lowered from, so a
-    -- caller whose post evidence is conditional on that state (the
-    -- L11 apex's label side condition) can supply it.
     (post_preserves : ∀ {ws_p : WasmState}
         {kst_p : Quanta.KOps.State}
         (_R_p : Refines ws_p { s1 with currentReg := [] } kst_p layout)
         (_h_nb_p : ws_p.branchTarget = none)
         (_h_nh_p : ws_p.halted = false)
         (_h_nbk_p : kst_p.broke = false)
-        {ws'_p : WasmState} {s'_p : LowerState} {postOps' : List KernelOp}
-        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
-        (_hl_p : lowerInstrs bt frames { s1 with currentReg := [] } post
-                   = some (s'_p, postOps')),
+        {ws'_p : WasmState}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p),
       ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
-        evalOps F kst_p postOps' = some kst'_p ∧
-        Refines ws'_p s'_p kst'_p layout ∧
+        evalOps F kst_p postOps = some kst'_p ∧
+        Refines ws'_p s2 kst'_p layout ∧
         BridgeClauses ws'_p kst'_p)
     -- Fuel constraint: bt ≥ n + 1 — the n+1 body runs `iterLoop`
     -- replays (the IR side picks its own fuel, `max … (n + 2)`).
@@ -4281,7 +4275,7 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit_core
       h_wasm_step h_wasm_continue h_exit_nb h_bt_bound h_iter_match
   -- Now apply post_preserves.
   obtain ⟨kst'_p, F_p, h_ev_p, R_p, h_bridge_p⟩ :=
-    post_preserves R_reset.clear_current h_exit_nb h_exit_nh h_reset_nbk h_post_eval h_lp
+    post_preserves R_reset.clear_current h_exit_nb h_exit_nh h_reset_nbk h_post_eval
   -- Build the IR-side composition.
   let F : Nat := max (max F_b F_p) (n + 2)
   have h_F_ge_Fb : F_b ≤ F := by simp [F]; omega
@@ -4421,8 +4415,10 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
   obtain ⟨h_s_eq, h_ops_eq⟩ := hl
   exact preservation_evalInstrs_cons_wloop_nIterExit_core frames ws s kst layout _R
     h_no_branch h_no_halt h_kst_no_broke bt rest body post h_split n wasmEntries wasmBodyOuts
-    h_wasm_start h_wasm_step h_wasm_continue h_wasm_exit s1 bodyOps h_lb kstStates h_kst_start
-    F_b h_ir_step h_ir_continue h_ir_exit h_per_iter_refines s2 postOps h_lp post_preserves
+    h_wasm_start h_wasm_step h_wasm_continue h_wasm_exit s1 bodyOps kstStates h_kst_start
+    F_b h_ir_step h_ir_continue h_ir_exit h_per_iter_refines s2 postOps
+    (fun {ws_p kst_p} R_p h_nb_p h_nh_p h_nbk_p {ws'_p} hw_p =>
+      post_preserves R_p h_nb_p h_nh_p h_nbk_p hw_p h_lp)
     h_fuel_bound ws' s' ops hw h_s_eq h_ops_eq
 
 -- ════════════════════════════════════════════════════════════════════

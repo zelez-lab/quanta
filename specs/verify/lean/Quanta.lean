@@ -62,6 +62,7 @@ import Quanta.Wasm.FlagSemantics
 import Quanta.Wasm.PreservationWhileExit
 import Quanta.Wasm.TranslatePendingAgree
 import Quanta.Wasm.PreservationBlockWhile
+import Quanta.Wasm.PreservationKernelWhile
 
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb

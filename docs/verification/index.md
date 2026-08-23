@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 1006 — 599 across the core / companion chains + 407 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1074 — 599 across the core / companion chains + 475 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
@@ -112,16 +112,17 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 407
+                                step 059 — Lean `Quanta/Wasm/*`: 475
                                 theorems, 0 sorries.
-                                `framework_preservation_kernel_while`
-                                over `KernelInstrsW` = straight-line
-                                instructions interleaved with
-                                `WhileBody` `wloop 0` segments —
-                                real while loops, any iteration
-                                count, loop state in locals or
-                                memory, under the `LoopsTypeStable`
-                                label side condition; general nested
+                                `framework_preservation_kernel_while2`
+                                over `KernelInstrsW2` = straight-line
+                                instructions, `do … while` segments,
+                                and rustc's `while` (`block { loop {
+                                … br_if 1 … br 0 } }`, lowered through
+                                the exit flag) — any iteration count,
+                                loop state in locals or memory, under
+                                the `KernelInstrsW2.stable` side
+                                condition; general nested
                                 block/wif/br is OUTSIDE the theorem.
                                 Verus `quanta-wasm-lowering/`
                                 V7 closed; ScaledIdx-domain +
@@ -272,7 +273,7 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **407 theorems, 0 sorries**
+Lean, `specs/verify/lean/Quanta/Wasm/` — **475 theorems, 0 sorries**
 (`grep -c '^theorem'`), every file imported from
 `specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
 `PreservationList`):
@@ -282,61 +283,72 @@ Lean, `specs/verify/lean/Quanta/Wasm/` — **407 theorems, 0 sorries**
 | `LowerScopeValid.lean` | 117 |
 | `Preservation.lean` | 60 |
 | `PreservationList.lean` | 57 |
-| `PreservationBridge.lean` | 50 |
+| `PreservationBridge.lean` | 51 |
 | `PreservationWhile.lean` | 50 |
 | `PreservationFuel.lean` | 27 |
+| `FlagSemantics.lean` | 25 |
 | `PreservationInduction.lean` | 16 |
+| `PreservationWhileExit.lean` | 16 |
 | `LowerInvariants.lean` | 15 |
+| `PreservationBlockWhile.lean` | 13 |
+| `TranslatePendingAgree.lean` | 8 |
 | `WellFormed.lean` | 7 |
 | `TranslatePending.lean` | 5 |
+| `PreservationKernelWhile.lean` | 5 |
 | `Semantics.lean` | 2 |
 | `Translate.lean` | 1 |
 | `Syntax.lean` / `Structured.lean` | 0 (definitions) |
 
-The apex is `framework_preservation_kernel_while` (L11/L12,
-`PreservationWhile.lean`), built from
-`framework_preservation_straightLine` (L10, `PreservationBridge.lean`)
-and the N-iteration loop theorem
-`preservation_evalInstrs_cons_wloop_nIterExit` (L8.3, same file).
-L10v7's `framework_preservation_kernel` over `KernelInstrs` is a
-corollary (`KernelInstrs.toW` embeds at the same depth; its nop-prefix
-loop bodies satisfy the side condition from any state).
+The apex is `framework_preservation_kernel_while2`
+(`PreservationKernelWhile.lean`), stated over the pending-wrap
+translator `lowerInstrsP` (`TranslatePending.lean` — Stage A's
+`lowerInstrs` plus the record-and-wrap route and the loop exit flag).
+It is built from `framework_preservation_straightLine`
+(`PreservationBridge.lean`), the N-iteration loop theorem
+`preservation_evalInstrs_cons_wloop_nIterExit_core` (same file) for
+`do … while` segments, and `preservation_blockWhile_nIterExit`
+(`PreservationBlockWhile.lean`) for rustc's `while`. The earlier apexes
+are corollaries: `framework_preservation_kernel_while` over
+`KernelInstrsW` (`framework_preservation_kernel_while_of_W2`) and L10v7's
+`framework_preservation_kernel` over `KernelInstrs`.
 
 **Scope — read this before quoting the number.** The apex admits
-exactly `KernelInstrsW`: straight-line instructions interleaved with
-`wloop 0` segments whose bodies are a `WhileBody` — a straight-line
-prefix that computes exactly one value on top of the entry stack (the
-continue condition), closed by `brIf 0`. Such a loop runs **any number
-of iterations** the WASM fuel allows, and its loop-carried state may
-live in locals (`i = i + 1` through `local.set`) or in memory
-(`i32.load` / `i32.store` through a buffer local). The theorem carries
-one **side condition**, `LoopsTypeStable`: lowered from the state the
-kernel actually reaches, no loop body changes a local's label
-(`localTy`) — the body is lowered once and runs every iteration, and
-the refinement relation is label-exact, so a body that retags a local
-(say `u32 → i32`, by `i = i + 1` with a constant operand on a
-`u32`-labelled `i`) is not covered; production bridges such label
-crossings bit-exactly in the emitters, the relation here does not. A
-counter initialised from a constant (`i32.const 0; local.set`) enters
-`i32`-labelled and stays so; the condition is decidable per kernel.
-General nested `block` / `wif` / `br` is **outside the theorem** (the
-structured arms are lowered and mechanized, but the preservation claim
-does not reach them). Per-instruction scope is narrower still:
-`WellFormed.lean` admits only the unsigned-i32 slice, refusing `i64` /
-`f32` constants and arithmetic, every signed-i32 op (`i32DivS`,
-`i32RemS`, `i32ShrS`, the signed comparisons, `i32Eqz`), type
-conversions, byte-level memory, `call`, `wselect`, and `unreachable`.
+exactly `KernelInstrsW2`: straight-line instructions; `wloop 0` segments
+whose bodies are a `WhileBody` (a straight-line prefix computing the
+continue condition, closed by `brIf 0` — the rotated `do … while`); and
+rustc's `while`, `block { loop { pref; br_if 1; body; br 0 } }` — a
+straight-line prefix computing the exit condition, the `br_if` to the
+enclosing block, a balanced straight-line body, the `br 0` continue,
+and nothing between the loop's `end` and the block's. Both loop shapes
+run **any number of iterations** the WASM fuel allows, with
+loop-carried state in locals (`i = i + 1` through `local.set`) or in
+memory. The theorem carries one **side condition**,
+`KernelInstrsW2.stable`: lowered from the state the kernel actually
+reaches, no loop body changes a local's label (`localTy`) — the
+relation is label-exact and the body is lowered once for every
+iteration — and, for rustc's `while`, the body past the exit site
+rebinds no local's stable register or label (on the exit path those
+registers were never written; a local first written there reads its
+zero-init in production, which the model does not yet give stable
+registers). A counter initialised from a constant and incremented by a
+constant satisfies both; the condition is decidable per kernel.
+General nested `block` / `wif` / `br` — a second loop between an exit
+and its target, code between a loop's `end` and its block's, `wif`
+inside loop bodies — is **outside the theorem** (the structured arms are
+lowered and mechanized, but the preservation claim does not reach
+them). Per-instruction scope is narrower still: `WellFormed.lean`
+admits only the unsigned-i32 slice, refusing `i64` / `f32` constants
+and arithmetic, every signed-i32 op (`i32DivS`, `i32RemS`, `i32ShrS`,
+the signed comparisons, `i32Eqz`), type conversions, byte-level memory,
+`call`, `wselect`, and `unreachable`.
 
 The Lean lowering model's block, loop and if frames follow the
 production translator's local-binding discipline
 (`force_locals_to_stable` at loop entry, `merge_locals_post_frame` at
-every frame close): per-frame bindings are dropped at loop entry and at
-frame close, reads fall back to the stable register the dual-Copy of
-every set keeps current, and a stable register first allocated inside a
-body stays allocated. (The model used to snapshot and restore the entry
-bindings around a loop or if body, and to keep a block body's bindings
-past the block's end — latent divergences, reachable only by a body
-writing a local, which no theorem admitted before L12.)
+every frame close), and its exit-flag route is production's
+`emit_loop_crossing_exit` op for op — pinned against the real translator
+by `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs` and
+the `while_exit_flag` pins in `TranslatePending.lean`.
 
 The Verus arm, `specs/verify/verus/quanta-wasm-lowering/` (13 files),
 closes the spec↔implementation half: that the production translator in
