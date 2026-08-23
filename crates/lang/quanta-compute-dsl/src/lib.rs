@@ -234,7 +234,8 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// - `Particle::GPU_SIZE` — the struct's byte size
 /// - `Particle::GPU_FIELDS` — one `(name, type, byte offset)` per
-///   field, offsets computed under `repr(C)` rules
+///   field; each offset is `core::mem::offset_of!` on the emitted
+///   `repr(C)` struct, so it is the compiler's answer, not the macro's
 /// - `impl GpuType for Particle` — what `gpu.field::<Particle>(n)` needs
 /// - `__QUANTA_GPU_TYPE_PARTICLE` and `__QUANTA_GPU_TYPE_PARTICLE_WGSL`
 ///   — the MSL and WGSL declarations of the same struct, for shader
@@ -244,9 +245,8 @@ pub fn shared(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// a fixed-size array of one (array lengths must be literals — no const
 /// generics), or another GPU struct; there is no heap type on the GPU
 /// side. A nested-struct field reaches the MSL and WGSL declarations by
-/// name, but counts as zero bytes in the offset arithmetic, so every
-/// `GPU_FIELDS` offset after one is wrong — keep the struct flat, or
-/// take offsets from `core::mem::offset_of!` instead.
+/// name, and its offsets are exact — `offset_of!` resolves them from the
+/// real layout, which the macro never computes.
 ///
 /// # Arguments
 ///

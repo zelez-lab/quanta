@@ -11,8 +11,6 @@ struct GpuField {
     type_str: String,
     msl_type: String,
     wgsl_type: String,
-    size: usize,
-    align: usize,
 }
 
 use crate::crate_path::CratePath;
@@ -38,49 +36,28 @@ pub(crate) fn expand_gpu_type(
 
     // Parse all fields
     let mut gpu_fields = Vec::new();
+    let mut field_idents = Vec::new();
     for field in fields {
-        let field_name = field
+        let ident = field
             .ident
             .as_ref()
-            .ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?
-            .to_string();
-        let gpu_field = parse_gpu_field(&field_name, &field.ty)?;
+            .ok_or_else(|| syn::Error::new_spanned(field, "unnamed field"))?;
+        let gpu_field = parse_gpu_field(&ident.to_string(), &field.ty)?;
         gpu_fields.push(gpu_field);
+        field_idents.push(ident.clone());
     }
 
-    // Compute byte offsets using repr(C) layout rules
-    let mut offsets = Vec::new();
-    let mut current_offset: usize = 0;
-    let mut max_align: usize = 1;
-
-    for f in &gpu_fields {
-        // Pad to field alignment
-        let misalign = current_offset % f.align;
-        if misalign != 0 {
-            current_offset += f.align - misalign;
-        }
-        offsets.push(current_offset);
-        current_offset += f.size;
-        if f.align > max_align {
-            max_align = f.align;
-        }
-    }
-
-    // Final struct size: pad to max alignment
-    let misalign = current_offset % max_align;
-    if misalign != 0 {
-        current_offset += max_align - misalign;
-    }
-    let _struct_size = current_offset;
-
-    // Build GPU_FIELDS entries: (name, type_str, byte_offset)
+    // Build GPU_FIELDS entries: (name, type_str, byte_offset). The offset is
+    // the compiler's, not ours: `offset_of!` on the emitted #[repr(C)] struct
+    // is exact for every field type — nested gpu_type structs included, whose
+    // sizes a token-level macro cannot know.
     let field_entries: Vec<TokenStream> = gpu_fields
         .iter()
-        .zip(offsets.iter())
-        .map(|(f, off)| {
+        .zip(field_idents.iter())
+        .map(|(f, ident)| {
             let name = &f.name;
             let ty = &f.type_str;
-            quote! { (#name, #ty, #off) }
+            quote! { (#name, #ty, core::mem::offset_of!(Self, #ident)) }
         })
         .collect();
 
@@ -204,15 +181,13 @@ fn parse_gpu_field(name: &str, ty: &Type) -> Result<GpuField, syn::Error> {
             let len = parse_array_len(&arr.len)?;
             let type_str = format!("[{}; {}]", elem_type.rust_name, len);
 
-            let (msl_type, wgsl_type, size, align) = array_gpu_type(&elem_type, len, name)?;
+            let (msl_type, wgsl_type) = array_gpu_type(&elem_type, len, name)?;
 
             Ok(GpuField {
                 name: name.to_string(),
                 type_str,
                 msl_type,
                 wgsl_type,
-                size,
-                align,
             })
         }
         // Scalar or named struct types
@@ -223,8 +198,6 @@ fn parse_gpu_field(name: &str, ty: &Type) -> Result<GpuField, syn::Error> {
                 type_str: info.rust_name.clone(),
                 msl_type: info.msl_name.clone(),
                 wgsl_type: info.wgsl_name.clone(),
-                size: info.size,
-                align: info.align,
             })
         }
         _ => Err(syn::Error::new_spanned(
@@ -239,8 +212,6 @@ struct TypeInfo {
     rust_name: String,
     msl_name: String,
     wgsl_name: String,
-    size: usize,
-    align: usize,
 }
 
 /// Map a Rust type to its GPU type info.
@@ -258,85 +229,60 @@ fn type_to_scalar_str(ty: &Type) -> Result<TypeInfo, syn::Error> {
                     rust_name: "f32".into(),
                     msl_name: "float".into(),
                     wgsl_name: "f32".into(),
-                    size: 4,
-                    align: 4,
                 }),
                 "f64" => Ok(TypeInfo {
                     rust_name: "f64".into(),
                     msl_name: "double".into(),
                     wgsl_name: "f64".into(),
-                    size: 8,
-                    align: 8,
                 }),
                 "u32" => Ok(TypeInfo {
                     rust_name: "u32".into(),
                     msl_name: "uint".into(),
                     wgsl_name: "u32".into(),
-                    size: 4,
-                    align: 4,
                 }),
                 "i32" => Ok(TypeInfo {
                     rust_name: "i32".into(),
                     msl_name: "int".into(),
                     wgsl_name: "i32".into(),
-                    size: 4,
-                    align: 4,
                 }),
                 "u8" => Ok(TypeInfo {
                     rust_name: "u8".into(),
                     msl_name: "uint8_t".into(),
                     wgsl_name: "u32".into(),
-                    size: 1,
-                    align: 1,
                 }),
                 "bool" => Ok(TypeInfo {
                     rust_name: "bool".into(),
                     msl_name: "bool".into(),
                     wgsl_name: "bool".into(),
-                    size: 1,
-                    align: 1,
                 }),
                 "u64" => Ok(TypeInfo {
                     rust_name: "u64".into(),
                     msl_name: "ulong".into(),
                     wgsl_name: "u32".into(), // WGSL has limited u64 support
-                    size: 8,
-                    align: 8,
                 }),
                 "i64" => Ok(TypeInfo {
                     rust_name: "i64".into(),
                     msl_name: "long".into(),
                     wgsl_name: "i32".into(), // WGSL has limited i64 support
-                    size: 8,
-                    align: 8,
                 }),
                 "u16" => Ok(TypeInfo {
                     rust_name: "u16".into(),
                     msl_name: "ushort".into(),
                     wgsl_name: "u32".into(),
-                    size: 2,
-                    align: 2,
                 }),
                 "i16" => Ok(TypeInfo {
                     rust_name: "i16".into(),
                     msl_name: "short".into(),
                     wgsl_name: "i32".into(),
-                    size: 2,
-                    align: 2,
                 }),
-                // Nested struct: treat as opaque with name-based reference
+                // Nested struct: referenced by name in the shader
+                // declarations; its size and alignment never enter the
+                // macro — GPU_FIELDS offsets come from `offset_of!` and
+                // GPU_SIZE from `size_of`, so the compiler owns the layout.
                 other => Ok(TypeInfo {
                     rust_name: other.into(),
                     msl_name: other.into(),
                     wgsl_name: other.into(),
-                    // For nested structs, we use 1 as placeholder;
-                    // actual size comes from core::mem::size_of at compile time.
-                    // The GPU_SIZE const uses size_of::<Self>() for the real value.
-                    // For offset computation in the macro, nested structs need
-                    // their GpuType impl to be available. We use 0 as a sentinel
-                    // and let the const assert catch mismatches.
-                    size: 0,
-                    align: 1,
                 }),
             }
         }
@@ -344,50 +290,46 @@ fn type_to_scalar_str(ty: &Type) -> Result<TypeInfo, syn::Error> {
     }
 }
 
-/// Map an array [T; N] to GPU types (vectorized where applicable).
+/// Map an array [T; N] to its MSL/WGSL spelling (vectorized where
+/// applicable). Naming only: sizes and offsets come from the compiler
+/// via `size_of`/`offset_of!` on the emitted #[repr(C)] struct.
 fn array_gpu_type(
     elem: &TypeInfo,
     len: usize,
     _field_name: &str,
-) -> Result<(String, String, usize, usize), syn::Error> {
+) -> Result<(String, String), syn::Error> {
     let elem_rust = elem.rust_name.as_str();
-
-    // Alignment follows Rust repr(C) rules: [T; N] has alignment of T.
-    // GPU shader alignment (std140/std430) is separate — the shader struct
-    // declarations handle that independently.
-    let align = elem.align;
 
     // Check for vector/matrix special cases (MSL/WGSL naming only)
     match (elem_rust, len) {
         // float vectors
-        ("f32", 2) => Ok(("float2".into(), "vec2<f32>".into(), 8, align)),
-        ("f32", 3) => Ok(("float3".into(), "vec3<f32>".into(), 12, align)),
-        ("f32", 4) => Ok(("float4".into(), "vec4<f32>".into(), 16, align)),
+        ("f32", 2) => Ok(("float2".into(), "vec2<f32>".into())),
+        ("f32", 3) => Ok(("float3".into(), "vec3<f32>".into())),
+        ("f32", 4) => Ok(("float4".into(), "vec4<f32>".into())),
         // float matrices
-        ("f32", 9) => Ok(("float3x3".into(), "mat3x3<f32>".into(), 36, align)),
-        ("f32", 16) => Ok(("float4x4".into(), "mat4x4<f32>".into(), 64, align)),
+        ("f32", 9) => Ok(("float3x3".into(), "mat3x3<f32>".into())),
+        ("f32", 16) => Ok(("float4x4".into(), "mat4x4<f32>".into())),
 
         // uint vectors
-        ("u32", 2) => Ok(("uint2".into(), "vec2<u32>".into(), 8, align)),
-        ("u32", 3) => Ok(("uint3".into(), "vec3<u32>".into(), 12, align)),
-        ("u32", 4) => Ok(("uint4".into(), "vec4<u32>".into(), 16, align)),
+        ("u32", 2) => Ok(("uint2".into(), "vec2<u32>".into())),
+        ("u32", 3) => Ok(("uint3".into(), "vec3<u32>".into())),
+        ("u32", 4) => Ok(("uint4".into(), "vec4<u32>".into())),
 
         // int vectors
-        ("i32", 2) => Ok(("int2".into(), "vec2<i32>".into(), 8, align)),
-        ("i32", 3) => Ok(("int3".into(), "vec3<i32>".into(), 12, align)),
-        ("i32", 4) => Ok(("int4".into(), "vec4<i32>".into(), 16, align)),
+        ("i32", 2) => Ok(("int2".into(), "vec2<i32>".into())),
+        ("i32", 3) => Ok(("int3".into(), "vec3<i32>".into())),
+        ("i32", 4) => Ok(("int4".into(), "vec4<i32>".into())),
 
         // f64 vectors
-        ("f64", 2) => Ok(("double2".into(), "vec2<f64>".into(), 16, align)),
-        ("f64", 3) => Ok(("double3".into(), "vec3<f64>".into(), 24, align)),
-        ("f64", 4) => Ok(("double4".into(), "vec4<f64>".into(), 32, align)),
+        ("f64", 2) => Ok(("double2".into(), "vec2<f64>".into())),
+        ("f64", 3) => Ok(("double3".into(), "vec3<f64>".into())),
+        ("f64", 4) => Ok(("double4".into(), "vec4<f64>".into())),
 
         // Generic arrays — not vectorized
         _ => {
-            let total_size = elem.size * len;
             let msl = format!("{} [{}]", elem.msl_name, len);
             let wgsl = format!("array<{}, {}>", elem.wgsl_name, len);
-            Ok((msl, wgsl, total_size, elem.align))
+            Ok((msl, wgsl))
         }
     }
 }

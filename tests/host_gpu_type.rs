@@ -279,3 +279,55 @@ fn single_field_metadata() {
     assert_eq!(SingleField::GPU_FIELDS.len(), 1);
     assert_eq!(SingleField::GPU_FIELDS[0], ("value", "u32", 0));
 }
+
+// ===========================================================================
+// Nested gpu_type structs — offsets after a nested field
+// ===========================================================================
+//
+// A token-level macro cannot know a nested struct's size, so GPU_FIELDS
+// offsets are emitted as `offset_of!` and resolved by the compiler. These
+// pin the case the old macro-side computation got wrong: every offset
+// AFTER a nested-struct field (the sentinel size-0/align-1 entry left
+// later fields at the nested field's own offset).
+
+#[quanta::gpu_type]
+struct NestedInner {
+    a: f32,
+    b: f32,
+}
+
+#[quanta::gpu_type]
+struct NestedOuter {
+    inner: NestedInner,
+    c: f32,
+}
+
+#[test]
+fn field_after_nested_struct_offset() {
+    assert_eq!(NestedInner::GPU_SIZE, 8);
+    assert_eq!(NestedOuter::GPU_FIELDS.len(), 2);
+    assert_eq!(NestedOuter::GPU_FIELDS[0], ("inner", "NestedInner", 0));
+    assert_eq!(NestedOuter::GPU_FIELDS[1], ("c", "f32", 8));
+    assert_eq!(NestedOuter::GPU_SIZE, 12);
+}
+
+#[quanta::gpu_type]
+struct WideInner {
+    t: u64,
+}
+
+#[quanta::gpu_type]
+struct Padded {
+    x: f32,
+    inner: WideInner,
+    y: f32,
+}
+
+#[test]
+fn nested_alignment_padding_offsets() {
+    // repr(C): x at 0, inner aligned up to 8, y after it, tail-padded to 24.
+    assert_eq!(Padded::GPU_FIELDS[0], ("x", "f32", 0));
+    assert_eq!(Padded::GPU_FIELDS[1], ("inner", "WideInner", 8));
+    assert_eq!(Padded::GPU_FIELDS[2], ("y", "f32", 16));
+    assert_eq!(Padded::GPU_SIZE, 24);
+}
