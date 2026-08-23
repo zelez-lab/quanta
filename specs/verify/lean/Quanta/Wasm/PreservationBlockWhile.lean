@@ -616,4 +616,280 @@ theorem preservation_blockWhile_nIterExit
       evalOps_tailWrap_skips (State.reset_broke_broke _) h_flag']
   exact evalOps_fuel_mono h_F_ge_Fp h_ev_p
 
+-- ════════════════════════════════════════════════════════════════════
+-- The body frame across one iteration
+-- ════════════════════════════════════════════════════════════════════
+
+/-- What the body's lowering leaves, for the next iteration's entry: the
+    entry stack (the prefix pushes the condition, the `br_if` pops it,
+    `body2` is balanced), every entry stable binding, the buffer slots,
+    a grown `nextReg`. And for the exit path: the same from the exit
+    site's state to the post-body state (`body2` alone). -/
+theorem blockWhileBody_frames
+    {fuel : Nat} {frames : List FrameKind} {pref body2 : List WasmInstr}
+    (h_pref : StraightLineInstrs pref) (h_body2 : StraightLineInstrs body2)
+    (h_ht_pref : stackHeight 0 pref = some 1) (h_ht_body2 : stackHeight 0 body2 = some 0)
+    {s s_flag s1 : LowerState} {flag : Quanta.KOps.Reg} {opsSite opsBody2 : List KernelOp}
+    (hl_site : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 1])
+      = some (⟨s_flag, [{ levels := 1, cond := flag, flag := true, skip := 0 }]⟩, opsSite))
+    (hl_body2 : lowerInstrs fuel (.loopK :: .block :: frames) s_flag body2 = some (s1, opsBody2)) :
+    (s_flag.stack = s.stack ∧ s_flag.bufferSlots = s.bufferSlots ∧
+       s.nextReg ≤ s_flag.nextReg ∧ LocalsExtend s s_flag) ∧
+    (s1.stack = s_flag.stack ∧ s1.bufferSlots = s_flag.bufferSlots ∧
+       s_flag.nextReg ≤ s1.nextReg ∧ LocalsExtend s_flag s1) := by
+  refine ⟨?_, ?_⟩
+  · -- The prefix, then the brIf's pop / commit / two allocations.
+    have h_list : pref ++ [WasmInstr.brIf 1] = pref ++ (WasmInstr.brIf 1 :: []) := rfl
+    rw [h_list] at hl_site
+    obtain ⟨s_m, ops1, ops2, hl_pref, hl_br, _⟩ := lowerInstrsP_straightLine_append h_pref hl_site
+    obtain ⟨⟨_, h_len, h_drop, h_bs, h_nr⟩, h_ext⟩ :=
+      lowerInstrs_bodyFrame_from h_pref h_ht_pref (StackFrame.refl s) (LocalsExtend.refl s) hl_pref
+    rw [lowerInstrsP_brIf1_exit] at hl_br
+    rcases h_pop : s_m.popSym with _ | ⟨svCond, s0⟩
+    · rw [h_pop] at hl_br; simp at hl_br
+    rw [h_pop] at hl_br
+    simp only [Option.bind_eq_bind, Option.some_bind] at hl_br
+    rcases h_commit : s0.commit svCond with _ | ⟨cond, s_c, opsCommit⟩
+    · rw [h_commit] at hl_br; simp at hl_br
+    rw [h_commit] at hl_br
+    simp only [Option.some_bind, LowerState.alloc, lowerInstrsP, pure, Option.some.injEq,
+               Prod.mk.injEq, LowerStateP.mk.injEq] at hl_br
+    obtain ⟨⟨h_sf, _⟩, _⟩ := hl_br
+    subst h_sf
+    have h_s0_stack : s0.stack = s.stack := by
+      unfold LowerState.popSym at h_pop
+      rcases hs : s_m.stack with _ | ⟨sv, rs⟩
+      · rw [hs] at h_pop; simp at h_pop
+      · rw [hs] at h_pop; simp at h_pop
+        obtain ⟨_, h_eq⟩ := h_pop
+        rw [← h_eq]
+        simp only
+        rw [hs] at h_drop
+        simpa using h_drop
+    have h_pop_nr := LowerState.popSym_nextReg h_pop
+    have h_pop_lr := LowerState.popSym_localReg h_pop
+    have h_pop_bs := LowerState.popSym_preserves_bufferSlots h_pop
+    have h_c_stk := LowerState.commit_stack h_commit
+    have h_c_lr := LowerState.commit_localReg h_commit
+    have h_c_bs := LowerState.commit_preserves_bufferSlots h_commit
+    have h_c_nr := LowerState.commit_nextReg_mono h_commit
+    refine ⟨?_, ?_, ?_, ?_⟩
+    · show s_c.stack = s.stack
+      rw [h_c_stk, h_s0_stack]
+    · show s_c.bufferSlots = s.bufferSlots
+      rw [h_c_bs, h_pop_bs, h_bs]
+    · show s.nextReg ≤ s_c.nextReg + 2
+      omega
+    · exact h_ext.trans (LocalsExtend.of_eq (show s_c.localReg = s_m.localReg by
+        rw [h_c_lr, h_pop_lr]))
+  · obtain ⟨⟨_, h_len, h_drop, h_bs, h_nr⟩, h_ext⟩ :=
+      lowerInstrs_bodyFrame_from h_body2 h_ht_body2 (StackFrame.refl s_flag)
+        (LocalsExtend.refl s_flag) hl_body2
+    refine ⟨?_, h_bs, h_nr, h_ext⟩
+    simpa using h_drop
+
+
+-- ════════════════════════════════════════════════════════════════════
+-- The IR-side iteration trace
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The IR runs the lowered body once per WASM iteration: one fuel for
+    all runs, `broke = false` after every continue, `broke = true` after
+    the exit, the exit body-out refining the loop-close state, and the
+    flag reading `true` there. Side conditions: the body keeps every
+    label (`s1.localTy = s.localTy`), and `body2` rebinds no local's
+    stable register or label past the exit site (`s1.localReg =
+    s_site.localReg`, `s1.localTy = s_site.localTy`) — on the exit path
+    none of `body2`'s registers were written. -/
+theorem blockWhileBody_ir_trace
+    (fuel : Nat) (frames : List FrameKind)
+    (pref body2 : List WasmInstr)
+    (h_pref : StraightLineInstrs pref) (h_body2 : StraightLineInstrs body2)
+    (h_ht_pref : stackHeight 0 pref = some 1) (h_ht_body2 : stackHeight 0 body2 = some 0)
+    (s s1 s_site : LowerState) (flag : Quanta.KOps.Reg) (bodyOps opsSite : List KernelOp)
+    (h_lb : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩
+              (pref ++ [.brIf 1] ++ body2 ++ [.br 0])
+            = some (⟨s1, [{ levels := 1, cond := flag, flag := true, skip := 0 }]⟩, bodyOps))
+    (hl_site : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 1])
+      = some (⟨s_site, [{ levels := 1, cond := flag, flag := true, skip := 0 }]⟩, opsSite))
+    (h_cr : s.currentReg = [])
+    (h_lt : s1.localTy = s.localTy)
+    (h_lr_site : s1.localReg = s_site.localReg) (h_lt_site : s1.localTy = s_site.localTy)
+    (layout : BufferLayout)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (n : Nat) (entries bodyOuts : Fin (n + 1) → WasmState)
+    (h_step : ∀ i : Fin (n + 1),
+        evalInstrs fuel (entries i) (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some (bodyOuts i))
+    (h_cont : ∀ i : Fin n,
+        (bodyOuts i.castSucc).branchTarget = some 0 ∧
+        entries i.succ = { bodyOuts i.castSucc with branchTarget := none })
+    (h_exit : (bodyOuts (Fin.last n)).branchTarget = some 1)
+    (kst : Quanta.KOps.State)
+    (R : Refines (entries 0) s kst layout)
+    (h_e0_nb : (entries 0).branchTarget = none)
+    (h_e0_nh : (entries 0).halted = false)
+    (h_kst : kst.broke = false) :
+    ∃ (kstStates : Fin (n + 2) → Quanta.KOps.State) (F_b : Nat),
+      kstStates 0 = kst ∧
+      (∀ i : Fin (n + 1),
+        evalOps F_b (kstStates i.castSucc) bodyOps = some (kstStates i.succ)) ∧
+      (∀ i : Fin n, (kstStates i.castSucc.succ).broke = false) ∧
+      (kstStates (Fin.last (n + 1))).broke = true ∧
+      Refines (bodyOuts (Fin.last n)) { s1 with currentReg := [] }
+        (kstStates (Fin.last (n + 1))) layout ∧
+      regLookup (kstStates (Fin.last (n + 1))).rf flag = some (vBool true) ∧
+      (∀ i : Fin (n + 1), (bodyOuts i).halted = false) := by
+  -- One iteration, with the site's state and flag pinned to the
+  -- lowering's, and the frames around it.
+  have iter : ∀ (ws_i : WasmState) (kst_i : Quanta.KOps.State) (ws_o : WasmState),
+      Refines ws_i s kst_i layout → ws_i.branchTarget = none → ws_i.halted = false →
+      kst_i.broke = false →
+      evalInstrs fuel ws_i (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some ws_o →
+      ∃ (kst' : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_i bodyOps = some kst' ∧ ws_o.halted = false ∧
+        ((ws_o.branchTarget = some 0 ∧ kst'.broke = false ∧ Refines ws_o s kst' layout) ∨
+         (ws_o.branchTarget = some 1 ∧ kst'.broke = true ∧
+            Refines ws_o { s1 with currentReg := [] } kst' layout ∧
+            regLookup kst'.rf flag = some (vBool true))) := by
+    intro ws_i kst_i ws_o R_i h_nb h_nh h_ok hw
+    obtain ⟨s_flag, flag', opsSite', opsBody2, kst', F, h_pend, h_fresh, h_lt_flag, hl_site',
+            hl_body2, h_ev, h_nh_o, h_out⟩ :=
+      blockWhileBody_iteration fuel frames pref body2 h_pref h_body2 ws_i s kst_i layout R_i
+        h_nb h_nh h_ok h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+        ws_o _ bodyOps hw h_lb
+    simp only [List.cons.injEq, PendingWrap.mk.injEq, and_true, true_and] at h_pend
+    subst h_pend
+    rw [hl_site] at hl_site'
+    simp only [Option.some.injEq, Prod.mk.injEq, LowerStateP.mk.injEq, and_true] at hl_site'
+    obtain ⟨h_sf, _⟩ := hl_site'
+    subst h_sf
+    obtain ⟨⟨h_stk1, h_bs1, h_nr1, h_ext1⟩, ⟨h_stk2, h_bs2, h_nr2, h_ext2⟩⟩ :=
+      blockWhileBody_frames h_pref h_body2 h_ht_pref h_ht_body2 hl_site hl_body2
+    refine ⟨kst', F, h_ev, h_nh_o, ?_⟩
+    rcases h_out with ⟨h_bt, h_b, R_o⟩ | ⟨h_bt, h_b, R_o, h_fl⟩
+    · left
+      refine ⟨h_bt, h_b, ?_⟩
+      exact Refines.retarget R_o R_i (by rw [h_stk2, h_stk1]) (h_ext1.trans h_ext2) h_lt h_cr
+    · right
+      refine ⟨h_bt, h_b, ?_, h_fl⟩
+      exact R_o.to_close h_stk2 h_lr_site h_lt_site h_bs2 h_nr2
+  induction n generalizing kst with
+  | zero =>
+      obtain ⟨kst1, F, h_ev, h_nh1, h_out⟩ :=
+        iter (entries 0) kst (bodyOuts 0) R h_e0_nb h_e0_nh h_kst (h_step 0)
+      have h_exit0 : (bodyOuts 0).branchTarget = some 1 := h_exit
+      obtain ⟨h_broke, R_close, h_fl⟩ :
+          kst1.broke = true ∧ Refines (bodyOuts 0) { s1 with currentReg := [] } kst1 layout ∧
+          regLookup kst1.rf flag = some (vBool true) := by
+        rcases h_out with ⟨h_bt, _⟩ | ⟨_, h_b, R_c, h_fl⟩
+        · rw [h_exit0] at h_bt; simp at h_bt
+        · exact ⟨h_b, R_c, h_fl⟩
+      refine ⟨fun i => if i.val = 0 then kst else kst1, F, by simp, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      · intro i
+        have h0 : i = 0 := Fin.ext (by omega)
+        subst h0
+        simpa using h_ev
+      · intro i; exact absurd i.isLt (by simp)
+      · simpa using h_broke
+      · simpa using R_close
+      · simpa using h_fl
+      · intro i
+        have h0 : i = 0 := Fin.ext (by omega)
+        subst h0
+        exact h_nh1
+  | succ n IH =>
+      obtain ⟨kst1, F0, h_ev0, h_nh1, h_out0⟩ :=
+        iter (entries 0) kst (bodyOuts 0) R h_e0_nb h_e0_nh h_kst (h_step 0)
+      obtain ⟨h_bt0, h_e1⟩ := h_cont 0
+      have h_bt0' : (bodyOuts 0).branchTarget = some 0 := h_bt0
+      obtain ⟨h_kst1_ok, R1⟩ : kst1.broke = false ∧ Refines (bodyOuts 0) s kst1 layout := by
+        rcases h_out0 with ⟨_, h_b, R_o⟩ | ⟨h_bt, _⟩
+        · exact ⟨h_b, R_o⟩
+        · rw [h_bt] at h_bt0'; simp at h_bt0'
+      have h_e1' : entries 1 = { bodyOuts 0 with branchTarget := none } := h_e1
+      obtain ⟨seq', F', h_s0', h_step', h_cont', h_exit', R_close', h_fl', h_nh'⟩ :=
+        IH (fun i => entries i.succ) (fun i => bodyOuts i.succ)
+          (fun i => h_step i.succ)
+          (fun i => by
+            obtain ⟨h1, h2⟩ := h_cont i.succ
+            exact ⟨h1, h2⟩)
+          h_exit kst1
+          (by
+            show Refines (entries 1) s kst1 layout
+            rw [h_e1']
+            exact R1.clear_branch)
+          (by show (entries 1).branchTarget = none; rw [h_e1'])
+          (by show (entries 1).halted = false; rw [h_e1']; exact h_nh1)
+          h_kst1_ok
+      refine ⟨fun i => if h : i.val = 0 then kst else seq' ⟨i.val - 1, by omega⟩,
+              max F0 F', by simp, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      · intro i
+        by_cases h : i.val = 0
+        · have h_cs : (i.castSucc).val = 0 := by simp [h]
+          have h_sc : (i.succ).val = 1 := by simp [h]
+          simp only [h_cs, h_sc, ↓reduceDIte, Nat.one_ne_zero, Nat.sub_self]
+          have : (⟨0, by omega⟩ : Fin (n + 2)) = 0 := rfl
+          rw [this, h_s0']
+          exact evalOps_fuel_mono (Nat.le_max_left _ _) h_ev0
+        · have h_cs : (i.castSucc).val = i.val := by simp
+          have h_sc : (i.succ).val = i.val + 1 := by simp
+          have h_ne : i.val + 1 ≠ 0 := by omega
+          simp only [h_cs, h_sc, h, ↓reduceDIte, h_ne, Nat.add_sub_cancel]
+          have h_st := h_step' ⟨i.val - 1, by omega⟩
+          simp only [Fin.castSucc_mk, Fin.succ_mk] at h_st
+          have h_idx : i.val - 1 + 1 = i.val := by omega
+          have h_fin : (⟨i.val - 1 + 1, by omega⟩ : Fin (n + 2)) = ⟨i.val, by omega⟩ :=
+            Fin.ext h_idx
+          rw [h_fin] at h_st
+          exact evalOps_fuel_mono (Nat.le_max_right _ _) h_st
+      · intro i
+        by_cases h : i.val = 0
+        · have h_v : (i.castSucc.succ).val = 1 := by simp [h]
+          simp only [h_v, ↓reduceDIte, Nat.one_ne_zero, Nat.sub_self]
+          have : (⟨0, by omega⟩ : Fin (n + 2)) = 0 := rfl
+          rw [this, h_s0']; exact h_kst1_ok
+        · have h_v : (i.castSucc.succ).val = i.val + 1 := by simp
+          have h_ne : i.val + 1 ≠ 0 := by omega
+          simp only [h_v, ↓reduceDIte, h_ne, Nat.add_sub_cancel]
+          have h_c := h_cont' ⟨i.val - 1, by omega⟩
+          simp only [Fin.castSucc_mk, Fin.succ_mk] at h_c
+          have h_idx : i.val - 1 + 1 = i.val := by omega
+          have h_fin : (⟨i.val - 1 + 1, by omega⟩ : Fin (n + 2)) = ⟨i.val, by omega⟩ :=
+            Fin.ext h_idx
+          rw [h_fin] at h_c
+          exact h_c
+      · have h_last : (Fin.last (n + 2)).val = n + 2 := by simp
+        simp only [h_last, Nat.succ_ne_zero, ↓reduceDIte]
+        have : (⟨n + 2 - 1, by omega⟩ : Fin (n + 2)) = Fin.last (n + 1) := Fin.ext (by simp)
+        rw [this]; exact h_exit'
+      · have h_last : (Fin.last (n + 2)).val = n + 2 := by simp
+        simp only [h_last, Nat.succ_ne_zero, ↓reduceDIte]
+        have : (⟨n + 2 - 1, by omega⟩ : Fin (n + 2)) = Fin.last (n + 1) := Fin.ext (by simp)
+        rw [this]
+        have h_bo : bodyOuts (Fin.last (n + 1)) = (fun i : Fin (n + 1) => bodyOuts i.succ) (Fin.last n) := rfl
+        rw [h_bo]; exact R_close'
+      · have h_last : (Fin.last (n + 2)).val = n + 2 := by simp
+        simp only [h_last, Nat.succ_ne_zero, ↓reduceDIte]
+        have : (⟨n + 2 - 1, by omega⟩ : Fin (n + 2)) = Fin.last (n + 1) := Fin.ext (by simp)
+        rw [this]; exact h_fl'
+      · intro i
+        by_cases h : i.val = 0
+        · have h_i : i = 0 := Fin.ext h
+          subst h_i; exact h_nh1
+        · have h_n := h_nh' ⟨i.val - 1, by omega⟩
+          simp only [Fin.succ_mk] at h_n
+          have h_idx : i.val - 1 + 1 = i.val := by omega
+          have h_fin : (⟨i.val - 1 + 1, by omega⟩ : Fin (n + 2)) = i := Fin.ext h_idx
+          rw [h_fin] at h_n
+          exact h_n
+
+
 end Quanta.Wasm
