@@ -709,6 +709,18 @@ jobs:
         if: steps.semver-tool.outputs.cache-hit != 'true'
         run: cargo install cargo-semver-checks --version ${{ env.SEMVER_CHECKS_VERSION }} --locked
 
+      # Step 065: the executable half of the docs. Doc examples run
+      # (most blocks are `ignore` by design — the runnable ones must
+      # stay green), the book builds, and every inline + SUMMARY link
+      # resolves (mdBook checks neither).
+      - name: Doc examples
+        run: cargo test --doc --workspace
+      - name: Book build + links
+        run: |
+          brew install mdbook
+          mdbook build docs
+          scripts/check-book-links.sh
+
       - name: Semver signal (quanta-core vs the previous release tag)
         continue-on-error: true
         shell: bash
