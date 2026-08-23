@@ -189,7 +189,7 @@ deserialize is identity), and per-operation CPU-GPU equivalence (T610).
 **Second arm — wasm route (step 059):** A separate corpus covers the route
 kernels actually take today: `rustc` compiles the kernel body to wasm32, and
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps. Lean
-(`specs/verify/lean/Quanta/Wasm/`) carries **505 theorems, 0
+(`specs/verify/lean/Quanta/Wasm/`) carries **522 theorems, 0
 sorries**, every file imported from `Quanta.lean`. The apex is
 `framework_preservation_kernel_while2` (`PreservationKernelWhile.lean`), over
 the pending-wrap translator: straight-line code, `do … while` segments, and
@@ -215,8 +215,9 @@ heap projection); everything above it in the chain is a theorem.
 - **Loop bodies that retag a local, and nested control flow.**
   `framework_preservation_kernel_while2` admits exactly `KernelInstrsW2` —
   straight-line instructions, `wloop 0` segments whose bodies are a
-  `WhileBody`, and rustc's `while` (`block { loop { pref; br_if 1; body; br 0
-  } }`, nothing between the two `end`s) — under the side condition
+  `WhileBody`, rustc's `while` (`block { loop { pref; br_if 1; body; br 0
+  } }`, nothing between the two `end`s), and the backedge + exit tail
+  (`block { loop { pref; br_if 0; br 1 } }`) — under the side condition
   `KernelInstrsW2.stable`: no loop body changes a local's label when lowered
   from the state the kernel reaches, and past a `while`'s exit site the body
   keeps the stable-register map list-identical — discharged outright by the
@@ -341,13 +342,13 @@ plus 8 in `crates/gpu/quanta-ir/src/wire/kani_proofs.rs`
 | 4 | Emitter Correctness | T100-T119, T200-T217, T300-T307, T400-T403, T500-T504, T600-T610, T700-T705, T1000-T1003, T1100-T1102 | 72 | all proven |
 | 3 | Memory Ordering | T900-T904, T1200-T1204, T1300-T1301, T1400-T1413, T1500-T1504 | 31 | all proven (scope limited -- see gap) |
 | 2 | Race Freedom | -- | 0 | analyzer not implemented |
-| 1 | Source Preservation | T590-T5B0 + Wasm corpus (505) | see [dashboard](index.md) | proven for the modeled subset (route a / step E) + the wasm route (step 059), each within its own boundary |
+| 1 | Source Preservation | T590-T5B0 + Wasm corpus (522) | see [dashboard](index.md) | proven for the modeled subset (route a / step E) + the wasm route (step 059), each within its own boundary |
 | -- | Cross-level total (Levels 3-5) | T100-T2060 | **147** | **all 147 proven** |
 
 Note: the 147 count is the level-gated total (Levels 3-5). The Level-1
 source-preservation theorems (T590-T5B0, route a / step E) are a separate chain
 tracked on the [dashboard](index.md), not folded into this 147. The wasm-route
-corpus (step 059) adds a further **505** Lean theorems, 0 sorries, in
+corpus (step 059) adds a further **522** Lean theorems, 0 sorries, in
 `specs/verify/lean/Quanta/Wasm/`; it is likewise not level-summed, and it is a
 second Level-1 arm rather than more of the first. T606-T607, T609
 are counted once at Level 4 (where they are proven) but are also relevant to

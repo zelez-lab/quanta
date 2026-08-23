@@ -18,6 +18,7 @@ corollary.
 -/
 
 import Quanta.Wasm.PreservationBlockWhile
+import Quanta.Wasm.PreservationBackedgeTail
 import Quanta.Wasm.SeededLocals
 
 namespace Quanta.Wasm
@@ -53,6 +54,12 @@ inductive KernelInstrsW2 : List WasmInstr → Type
       KernelInstrsW2 post →
       KernelInstrsW2 (.block 0 :: .wloop 0 :: (pref ++ [.brIf 1] ++ body2 ++ [.br 0])
                         ++ [.wend] ++ [] ++ [.wend] ++ post)
+  | backedge_tail_cons {pref post : List WasmInstr} :
+      StraightLineInstrs pref →
+      stackHeight 0 pref = some 1 →
+      KernelInstrsW2 post →
+      KernelInstrsW2 (.block 0 :: .wloop 0 :: (pref ++ [.brIf 0] ++ [.br 1])
+                        ++ [.wend] ++ [] ++ [.wend] ++ post)
 
 /-- Loop nesting depth — the fuel measure. A `while` counts one: its
     block and its loop spend the two units the bound already grants. -/
@@ -61,6 +68,7 @@ def KernelInstrsW2.depth : ∀ {instrs : List WasmInstr}, KernelInstrsW2 instrs 
   | _, .sl_cons _ rest_wf => rest_wf.depth
   | _, .while_cons _ _ post_wf => 1 + post_wf.depth
   | _, .block_while_cons _ _ _ _ post_wf => 1 + post_wf.depth
+  | _, .backedge_tail_cons _ _ post_wf => 1 + post_wf.depth
 
 /-- The side conditions, lowered from the state the kernel actually
     reaches (the same `LoopsTypeStable` on the shapes the earlier apex
@@ -96,6 +104,16 @@ def KernelInstrsW2.stable : ∀ {instrs : List WasmInstr},
               s1.localTy = s.localTy ∧
               s1.localReg = s_site.localReg ∧ s1.localTy = s_site.localTy ∧
               post_wf.stable (f + 1) frames { s1 with currentReg := [] }
+  | _, @backedge_tail_cons pref _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => True
+      | 1 => True
+      | f + 2 =>
+          ∀ s1 p2 bodyOps,
+            lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                (pref ++ [.brIf 0] ++ [.br 1]) = some (⟨s1, p2⟩, bodyOps) →
+            s1.localTy = s.localTy ∧
+            post_wf.stable (f + 1) frames { s1 with currentReg := [] }
 
 -- ════════════════════════════════════════════════════════════════════
 -- Seeding discharges the exit-side registers condition
@@ -266,6 +284,37 @@ def KernelInstrsW2.labelStable : ∀ {instrs : List WasmInstr},
                   (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some (⟨s1, p2⟩, bodyOps) →
               s1.localTy = s.localTy ∧ s1.localTy = s_site.localTy ∧
               post_wf.labelStable (f + 1) frames { s1 with currentReg := [] }
+  | _, @backedge_tail_cons pref _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => True
+      | 1 => True
+      | f + 2 =>
+          ∀ s1 p2 bodyOps,
+            lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                (pref ++ [.brIf 0] ++ [.br 1]) = some (⟨s1, p2⟩, bodyOps) →
+            s1.localTy = s.localTy ∧
+            post_wf.labelStable (f + 1) frames { s1 with currentReg := [] }
+
+/-- Under seeding, the backedge+tail body leaves the stable layer
+    list-identical: prefix (straight-line, seeded), then the pop, the
+    commit and the two allocations of the site. -/
+theorem backedgeTail_localReg_of_seeded
+    {fuel : Nat} {frames : List FrameKind} {pref : List WasmInstr}
+    (h_pref : StraightLineInstrs pref)
+    {s s1 : LowerState} {p2 : List PendingWrap} {bodyOps : List KernelOp}
+    (hnd : KeysNodup s.localReg) (h_seed : LocalsSeeded s pref)
+    (h_lb : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩
+        (pref ++ [.brIf 0] ++ [.br 1]) = some (⟨s1, p2⟩, bodyOps)) :
+    s1.localReg = s.localReg := by
+  obtain ⟨s_m, s0, s_c, svCond, cond, opsPref, opsCommit,
+          hl_pref, h_pop, h_commit, h_sp, _⟩ :=
+    backedgeTailBody_lowerP h_pref h_lb
+  simp only [LowerStateP.mk.injEq] at h_sp
+  obtain ⟨h_s1, _⟩ := h_sp
+  subst h_s1
+  show s_c.localReg = s.localReg
+  rw [LowerState.commit_localReg h_commit, LowerState.popSym_localReg h_pop]
+  exact lowerInstrs_localReg_seeded h_pref hnd h_seed hl_pref
 
 /-- Seeding turns the label-only conditions into the full `stable`: the
     rustc-while arm's `localReg` conjunct holds outright, and the
@@ -359,6 +408,42 @@ theorem KernelInstrsW2.stable_of_seeded :
           have h_seed_post : LocalsSeeded ({ s1 with currentReg := [] } : LowerState) post := by
             intro j hj
             have h_s := h_seed_shape j (Or.inr (Or.inr hj))
+            rw [lookupLocal_find?] at h_s ⊢
+            show ((s1.localReg.find? (fun p => p.fst = j)).map Prod.snd).isSome
+            rw [h_lr]
+            exact h_s
+          exact IH (f + 1) frames { s1 with currentReg := [] } h_post_lab
+            (show KeysNodup ({ s1 with currentReg := [] } : LowerState).localReg by
+              show KeysNodup s1.localReg; rw [h_lr]; exact hnd) h_seed_post
+  | @backedge_tail_cons pref post h_pref h_ht_pref post_wf IH =>
+      intro fuel frames s h_lab hnd h_seed
+      cases fuel with
+      | zero => trivial
+      | succ f0 =>
+      cases f0 with
+      | zero => trivial
+      | succ f =>
+          intro s1 p2 bodyOps h_lb
+          obtain ⟨h_lt, h_post_lab⟩ := h_lab s1 p2 bodyOps h_lb
+          have h_wl : writtenLocals (WasmInstr.block 0 :: .wloop 0 ::
+                (pref ++ [.brIf 0] ++ [.br 1]) ++ [.wend] ++ [] ++ [.wend] ++ post)
+              = writtenLocals pref ++ writtenLocals post := by
+            simp
+          have h_seed_pref : LocalsSeeded ({ s with currentReg := [] } : LowerState) pref := by
+            intro j hj
+            apply h_seed
+            rw [h_wl]
+            exact List.mem_append_left _ hj
+          have h_lr : s1.localReg = s.localReg :=
+            backedgeTail_localReg_of_seeded (s := { s with currentReg := [] })
+              h_pref hnd h_seed_pref h_lb
+          refine ⟨h_lt, ?_⟩
+          have h_seed_post : LocalsSeeded ({ s1 with currentReg := [] } : LowerState) post := by
+            intro j hj
+            have h_s : (s.lookupLocal j).isSome := by
+              apply h_seed
+              rw [h_wl]
+              exact List.mem_append_right _ hj
             rw [lookupLocal_find?] at h_s ⊢
             show ((s1.localReg.find? (fun p => p.fst = j)).map Prod.snd).isSome
             rw [h_lr]
@@ -590,6 +675,62 @@ theorem framework_preservation_kernel_while2
           ws'_p s'_p postOps' hw_p hl_p
       exact preservation_blockWhile_nIterExit f frames s kst layout h_kst_no_broke
         pref body2 post h_pref h_body2 n bodyOuts (h_nh_all (Fin.last n)) ws' h_post_eval
+        s1 flag bodyOps h_lb kstStates h_kst_start F_b h_ir_step h_ir_cont h_ir_exit
+        h_exit_ref h_flag_exit post_preserves s' ops hl
+  | @backedge_tail_cons pref post h_pref h_ht_pref h_post_wf IH =>
+      have h_depth : (KernelInstrsW2.backedge_tail_cons h_pref h_ht_pref h_post_wf).depth
+          = 1 + h_post_wf.depth := rfl
+      rw [h_depth] at h_fuel
+      obtain ⟨f, h_f⟩ : ∃ f, fuel = f + 1 := ⟨fuel - 1, by omega⟩
+      subst h_f
+      -- The WASM trace out of the skeleton.
+      obtain ⟨n, entries, bodyOuts, h_e0, h_step, h_cont, h_nh_all, h_exit, h_post_eval,
+              h_bound⟩ :=
+        evalInstrs_block_wloop_trace_of_eval h_no_branch h_no_halt
+          (backedgeTailBody_noStructured h_pref) (by trivial)
+          (backedgeTailBody_continuesOrExits1 h_pref) hw
+      -- The lowering, taken apart.
+      obtain ⟨s1, flag, bodyOps, postOps, h_lb, hlp, h_ops⟩ :=
+        blockBackedgeTail_lowerP h_pref hl
+      obtain ⟨h_flag_fresh, _⟩ := backedgeTailBody_flag_fresh h_pref h_lb
+      -- The side condition at this loop.
+      have h_st' := h_st
+      simp only [KernelInstrsW2.stable] at h_st'
+      obtain ⟨h_lt, h_st_post⟩ := h_st' s1 _ bodyOps h_lb
+      -- The IR trace, from the state after the flag's declaration.
+      have R0 : Refines (entries 0) { s with currentReg := [] }
+          { kst with rf := regWrite kst.rf flag (vBool false) } layout := by
+        rw [h_e0]
+        exact R.clear_current.regWrite_fresh h_flag_fresh _
+      obtain ⟨kstStates, F_b, h_kst_start, h_ir_step, h_ir_cont, h_ir_exit, h_exit_ref,
+              h_flag_exit, _⟩ :=
+        backedgeTailBody_ir_trace f frames pref h_pref h_ht_pref
+          { s with currentReg := [] } s1 flag bodyOps h_lb rfl h_lt layout
+          h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+          n entries bodyOuts h_step h_cont h_exit _ R0
+          (by rw [h_e0]; exact h_no_branch) (by rw [h_e0]; exact h_no_halt) h_kst_no_broke
+      -- Post IH in the `post_preserves` shape, at fuel `f + 1`.
+      have post_preserves :
+          ∀ {ws_p : WasmState} {kst_p : Quanta.KOps.State}
+            (_R_p : Refines ws_p { s1 with currentReg := [] } kst_p layout)
+            (_h_nb_p : ws_p.branchTarget = none)
+            (_h_nh_p : ws_p.halted = false)
+            (_h_nbk_p : kst_p.broke = false)
+            {ws'_p : WasmState} {s'_p : LowerState} {postOps' : List KernelOp}
+            (_hw_p : evalInstrs (f + 1) ws_p post = some ws'_p)
+            (_hl_p : lowerInstrsP (f + 1) frames ⟨{ s1 with currentReg := [] }, []⟩ post
+                       = some (⟨s'_p, []⟩, postOps')),
+          ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+            evalOps F kst_p postOps' = some kst'_p ∧
+            Refines ws'_p s'_p kst'_p layout ∧
+            BridgeClauses ws'_p kst'_p := by
+        intro ws_p kst_p R_p h_nb_p h_nh_p h_nbk_p ws'_p s'_p postOps' hw_p hl_p
+        have h_fuel_for_ih : f ≥ 2 + h_post_wf.depth := by omega
+        exact IH f ws_p _ kst_p R_p h_nb_p h_nh_p h_nbk_p h_fuel_for_ih h_st_post
+          ws'_p s'_p postOps' hw_p hl_p
+      exact preservation_blockLoop_nIterExit f frames s kst layout h_kst_no_broke
+        (pref ++ [.brIf 0] ++ [.br 1]) post (backedgeTailBody_noStructured h_pref)
+        n bodyOuts (h_nh_all (Fin.last n)) ws' h_post_eval
         s1 flag bodyOps h_lb kstStates h_kst_start F_b h_ir_step h_ir_cont h_ir_exit
         h_exit_ref h_flag_exit post_preserves s' ops hl
 
@@ -837,6 +978,17 @@ def KernelInstrsW2.labelStableCheck : ∀ {instrs : List WasmInstr},
               decide (s1.localTy = s.localTy) && decide (s1.localTy = s_site.localTy) &&
               post_wf.labelStableCheck (f + 1) frames { s1 with currentReg := [] }
           | _, _ => true
+  | _, @backedge_tail_cons pref _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => true
+      | 1 => true
+      | f + 2 =>
+          match lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                  (pref ++ [.brIf 0] ++ [.br 1]) with
+          | some (⟨s1, _⟩, _) =>
+              decide (s1.localTy = s.localTy) &&
+              post_wf.labelStableCheck (f + 1) frames { s1 with currentReg := [] }
+          | none => true
 
 /-- The check is sound: the lowering is a function, so the state the
     condition quantifies over is the one the check computed. -/
@@ -873,6 +1025,18 @@ theorem KernelInstrsW2.labelStable_of_check :
           simp only [KernelInstrsW2.labelStableCheck, hl_site, h_lb, Bool.and_eq_true,
                      decide_eq_true_eq] at h
           exact ⟨h.1.1, h.1.2, IH (f + 1) frames _ h.2⟩
+  | @backedge_tail_cons pref post h_pref h_ht_pref post_wf IH =>
+      intro fuel frames s h
+      cases fuel with
+      | zero => trivial
+      | succ f0 =>
+      cases f0 with
+      | zero => trivial
+      | succ f =>
+          intro s1 p2 bodyOps h_lb
+          simp only [KernelInstrsW2.labelStableCheck, h_lb, Bool.and_eq_true,
+                     decide_eq_true_eq] at h
+          exact ⟨h.1, IH (f + 1) frames _ h.2⟩
 
 -- ════════════════════════════════════════════════════════════════════
 -- End to end on a concrete kernel
@@ -954,6 +1118,62 @@ example
             (j, Quanta.KOps.Scalar.u32) ∈ sumDecls := by native_decide
         exact Or.inl ⟨.u32, h_all j hj⟩)
     ws' s' ops hw hl
+
+/-- The backedge + exit-tail witness: `i = 0; loop { i += 1; if i < n
+    { continue } else { break } }` — rustc's `block { loop { …; br_if 0;
+    br 1 } }`. The body computes the continue condition AFTER its
+    writes, so the rotated shape carries no register condition at all. -/
+def tailKernel : List WasmInstr :=
+  [.i32Const 0, .localSet 2,
+   .block 0, .wloop 0,
+     .localGet 2, .i32Const 1, .i32Add, .localSet 2,
+     .localGet 2, .localGet 1, .i32LtU,
+     .brIf 0,
+     .br 1,
+   .wend, .wend]
+
+def tailKernelWf : KernelInstrsW2 tailKernel :=
+  .sl_cons trivial (.sl_cons trivial
+    (.backedge_tail_cons
+      (pref := [.localGet 2, .i32Const 1, .i32Add, .localSet 2,
+                .localGet 2, .localGet 1, .i32LtU]) (post := [])
+      (by simp [StraightLineInstrs, StraightLineInstr])
+      rfl .empty))
+
+/-- Its depth is one. -/
+example : tailKernelWf.depth = 1 := rfl
+
+/-- Its label condition holds — by running the lowerings from the
+    seeded entry (local 2 declared). -/
+example : tailKernelWf.labelStableCheck 4 [] (seedLocals [(2, .u32)] sumEntry).1 = true := by
+  native_decide
+
+/-- `KernelOp` is a nested inductive; the pin compares through `Repr`. -/
+private def tailPinEq {α : Type} [Repr α] (a b : α) : Bool :=
+  toString (repr a) == toString (repr b)
+
+/-- The model's ops for the witness, op for op: the seeded entry binds
+    local 2 at register 1; the kernel's const init, then the flag's
+    declaration, the loop op — prefix, commit, cast, the backedge
+    branch with the exit (flag := true, Break) in its else arm — and the
+    no-op wrap of the empty block tail. The shape
+    `lower_backedge_exit_tail.rs` pins on production. -/
+example :
+    tailPinEq
+      (lowerInstrsP 4 [] ⟨(seedLocals [(2, .u32)] sumEntry).1, []⟩ tailKernel)
+      (some (⟨{ LowerState.empty with nextReg := 14,
+                                      localReg := [(2, 1), (1, 0)],
+                                      localTy := [(2, .i32), (1, .u32)] }, []⟩,
+        [.const 2 (.i32 0), .const 3 (.i32 0), .copy 3 2, .copy 1 3,
+         .const 13 (.bool false),
+         .loopOp
+           [.copy 4 1, .const 5 (.i32 1), .binOp 6 4 5 .add .i32,
+            .const 7 (.i32 0), .copy 7 6, .copy 1 7,
+            .copy 8 7, .copy 9 0, .cmp 10 8 9 .lt .bool,
+            .cast 11 10 .bool .u32, .cast 12 11 .u32 .bool,
+            .branch 12 [] [.const 13 (.bool true), .breakOp]],
+         .branch 13 [] []])) = true := by
+  native_decide
 
 /-- rustc's `i = 0; while i < n { i += 1 }` — the kernel of
     `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs` and

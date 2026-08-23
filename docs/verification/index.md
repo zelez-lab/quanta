@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 1104 — 599 across the core / companion chains + 505 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1121 — 599 across the core / companion chains + 522 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
@@ -112,7 +112,7 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 505
+                                step 059 — Lean `Quanta/Wasm/*`: 522
                                 theorems, 0 sorries.
                                 `framework_preservation_kernel_while2`
                                 over `KernelInstrsW2` = straight-line
@@ -273,7 +273,7 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **505 theorems, 0 sorries**
+Lean, `specs/verify/lean/Quanta/Wasm/` — **522 theorems, 0 sorries**
 (`grep -c '^theorem'`), every file imported from
 `specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
 `PreservationList`):
@@ -306,8 +306,11 @@ translator `lowerInstrsP` (`TranslatePending.lean` — Stage A's
 It is built from `framework_preservation_straightLine`
 (`PreservationBridge.lean`), the N-iteration loop theorem
 `preservation_evalInstrs_cons_wloop_nIterExit_core` (same file) for
-`do … while` segments, and `preservation_blockWhile_nIterExit`
-(`PreservationBlockWhile.lean`) for rustc's `while`. The earlier apexes
+`do … while` segments, and the body-agnostic block composition
+`preservation_blockLoop_nIterExit` (`PreservationBlockWhile.lean`) —
+each block-around-loop shape proves its own body trace and plugs in:
+rustc's `while` (`blockWhileBody_ir_trace`) and the backedge + exit
+tail (`backedgeTailBody_ir_trace`). The earlier apexes
 are corollaries: `framework_preservation_kernel_while` over
 `KernelInstrsW` (`framework_preservation_kernel_while_of_W2`) and L10v7's
 `framework_preservation_kernel` over `KernelInstrs`.
@@ -315,11 +318,17 @@ are corollaries: `framework_preservation_kernel_while` over
 **Scope — read this before quoting the number.** The apex admits
 exactly `KernelInstrsW2`: straight-line instructions; `wloop 0` segments
 whose bodies are a `WhileBody` (a straight-line prefix computing the
-continue condition, closed by `brIf 0` — the rotated `do … while`); and
-rustc's `while`, `block { loop { pref; br_if 1; body; br 0 } }` — a
+continue condition, closed by `brIf 0` — the rotated `do … while`); rustc's `while`, `block { loop { pref; br_if 1; body; br 0 } }` — a
 straight-line prefix computing the exit condition, the `br_if` to the
 enclosing block, a balanced straight-line body, the `br 0` continue,
-and nothing between the loop's `end` and the block's. Both loop shapes
+and nothing between the loop's `end` and the block's; and rustc's
+other loop, the backedge + exit tail `block { loop { pref; br_if 0;
+br 1 } }` — the body computes the continue condition after its
+writes, the `br_if 0` is the backedge and the unconditional `br 1` on
+its fall-through path the exit (production records the backedge on the
+loop frame and nests the tail in the branch's else arm;
+`PreservationBackedgeTail.lean`, pinned by
+`lower_backedge_exit_tail.rs`). All three loop shapes
 run **any number of iterations** the WASM fuel allows, with
 loop-carried state in locals (`i = i + 1` through `local.set`) or in
 memory. The theorem carries one **side condition**,

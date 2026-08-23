@@ -632,4 +632,28 @@ theorem blockBackedgeTail_lowerP
   obtain ⟨postOps, hlp, h_ops⟩ := blockLoop_lowerP h_ns hlb' hl
   exact ⟨_, _, bodyOps, postOps, hlb', hlp, h_ops⟩
 
+/-- The flag is fresh for the entry and below the post-body `nextReg`. -/
+theorem backedgeTailBody_flag_fresh
+    {fuel : Nat} {frames : List FrameKind} {pref : List WasmInstr}
+    (h_pref : StraightLineInstrs pref)
+    {s s1 : LowerState} {flag : Quanta.KOps.Reg} {bodyOps : List KernelOp}
+    (h_lb : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 0] ++ [.br 1])
+      = some (⟨s1, [{ levels := 1, cond := flag, flag := true, skip := 0 }]⟩, bodyOps)) :
+    s.nextReg ≤ flag ∧ flag < s1.nextReg := by
+  obtain ⟨s_m, s0, s_c, svCond, cond, opsPref, opsCommit,
+          hl_pref, h_pop, h_commit, h_sp, _⟩ :=
+    backedgeTailBody_lowerP h_pref h_lb
+  simp only [LowerStateP.mk.injEq, List.cons.injEq, PendingWrap.mk.injEq, and_true,
+             true_and] at h_sp
+  obtain ⟨h_s1, h_flag⟩ := h_sp
+  subst h_s1; subst h_flag
+  have h_nr_m : s.nextReg ≤ s_m.nextReg := lowerInstrs_nextReg_mono _ _ _ _ hl_pref
+  have h_pop_nr := LowerState.popSym_nextReg h_pop
+  have h_c_nr := LowerState.commit_nextReg_mono h_commit
+  constructor
+  · show s.nextReg ≤ s_c.nextReg + 1
+    omega
+  · show s_c.nextReg + 1 < s_c.nextReg + 2
+    omega
+
 end Quanta.Wasm
