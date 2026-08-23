@@ -543,10 +543,16 @@ impl Drop for ScratchDirGuard<'_> {
 /// variants into the `ShaderBinary` static and the runtime selects by
 /// compile target.
 pub struct ShaderCompileOutput {
+    /// SPIR-V module — the Vulkan backend's shader form.
     pub spirv: Option<Vec<u8>>,
+    /// Metal library built against the macOS SDK.
     pub metallib: Option<Vec<u8>>,
+    /// Metal library built against the iOS device SDK.
     pub metallib_ios: Option<Vec<u8>>,
+    /// Metal library built against the iOS simulator SDK.
     pub metallib_ios_sim: Option<Vec<u8>>,
+    /// WGSL source — the WebGPU backend's shader form; `None` when the
+    /// emitter could not cover this shader, which it explains on stderr.
     pub wgsl: Option<String>,
 }
 

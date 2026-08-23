@@ -13,6 +13,7 @@
 //!
 //! The crate compiles whole and featureless: both faces' entry points are
 //! plain functions, and each face crate calls only the ones it needs.
+#![deny(missing_docs)]
 
 #[allow(unused_imports)]
 mod binary;

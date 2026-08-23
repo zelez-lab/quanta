@@ -7,9 +7,13 @@
 /// a `&[T]` slice (storage-buffer array). `is_uniform` and `is_slice` are
 /// mutually exclusive; `ty` on a slice is the element type.
 pub struct ShaderParam {
+    /// The parameter's identifier, reused verbatim in the emitted shader.
     pub name: String,
+    /// The parameter's type — the element type when `is_slice`.
     pub ty: ShaderType,
+    /// The parameter was written `&T`: a uniform-buffer binding.
     pub is_uniform: bool,
+    /// The parameter was written `&[T]`: a storage-buffer array binding.
     pub is_slice: bool,
 }
 
@@ -43,11 +47,17 @@ pub struct ShaderVaryings {
 /// Shader types understood by the vertex/fragment emitters.
 #[derive(Clone, Copy)]
 pub enum ShaderType {
+    /// 32-bit float scalar.
     F32,
+    /// Two-component float vector.
     Vec2,
+    /// Three-component float vector.
     Vec3,
+    /// Four-component float vector.
     Vec4,
+    /// 4×4 float matrix.
     Mat4,
+    /// 3×3 float matrix.
     Mat3,
     /// 32-bit unsigned integer scalar — an integer vertex attribute
     /// (`AttributeFormat::UInt`) or a flat-interpolated varying.
@@ -55,6 +65,7 @@ pub enum ShaderType {
 }
 
 impl ShaderType {
+    /// This type's MSL spelling.
     pub fn msl_name(self) -> &'static str {
         match self {
             Self::F32 => "float",
@@ -67,6 +78,7 @@ impl ShaderType {
         }
     }
 
+    /// This type's WGSL spelling.
     pub fn wgsl_name(self) -> &'static str {
         match self {
             Self::F32 => "f32",
@@ -80,6 +92,8 @@ impl ShaderType {
     }
 }
 
+/// Map a type name written in a shader signature onto its `ShaderType`,
+/// erroring on anything the vertex/fragment emitters do not carry.
 pub fn shader_type_from_ident(name: &str) -> Result<ShaderType, String> {
     match name {
         "f32" => Ok(ShaderType::F32),
