@@ -13,6 +13,7 @@
 //!   the next commit.
 
 #![allow(dead_code)]
+#![deny(missing_docs)]
 
 use quanta_ir::{KernelDef, ScalarType};
 use wasmparser::{
@@ -41,6 +42,7 @@ pub struct ParamSlot {
     pub scalar: ScalarType,
 }
 
+/// Which binding a kernel parameter lowers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
     /// `*const T` — read-only buffer.
@@ -51,18 +53,34 @@ pub enum ParamKind {
     Scalar,
 }
 
+/// Everything the lowering pass needs about a kernel that the WASM
+/// itself doesn't carry: which export to lower and how its parameters
+/// bind.
 #[derive(Debug, Clone)]
 pub struct SideTable {
+    /// Export name of the kernel function in the WASM module.
     pub kernel_name: String,
+    /// One entry per WASM function parameter, in signature order.
     pub params: Vec<ParamSlot>,
+    /// Workgroup dimensions the kernel was declared with.
     pub workgroup_size: [u32; 3],
 }
 
+/// Why a WASM module could not be turned into a `KernelDef`.
 #[derive(Debug)]
 pub enum LoweringError {
+    /// The WASM binary could not be decoded.
     Parse(String),
+    /// No export in the module carries the requested kernel name.
     KernelNotFound(String),
-    UnsupportedOp { op: String, at: usize },
+    /// The body reached an instruction this pass does not translate.
+    UnsupportedOp {
+        /// The instruction's name, as wasmparser spells it.
+        op: String,
+        /// Byte offset of the instruction within the module.
+        at: usize,
+    },
+    /// The side table and the WASM signature describe different kernels.
     ShapeMismatch(String),
 }
 
@@ -114,26 +132,40 @@ pub struct Module {
     pub function_names: Vec<Option<String>>,
 }
 
+/// A WASM function type.
 #[derive(Debug, Clone)]
 pub struct FnSig {
+    /// Parameter types, in signature order.
     pub params: Vec<WasmTy>,
+    /// Result types, in return order.
     pub results: Vec<WasmTy>,
 }
 
+/// One WASM function: its signature, plus where its body comes from.
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    /// Index into `Module::types`.
     pub type_index: u32,
+    /// Imported from outside the module, or defined inside it.
     pub kind: FunctionKind,
 }
 
+/// Where a function's body lives — outside the module, or in it.
 #[derive(Debug, Clone)]
 pub enum FunctionKind {
     /// Imported (e.g. `import "quanta" "quark_id"`).
-    Imported { module: String, name: String },
+    Imported {
+        /// The import's module name (`quanta` for the kernel intrinsics).
+        module: String,
+        /// The imported function's name.
+        name: String,
+    },
     /// Defined locally — has a body of locals + instructions.
     Defined(FunctionBodyInfo),
 }
 
+/// A defined function's body: the locals it declares and the
+/// instruction stream that follows them.
 #[derive(Debug, Clone)]
 pub struct FunctionBodyInfo {
     /// Local declarations beyond parameters: `(count, type)` pairs as
@@ -146,16 +178,23 @@ pub struct FunctionBodyInfo {
     pub body_offset: usize,
 }
 
+/// One entry of the WASM import section.
 #[derive(Debug, Clone)]
 pub struct ImportInfo {
+    /// The import's module name.
     pub module: String,
+    /// The imported item's name.
     pub name: String,
+    /// What kind of item it brings in.
     pub kind: ImportKind,
 }
 
+/// What an import section entry brings into the module.
 #[derive(Debug, Clone)]
 pub enum ImportKind {
+    /// A function import — the intrinsic call sites lowering resolves.
     Function {
+        /// Index into `Module::types`.
         type_index: u32,
     },
     /// Memory / table / global imports — kernels generally don't have
@@ -164,23 +203,37 @@ pub enum ImportKind {
     Other(String),
 }
 
+/// One entry of the WASM export section.
 #[derive(Debug, Clone)]
 pub struct ExportInfo {
+    /// The exported name — what `find_kernel` matches against.
     pub name: String,
+    /// What kind of item is published under that name.
     pub kind: ExportKind,
 }
 
+/// What an export section entry publishes.
 #[derive(Debug, Clone)]
 pub enum ExportKind {
-    Function { index: u32 },
+    /// A function export — the shape every kernel entry point has.
+    Function {
+        /// WASM index of the exported function.
+        index: u32,
+    },
+    /// A memory / table / global export; the string is its kind.
     Other(String),
 }
 
+/// The WASM value types a Quanta kernel body can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmTy {
+    /// 32-bit integer — also the pointer width under wasm32.
     I32,
+    /// 64-bit integer.
     I64,
+    /// 32-bit float.
     F32,
+    /// 64-bit float.
     F64,
 }
 
@@ -206,123 +259,231 @@ impl WasmTy {
 #[derive(Debug, Clone)]
 pub enum RawInstr {
     // Locals
+    /// `local.get` — push the value of that local.
     LocalGet(u32),
+    /// `local.set` — pop the stack top into that local.
     LocalSet(u32),
+    /// `local.tee` — write that local, leaving the value on the stack.
     LocalTee(u32),
     // Constants
+    /// `i32.const` — push the immediate.
     I32Const(i32),
+    /// `i64.const` — push the immediate.
     I64Const(i64),
+    /// `f32.const` — push the immediate.
     F32Const(f32),
+    /// `f64.const` — push the immediate.
     F64Const(f64),
     // Integer arithmetic
+    /// `i32.add`.
     I32Add,
+    /// `i32.sub`.
     I32Sub,
+    /// `i32.mul`.
     I32Mul,
+    /// `i32.div_s` — signed division.
     I32DivS,
+    /// `i32.div_u` — unsigned division.
     I32DivU,
+    /// `i32.rem_s` — signed remainder.
     I32RemS,
+    /// `i32.rem_u` — unsigned remainder.
     I32RemU,
+    /// `i32.and`.
     I32And,
+    /// `i32.or`.
     I32Or,
+    /// `i32.xor`.
     I32Xor,
+    /// `i32.shl` — left shift.
     I32Shl,
+    /// `i32.shr_s` — arithmetic right shift.
     I32ShrS,
+    /// `i32.shr_u` — logical right shift.
     I32ShrU,
+    /// `i32.rotl` — rotate left.
     I32Rotl,
+    /// `i32.rotr` — rotate right.
     I32Rotr,
+    /// `i32.eq`.
     I32Eq,
+    /// `i32.ne`.
     I32Ne,
+    /// `i32.lt_s` — signed `<`.
     I32LtS,
+    /// `i32.lt_u` — unsigned `<`.
     I32LtU,
+    /// `i32.gt_s` — signed `>`.
     I32GtS,
+    /// `i32.gt_u` — unsigned `>`.
     I32GtU,
+    /// `i32.le_s` — signed `<=`.
     I32LeS,
+    /// `i32.le_u` — unsigned `<=`.
     I32LeU,
+    /// `i32.ge_s` — signed `>=`.
     I32GeS,
+    /// `i32.ge_u` — unsigned `>=`.
     I32GeU,
+    /// `i32.eqz` — 1 when the operand is zero, else 0.
     I32Eqz,
     // i64 arithmetic (mirrors the i32 surface; lowered with the
     // u64 width class).
+    /// `i64.add`.
     I64Add,
+    /// `i64.sub`.
     I64Sub,
+    /// `i64.mul`.
     I64Mul,
+    /// `i64.div_s` — signed division.
     I64DivS,
+    /// `i64.div_u` — unsigned division.
     I64DivU,
+    /// `i64.rem_s` — signed remainder.
     I64RemS,
+    /// `i64.rem_u` — unsigned remainder.
     I64RemU,
+    /// `i64.and`.
     I64And,
+    /// `i64.or`.
     I64Or,
+    /// `i64.xor`.
     I64Xor,
+    /// `i64.shl` — left shift.
     I64Shl,
+    /// `i64.shr_s` — arithmetic right shift.
     I64ShrS,
+    /// `i64.shr_u` — logical right shift.
     I64ShrU,
+    /// `i64.rotl` — rotate left.
     I64Rotl,
+    /// `i64.rotr` — rotate right.
     I64Rotr,
+    /// `i64.eq`.
     I64Eq,
+    /// `i64.ne`.
     I64Ne,
+    /// `i64.lt_s` — signed `<`.
     I64LtS,
+    /// `i64.lt_u` — unsigned `<`.
     I64LtU,
+    /// `i64.gt_s` — signed `>`.
     I64GtS,
+    /// `i64.gt_u` — unsigned `>`.
     I64GtU,
+    /// `i64.le_s` — signed `<=`.
     I64LeS,
+    /// `i64.le_u` — unsigned `<=`.
     I64LeU,
+    /// `i64.ge_s` — signed `>=`.
     I64GeS,
+    /// `i64.ge_u` — unsigned `>=`.
     I64GeU,
+    /// `i64.eqz` — 1 when the operand is zero, else 0.
     I64Eqz,
     // Float arithmetic
+    /// `f32.add`.
     F32Add,
+    /// `f32.sub`.
     F32Sub,
+    /// `f32.mul`.
     F32Mul,
+    /// `f32.div`.
     F32Div,
+    /// `f32.eq`.
     F32Eq,
+    /// `f32.ne`.
     F32Ne,
+    /// `f32.lt`.
     F32Lt,
+    /// `f32.gt`.
     F32Gt,
+    /// `f32.le`.
     F32Le,
+    /// `f32.ge`.
     F32Ge,
+    /// `f32.neg`.
     F32Neg,
+    /// `f32.abs`.
     F32Abs,
+    /// `f32.sqrt`.
     F32Sqrt,
+    /// `f32.min`.
     F32Min,
+    /// `f32.max`.
     F32Max,
     // f64 arithmetic — mirrors the f32 surface above. Lowered with
     // the F64 width class.
+    /// `f64.add`.
     F64Add,
+    /// `f64.sub`.
     F64Sub,
+    /// `f64.mul`.
     F64Mul,
+    /// `f64.div`.
     F64Div,
+    /// `f64.eq`.
     F64Eq,
+    /// `f64.ne`.
     F64Ne,
+    /// `f64.lt`.
     F64Lt,
+    /// `f64.gt`.
     F64Gt,
+    /// `f64.le`.
     F64Le,
+    /// `f64.ge`.
     F64Ge,
+    /// `f64.neg`.
     F64Neg,
+    /// `f64.abs`.
     F64Abs,
+    /// `f64.sqrt`.
     F64Sqrt,
+    /// `f64.min`.
     F64Min,
+    /// `f64.max`.
     F64Max,
     // Conversions
+    /// `i32.wrap_i64` — keep the low 32 bits.
     I32WrapI64,
+    /// `i64.extend_i32_s` — sign-extend.
     I64ExtendI32S,
+    /// `i64.extend_i32_u` — zero-extend.
     I64ExtendI32U,
+    /// `f32.convert_i32_s` — signed int → float.
     F32ConvertI32S,
+    /// `f32.convert_i32_u` — unsigned int → float.
     F32ConvertI32U,
+    /// `i32.trunc_f32_s` — float → signed int, toward zero.
     I32TruncF32S,
+    /// `i32.trunc_f32_u` — float → unsigned int, toward zero.
     I32TruncF32U,
+    /// `f32.reinterpret_i32` — bit cast.
     F32ReinterpretI32,
+    /// `i32.reinterpret_f32` — bit cast.
     I32ReinterpretF32,
     // f32 ↔ f64 width conversions.
+    /// `f64.promote_f32` — widen.
     F64PromoteF32,
+    /// `f32.demote_f64` — narrow, rounding to nearest.
     F32DemoteF64,
     // f64 ↔ int conversions.
+    /// `f64.convert_i32_s` — signed int → float.
     F64ConvertI32S,
+    /// `f64.convert_i32_u` — unsigned int → float.
     F64ConvertI32U,
+    /// `f64.convert_i64_s` — signed int → float.
     F64ConvertI64S,
+    /// `f64.convert_i64_u` — unsigned int → float.
     F64ConvertI64U,
+    /// `i32.trunc_f64_s` — float → signed int, toward zero.
     I32TruncF64S,
+    /// `i32.trunc_f64_u` — float → unsigned int, toward zero.
     I32TruncF64U,
+    /// `i64.trunc_f64_s` — float → signed int, toward zero.
     I64TruncF64S,
+    /// `i64.trunc_f64_u` — float → unsigned int, toward zero.
     I64TruncF64U,
     // Saturating float→int trunc (WASM 2.0 `nontrapping-fptoint`
     // proposal). Rustc emits these for `as` casts between f32/f64
@@ -332,51 +493,88 @@ pub enum RawInstr {
     // every backend (CPU eval uses Rust's saturating `as`, MSL
     // uses `int(min(max(x,…),…))`, SPIR-V uses
     // `OpConvertFToU/S`+clamp).
+    /// `i32.trunc_sat_f32_s` — float → signed int, toward zero, saturating.
     I32TruncSatF32S,
+    /// `i32.trunc_sat_f32_u` — float → unsigned int, toward zero, saturating.
     I32TruncSatF32U,
+    /// `i32.trunc_sat_f64_s` — float → signed int, toward zero, saturating.
     I32TruncSatF64S,
+    /// `i32.trunc_sat_f64_u` — float → unsigned int, toward zero, saturating.
     I32TruncSatF64U,
+    /// `i64.trunc_sat_f32_s` — float → signed int, toward zero, saturating.
     I64TruncSatF32S,
+    /// `i64.trunc_sat_f32_u` — float → unsigned int, toward zero, saturating.
     I64TruncSatF32U,
+    /// `i64.trunc_sat_f64_s` — float → signed int, toward zero, saturating.
     I64TruncSatF64S,
+    /// `i64.trunc_sat_f64_u` — float → unsigned int, toward zero, saturating.
     I64TruncSatF64U,
+    /// `f64.reinterpret_i64` — bit cast.
     F64ReinterpretI64,
+    /// `i64.reinterpret_f64` — bit cast.
     I64ReinterpretF64,
     // Memory
+    /// `i32.load`.
     I32Load {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i32.store`.
     I32Store {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `f32.load`.
     F32Load {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `f32.store`.
     F32Store {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `f64.load`.
     F64Load {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `f64.store`.
     F64Store {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i32.load8_u` — load one byte, zero-extended.
     I32Load8U {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i32.load8_s` — load one byte, sign-extended.
     I32Load8S {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i32.store8` — store the low byte.
     I32Store8 {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
     // i64 memory ops. `I64Load` / `I64Store` read/write 8-byte
@@ -384,71 +582,122 @@ pub enum RawInstr {
     // (Load32U / Load32S / Store32) mirror the i32 narrow load/
     // store family — used when rustc fuses `(u32_buf[i] as u64)`
     // into a single load+widen instruction.
+    /// `i64.load`.
     I64Load {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.store`.
     I64Store {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load32_u` — load four bytes, zero-extended.
     I64Load32U {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load32_s` — load four bytes, sign-extended.
     I64Load32S {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load16_u` — load two bytes, zero-extended.
     I64Load16U {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load16_s` — load two bytes, sign-extended.
     I64Load16S {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load8_u` — load one byte, zero-extended.
     I64Load8U {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.load8_s` — load one byte, sign-extended.
     I64Load8S {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.store32` — store the low four bytes.
     I64Store32 {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.store16` — store the low two bytes.
     I64Store16 {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
+    /// `i64.store8` — store the low byte.
     I64Store8 {
+        /// Static byte offset folded into the computed address.
         offset: u64,
+        /// Alignment hint — log2 of the expected byte alignment.
         align: u32,
     },
     // Control flow
+    /// `block` — a label branched to at its end.
     Block {
+        /// Number of result values the block type yields.
         ty_arity: u32,
     },
+    /// `loop` — a label branched to at its start.
     Loop {
+        /// Number of result values the block type yields.
         ty_arity: u32,
     },
+    /// `if` — enter the consequent when the popped condition is non-zero.
     If {
+        /// Number of result values the block type yields.
         ty_arity: u32,
     },
+    /// `else` — the alternative arm of the enclosing `if`.
     Else,
+    /// `end` — close the innermost block, loop, if, or function body.
     End,
+    /// `br` — branch out that many label levels.
     Br(u32),
+    /// `br_if` — the same branch, taken when the popped condition
+    /// is non-zero.
     BrIf(u32),
+    /// `return` — leave the function with the current stack results.
     Return,
     // Calls
+    /// `call` — invoke the function at that WASM index.
     Call(u32),
     // Misc
+    /// `drop` — pop and discard the stack top.
     Drop,
+    /// `select` — pop a condition and two values, keeping the first
+    /// when the condition is non-zero.
     Select,
+    /// `unreachable` — trap.
     Unreachable,
+    /// `nop` — no operation.
     Nop,
     /// Anything we haven't enumerated yet — captured so the lowering
     /// pass can produce a precise "this op isn't supported" error
