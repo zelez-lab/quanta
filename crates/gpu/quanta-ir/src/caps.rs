@@ -29,13 +29,19 @@ use crate::types::ScalarType;
 /// Which backend target a `BackendCaps` describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    /// Apple's Metal, emitted as MSL.
     Metal,
+    /// Vulkan, emitted as SPIR-V.
     Vulkan,
+    /// WebGPU, emitted as WGSL.
     WebGpu,
+    /// The software executor, which interprets the IR directly.
     Cpu,
 }
 
 impl Backend {
+    /// Lowercase target name, as it appears in validation reports and the
+    /// error messages built from them.
     pub fn name(self) -> &'static str {
         match self {
             Backend::Metal => "metal",
@@ -90,24 +96,40 @@ impl TypeSupport {
 /// Per-backend support matrix. One row per backend target.
 #[derive(Debug, Clone, Copy)]
 pub struct BackendCaps {
+    /// Which backend this row describes.
     pub backend: Backend,
+    /// Support for [`ScalarType::F16`].
     pub f16: TypeSupport,
+    /// Support for [`ScalarType::BF16`].
     pub bf16: TypeSupport,
+    /// Support for [`ScalarType::FP8E5M2`].
     pub fp8_e5m2: TypeSupport,
+    /// Support for [`ScalarType::FP8E4M3`].
     pub fp8_e4m3: TypeSupport,
+    /// Support for [`ScalarType::F32`].
     pub f32: TypeSupport,
+    /// Support for [`ScalarType::F64`].
     pub f64: TypeSupport,
+    /// Support for [`ScalarType::U8`].
     pub u8_: TypeSupport,
+    /// Support for [`ScalarType::U16`].
     pub u16_: TypeSupport,
+    /// Support for [`ScalarType::U32`].
     pub u32_: TypeSupport,
+    /// Support for [`ScalarType::U64`].
     pub u64_: TypeSupport,
+    /// Support for [`ScalarType::I8`].
     pub i8_: TypeSupport,
+    /// Support for [`ScalarType::I16`].
     pub i16_: TypeSupport,
+    /// Support for [`ScalarType::I32`].
     pub i32_: TypeSupport,
+    /// Support for [`ScalarType::I64`].
     pub i64_: TypeSupport,
     /// int4 (quantization storage payload). Always available via the
     /// packed-nibble emulated path.
     pub i4_: TypeSupport,
+    /// Support for [`ScalarType::Bool`].
     pub bool_: TypeSupport,
 }
 

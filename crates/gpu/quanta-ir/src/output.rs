@@ -15,9 +15,14 @@
 /// `KernelBinary::for_artifact`).
 #[derive(Debug, Clone)]
 pub struct CompilerOutput {
+    /// SPIR-V module for the Vulkan driver.
     pub spirv: Option<Vec<u8>>,
+    /// Metal library built for macOS.
     pub metallib: Option<Vec<u8>>,
+    /// Metal library built for an iOS device.
     pub metallib_ios: Option<Vec<u8>>,
+    /// Metal library built for the iOS simulator.
     pub metallib_ios_sim: Option<Vec<u8>>,
+    /// WGSL source for the WebGPU driver.
     pub wgsl: Option<String>,
 }

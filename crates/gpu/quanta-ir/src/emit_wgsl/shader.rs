@@ -266,6 +266,11 @@ fn emit_module_bindings(
     }
 }
 
+/// Emit WGSL for a vertex shader.
+///
+/// The output carries the slice / uniform / texture bindings, a
+/// `VertexInput` struct when the shader declares attributes, the varyings
+/// interface struct, and the `@vertex` entry point.
 pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     let mut out = String::new();
 
@@ -378,6 +383,12 @@ pub fn emit_vertex_shader(shader: &ShaderDef) -> Result<String, String> {
     Ok(out)
 }
 
+/// Emit WGSL for a fragment shader.
+///
+/// The output carries the slice / uniform / texture bindings, the varyings
+/// interface struct the vertex stage returns, and the `@fragment` entry
+/// point. Plain value params are rejected — a fragment's inputs come from
+/// the varyings struct.
 pub fn emit_fragment_shader(shader: &ShaderDef) -> Result<String, String> {
     reject_fragment_value_params(shader)?;
     let mut out = String::new();

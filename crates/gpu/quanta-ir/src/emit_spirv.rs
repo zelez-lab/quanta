@@ -32,14 +32,14 @@ pub fn emit(kernel: &crate::KernelDef) -> Result<Vec<u8>, String> {
     Ok(e.finalize())
 }
 
-/// Emit SPIR-V for a vertex shader from a [`ShaderDef`].
+/// Emit SPIR-V for a vertex shader from a [`crate::ShaderDef`].
 pub fn emit_vertex(shader: &crate::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
     e.emit_vertex_shader(shader)?;
     Ok(e.finalize())
 }
 
-/// Emit SPIR-V for a fragment shader from a [`ShaderDef`].
+/// Emit SPIR-V for a fragment shader from a [`crate::ShaderDef`].
 pub fn emit_fragment(shader: &crate::ShaderDef) -> Result<Vec<u8>, String> {
     let mut e = SpvEmitter::new();
     e.emit_fragment_shader(shader)?;

@@ -5,6 +5,11 @@ use std::collections::HashMap;
 
 use super::ops::emit_op;
 
+/// Emit MSL source from a [`KernelDef`].
+///
+/// The output is a complete Metal source file: the narrow-float conversion
+/// helpers the kernel needs, translated device functions, and the compute
+/// entry point with its buffer / texture / threadgroup bindings.
 pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     crate::types::reject_sample_on_storage(kernel)?;
     crate::types::reject_write_on_read_only(kernel)?;

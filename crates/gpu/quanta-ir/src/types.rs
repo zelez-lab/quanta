@@ -8,11 +8,12 @@ use crate::quant::QuantScheme;
 /// Scalar types supported in GPU kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
+    /// IEEE 754 binary16 (e5m10) — 1 sign / 5 exponent / 10 mantissa bits.
     F16,
     /// bfloat16: 1 sign / 8 exponent / 7 mantissa bits — the truncated
     /// top 16 bits of an f32, giving f32-range at half width. Native on
     /// backends that support it, otherwise computed in f32 with
-    /// round-on-store. Encoding differs from [`F16`] (e5m10); only the
+    /// round-on-store. Encoding differs from [`ScalarType::F16`] (e5m10); only the
     /// bit-pattern conversions distinguish the two.
     BF16,
     /// fp8 E5M2: 1 sign / 5 exponent (bias 15) / 2 mantissa. The wider-
@@ -23,15 +24,26 @@ pub enum ScalarType {
     /// fp8 E4M3: 1 sign / 4 exponent (bias 7) / 3 mantissa. The higher-
     /// precision 8-bit float (used for weights/activations).
     FP8E4M3,
+    /// IEEE 754 binary32 — the default float on every backend.
     F32,
+    /// IEEE 754 binary64. The transcendentals listed by
+    /// [`is_f64_transcendental`] have no SPIR-V form at this width.
     F64,
+    /// Unsigned 8-bit integer.
     U8,
+    /// Unsigned 16-bit integer.
     U16,
+    /// Unsigned 32-bit integer — the natural GPU word.
     U32,
+    /// Unsigned 64-bit integer.
     U64,
+    /// Signed 8-bit integer.
     I8,
+    /// Signed 16-bit integer.
     I16,
+    /// Signed 32-bit integer.
     I32,
+    /// Signed 64-bit integer.
     I64,
     /// Signed 4-bit integer. A *logical* 4-bit element in the range
     /// [-8, 7]; physical storage packs 8 nibbles per 32-bit word (the
@@ -39,6 +51,7 @@ pub enum ScalarType {
     /// Computed in i32/f32; used as the storage payload for int4 symmetric
     /// quantization.
     I4,
+    /// Boolean. A register-only type — buffers carry it as an integer.
     Bool,
 }
 
@@ -64,6 +77,7 @@ pub enum MatrixFrag {
 /// Constant value.
 #[derive(Debug, Clone, Copy)]
 pub enum ConstValue {
+    /// Raw half-precision bit pattern.
     F16(u16),
     /// Raw bfloat16 bit pattern (top 16 bits of the f32 encoding).
     BF16(u16),
@@ -71,31 +85,54 @@ pub enum ConstValue {
     FP8E5M2(u8),
     /// Raw fp8 E4M3 bit pattern.
     FP8E4M3(u8),
+    /// Single-precision literal.
     F32(f32),
+    /// Double-precision literal.
     F64(f64),
+    /// Unsigned literal — also carries the narrower unsigned widths.
     U32(u32),
+    /// Unsigned 64-bit literal.
     U64(u64),
+    /// Signed literal — also carries the narrower signed widths.
     I32(i32),
+    /// Signed 64-bit literal.
     I64(i64),
+    /// Boolean literal.
     Bool(bool),
 }
 
 /// Kernel parameter — how function arguments map to GPU bindings.
 #[derive(Debug, Clone)]
 pub enum KernelParam {
+    /// `&[T]` — a read-only storage buffer.
     FieldRead {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Element type of the buffer.
         scalar_type: ScalarType,
     },
+    /// `&mut [T]` — a read-write storage buffer. These are the slots
+    /// [`field_write_mask`] reports.
     FieldWrite {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Element type of the buffer.
         scalar_type: ScalarType,
     },
+    /// A scalar passed by value, delivered as a push constant / uniform.
     Constant {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Type of the scalar.
         scalar_type: ScalarType,
     },
     /// `&Texture2D<T>` — read-only texel access. A storage image whose
@@ -105,34 +142,51 @@ pub enum KernelParam {
     /// form; unlike it, packed-RGBA8 reads need no Metal read-write
     /// texture tier.
     Texture2DRead {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Texel scalar, which fixes the storage format — see
+        /// [`ScalarType::spirv_storage_image_format`].
         scalar_type: ScalarType,
     },
     /// `&mut Texture2D<T>` — read-write texel access on a storage image.
     Texture2DReadWrite {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Texel scalar, which fixes the storage format — see
+        /// [`ScalarType::spirv_storage_image_format`].
         scalar_type: ScalarType,
     },
     /// `&Sampled2D<T>` — sampled access through the fixed
     /// NEAREST/CLAMP_TO_EDGE sampler (combined image+sampler binding).
     Sampled2D {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Sampled type. Only `f32` is wired — see
+        /// [`reject_sampled_u32_texture`].
         scalar_type: ScalarType,
     },
     /// `&Sampled3D<T>` — the 3D sampled form. There is no 3D texel form
     /// yet; `&Texture3D` is a parse error until one is wired.
     Sampled3D {
+        /// Parameter name, reused as the binding's name in emitted source.
         name: String,
+        /// Binding slot: the positional parameter index, shared across the
+        /// buffer / texture / constant namespace.
         slot: u32,
+        /// Sampled type.
         scalar_type: ScalarType,
     },
 }
 
-/// Bit N set = binding slot N is a [`KernelParam::FieldWrite`] — the
-/// kernel may WRITE (and read: `&mut [T]` is read-write) that buffer.
 /// One cooperative multiply-accumulate a kernel performs, with the element
 /// type of each operand resolved through the fragment registers that feed
 /// it: `D[m×n] = A[m×k] · B[k×n] + C[m×n]`. This is the unit a device
@@ -141,12 +195,22 @@ pub enum KernelParam {
 /// per-op `ty` fields are not a shape by themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoopMmaUse {
+    /// Rows of `A` and of the accumulator.
     pub m: u8,
+    /// Columns of `B` and of the accumulator.
     pub n: u8,
+    /// Shared inner dimension — columns of `A`, rows of `B`.
     pub k: u8,
+    /// Element type of the `A` fragment, resolved through the register that
+    /// wrote it.
     pub a_ty: ScalarType,
+    /// Element type of the `B` fragment, resolved through the register that
+    /// wrote it.
     pub b_ty: ScalarType,
+    /// Element type of the `C` accumulator, resolved through the register
+    /// that wrote it.
     pub c_ty: ScalarType,
+    /// Element type of the `D` result the op writes.
     pub result_ty: ScalarType,
 }
 
@@ -156,21 +220,31 @@ pub struct CoopMmaUse {
 /// `Accumulator` → `C` or `D`) has that type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoopFragUse {
+    /// Which operand slot of `D = A·B + C` the fragment fills.
     pub frag: MatrixFrag,
+    /// Rows of `A` and of the accumulator.
     pub m: u8,
+    /// Columns of `B` and of the accumulator.
     pub n: u8,
+    /// Shared inner dimension — columns of `A`, rows of `B`.
     pub k: u8,
+    /// Element type of the fragment.
     pub ty: ScalarType,
 }
 
 /// Everything a kernel asks of a device's cooperative-matrix support.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoopMatrixUses {
+    /// Every distinct multiply-accumulate shape the kernel performs.
     pub mmas: Vec<CoopMmaUse>,
+    /// Every distinct fragment shape the kernel loads or stores, including
+    /// those that feed no MMA.
     pub frags: Vec<CoopFragUse>,
 }
 
 impl CoopMatrixUses {
+    /// Whether the kernel asks nothing of cooperative-matrix support, in
+    /// which case a driver can skip the shape match entirely.
     pub fn is_empty(&self) -> bool {
         self.mmas.is_empty() && self.frags.is_empty()
     }
@@ -274,6 +348,8 @@ pub fn cooperative_matrix_uses(def: &KernelDef) -> CoopMatrixUses {
     out
 }
 
+/// Bit N set = binding slot N is a [`KernelParam::FieldWrite`] — the
+/// kernel may WRITE (and read: `&mut [T]` is read-write) that buffer.
 /// Clear bits with a bound field are read-only. The deferred lane uses
 /// this to order only genuinely dependent dispatches; drivers stamp it
 /// onto the `Wave` at JIT time, the `#[quanta::kernel]` wrapper stamps
@@ -293,54 +369,88 @@ pub fn field_write_mask(def: &KernelDef) -> u16 {
 /// Binary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
+    /// `a + b`.
     Add,
+    /// `a - b`.
     Sub,
+    /// `a * b`.
     Mul,
+    /// `a / b`. Integer division by zero yields 0 on every backend — the
+    /// emitters substitute a safe divisor rather than trusting hardware.
     Div,
+    /// `a % b`. Integer remainder by zero yields 0, by the same guard as
+    /// [`BinOp::Div`].
     Rem,
+    /// Bitwise `a & b`. Integer-only.
     BitAnd,
+    /// Bitwise `a | b`. Integer-only.
     BitOr,
+    /// Bitwise `a ^ b`. Integer-only.
     BitXor,
+    /// Left shift `a << b`. Integer-only.
     Shl,
+    /// Right shift `a >> b` — arithmetic for signed types, logical for
+    /// unsigned. Integer-only.
     Shr,
     /// Rotate left by k bits (k taken mod bit-width). Integer-only.
     Rotl,
     /// Rotate right by k bits (k taken mod bit-width). Integer-only.
     Rotr,
+    /// Addition that clamps at the type's bounds instead of wrapping.
     SatAdd,
+    /// Subtraction that clamps at the type's bounds instead of wrapping.
     SatSub,
 }
 
 /// Unary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
+    /// Arithmetic negation `-a`.
     Neg,
+    /// Bitwise complement `!a`. Integer-only.
     BitNot,
+    /// Boolean negation `!a`. Operates on a [`ScalarType::Bool`] register.
     LogicalNot,
 }
 
 /// Comparison operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
+    /// `a == b`.
     Eq,
+    /// `a != b`.
     Ne,
+    /// `a < b`.
     Lt,
+    /// `a <= b`.
     Le,
+    /// `a > b`.
     Gt,
+    /// `a >= b`.
     Ge,
 }
 
 /// Atomic operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomicOp {
+    /// Fetch-and-add; the destination register receives the old value.
     Add,
+    /// Fetch-and-subtract; the destination register receives the old value.
     Sub,
+    /// Store the smaller of the current and given value, returning the old.
     Min,
+    /// Store the larger of the current and given value, returning the old.
     Max,
+    /// Fetch-and-`and`, returning the old value.
     And,
+    /// Fetch-and-`or`, returning the old value.
     Or,
+    /// Fetch-and-`xor`, returning the old value.
     Xor,
+    /// Unconditional swap, returning the old value.
     Exchange,
+    /// Compare-and-swap. Reached through [`KernelOp::AtomicCas`], which
+    /// carries the extra expected/desired operands and the two orderings.
     CompareExchange,
 }
 
@@ -361,37 +471,65 @@ pub enum AtomicOp {
 ///   - LLVM: `__atomic_thread_fence` with the matching `__ATOMIC_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryOrder {
+    /// No ordering beyond the operation's own atomicity.
     Relaxed,
+    /// Later reads and writes cannot be hoisted above this one.
     Acquire,
+    /// Earlier reads and writes cannot sink below this one.
     Release,
+    /// Both [`MemoryOrder::Acquire`] and [`MemoryOrder::Release`].
     AcqRel,
+    /// Sequential consistency — a single total order over all such
+    /// operations. The implicit ordering of every pre-existing atomic.
     SeqCst,
 }
 
 /// Built-in math functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathFn {
+    /// Sine, argument in radians.
     Sin,
+    /// Cosine, argument in radians.
     Cos,
+    /// Tangent, argument in radians.
     Tan,
+    /// Arcsine, result in radians.
     Asin,
+    /// Arccosine, result in radians.
     Acos,
+    /// Arctangent, result in radians.
     Atan,
+    /// Two-argument arctangent `atan2(y, x)`, quadrant-correct.
     Atan2,
+    /// Square root.
     Sqrt,
+    /// Reciprocal square root `1/sqrt(x)`, the hardware's fast form.
     Rsqrt,
+    /// `e^x`.
     Exp,
+    /// `2^x`.
     Exp2,
+    /// Natural logarithm.
     Log,
+    /// Base-2 logarithm.
     Log2,
+    /// `pow(x, y)`.
     Pow,
+    /// Absolute value.
     Abs,
+    /// Two-argument minimum.
     Min,
+    /// Two-argument maximum.
     Max,
+    /// Three-argument `clamp(x, lo, hi)`.
     Clamp,
+    /// Round towards negative infinity.
     Floor,
+    /// Round towards positive infinity.
     Ceil,
+    /// Round to the nearest integer.
     Round,
+    /// Fused multiply-add `a * b + c`, rounded once.
     Fma,
 }
 
@@ -422,113 +560,189 @@ pub fn is_f64_transcendental(func: MathFn) -> bool {
 #[derive(Debug, Clone)]
 pub enum KernelOp {
     // Memory
+    /// Read one element out of a bound buffer.
     Load {
+        /// Register receiving the loaded element.
         dst: Reg,
+        /// Binding slot of the buffer.
         field: u32,
+        /// Element index into the buffer.
         index: Reg,
+        /// Element type — narrow types unpack from their storage word here.
         ty: ScalarType,
     },
+    /// Write one element into a bound `&mut [T]` buffer.
     Store {
+        /// Binding slot of the buffer.
         field: u32,
+        /// Element index into the buffer.
         index: Reg,
+        /// Register holding the value to write.
         src: Reg,
+        /// Element type — narrow types pack into their storage word here.
         ty: ScalarType,
     },
+    /// Declare a fixed-size workgroup-shared array.
     SharedDecl {
+        /// Shared-array id, the handle the shared load/store ops address.
         id: u32,
+        /// Element type of the array.
         ty: ScalarType,
+        /// Number of elements, fixed at compile time.
         count: u32,
     },
+    /// Read one element out of a shared array.
     SharedLoad {
+        /// Register receiving the loaded element.
         dst: Reg,
+        /// Shared-array id from a `SharedDecl` / `SharedDeclDyn`.
         id: u32,
+        /// Element index into the array.
         index: Reg,
+        /// Element type.
         ty: ScalarType,
     },
+    /// Write one element into a shared array.
     SharedStore {
+        /// Shared-array id from a `SharedDecl` / `SharedDeclDyn`.
         id: u32,
+        /// Element index into the array.
         index: Reg,
+        /// Register holding the value to write.
         src: Reg,
+        /// Element type.
         ty: ScalarType,
     },
 
     // Arithmetic
+    /// Two-operand arithmetic or bitwise operation.
     BinOp {
+        /// Register receiving the result.
         dst: Reg,
+        /// Left operand.
         a: Reg,
+        /// Right operand.
         b: Reg,
+        /// Which operation to perform.
         op: BinOp,
+        /// Type both operands and the result share.
         ty: ScalarType,
     },
+    /// One-operand arithmetic or bitwise operation.
     UnaryOp {
+        /// Register receiving the result.
         dst: Reg,
+        /// The operand.
         a: Reg,
+        /// Which operation to perform.
         op: UnaryOp,
+        /// Type the operand and the result share.
         ty: ScalarType,
     },
+    /// Compare two registers, producing a [`ScalarType::Bool`] result.
     Cmp {
+        /// Register receiving the boolean result.
         dst: Reg,
+        /// Left operand.
         a: Reg,
+        /// Right operand.
         b: Reg,
+        /// Which comparison to perform.
         op: CmpOp,
+        /// Type of the two operands — the result is always `Bool`.
         ty: ScalarType,
     },
 
     // Control flow
+    /// Structured `if`/`else`. Both arms are nested op lists, so the IR
+    /// stays a tree rather than a basic-block graph.
     Branch {
+        /// Boolean register selecting the arm.
         cond: Reg,
+        /// Ops run when `cond` is true.
         then_ops: Vec<KernelOp>,
+        /// Ops run when `cond` is false; empty for a bare `if`.
         else_ops: Vec<KernelOp>,
     },
+    /// Counted loop running `count` iterations, exitable with `Break`.
     Loop {
+        /// Register holding the trip count.
         count: Reg,
+        /// Register the loop writes with the current iteration index.
         iter_reg: Reg,
+        /// Ops making up the loop body.
         body: Vec<KernelOp>,
     },
 
     // Math
+    /// Call a built-in math function.
     MathCall {
+        /// Register receiving the result.
         dst: Reg,
+        /// Which built-in to call.
         func: MathFn,
+        /// Argument registers, in the function's own order.
         args: Vec<Reg>,
+        /// Type the arguments and result share.
         ty: ScalarType,
     },
 
     // Thread indexing
+    /// This thread's global index across the whole dispatch.
     QuarkId {
+        /// Register receiving the index.
         dst: Reg,
     },
+    /// Total number of threads in the dispatch.
     QuarkCount {
+        /// Register receiving the count.
         dst: Reg,
     },
+    /// This thread's index within its workgroup.
     ProtonId {
+        /// Register receiving the index.
         dst: Reg,
     },
+    /// This workgroup's index within the dispatch.
     NucleusId {
+        /// Register receiving the index.
         dst: Reg,
     },
+    /// Number of threads per workgroup — the kernel's `workgroup_size`
+    /// product.
     ProtonSize {
+        /// Register receiving the size.
         dst: Reg,
     },
 
     // Synchronization
+    /// Workgroup execution + memory barrier: every thread in the workgroup
+    /// waits here, and shared writes made before it are visible after.
     Barrier,
     /// Memory fence with explicit ordering. Applies to the storage class
     /// implied by surrounding atomic ops; backends emit per-spec
     /// equivalents (see `MemoryOrder` doc).
     Fence {
+        /// Ordering the fence establishes.
         order: MemoryOrder,
     },
     /// Atomic read-modify-write. The `order` field was added in D-ext.3b.1
     /// to express weaker memory orderings; existing call sites pass
     /// `MemoryOrder::SeqCst` to preserve the prior implicit semantics.
     AtomicOp {
+        /// Register receiving the value held before the update.
         dst: Reg,
+        /// Binding slot of the target buffer.
         field: u32,
+        /// Element index into the buffer.
         index: Reg,
+        /// Register holding the operand applied to the current value.
         val: Reg,
+        /// Which read-modify-write to perform.
         op: AtomicOp,
+        /// Element type.
         ty: ScalarType,
+        /// Memory ordering of the update.
         order: MemoryOrder,
     },
     /// Atomic read-modify-write on **workgroup-shared memory** at
@@ -545,12 +759,19 @@ pub enum KernelOp {
     ///   - WGSL: `atomicAdd(&shared[idx], val)`.
     ///   - LLVM: `atomicrmw add ptr addrspace(3)`.
     SharedAtomicOp {
+        /// Register receiving the value held before the update.
         dst: Reg,
+        /// Shared-array id from a `SharedDecl`, NOT a buffer slot.
         slot: u32,
+        /// Element index into the shared array.
         index: Reg,
+        /// Register holding the operand applied to the current value.
         val: Reg,
+        /// Which read-modify-write to perform.
         op: AtomicOp,
+        /// Element type.
         ty: ScalarType,
+        /// Memory ordering of the update.
         order: MemoryOrder,
     },
     /// Compare-and-swap. `success_order` and `failure_order` were
@@ -564,45 +785,79 @@ pub enum KernelOp {
     /// construction sites pass the same `MemoryOrder` for both
     /// fields to preserve the prior single-ordering semantics.
     AtomicCas {
+        /// Register receiving the value held before the attempt, which the
+        /// caller compares against `expected` to learn whether it swapped.
         dst: Reg,
+        /// Binding slot of the target buffer.
         field: u32,
+        /// Element index into the buffer.
         index: Reg,
+        /// Value the swap is conditional on.
         expected: Reg,
+        /// Value written when the comparison succeeds.
         desired: Reg,
+        /// Element type.
         ty: ScalarType,
+        /// Ordering applied when the swap happens.
         success_order: MemoryOrder,
+        /// Ordering applied when the comparison fails — must be no stronger
+        /// than `success_order`, and neither `Release` nor `AcqRel`.
         failure_order: MemoryOrder,
     },
 
     // Warp/wave
+    /// Butterfly exchange within the subgroup: this lane reads the value
+    /// held by lane `self ^ lane_delta`.
     WaveShuffle {
+        /// Register receiving the partner lane's value.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// XOR mask picking the partner lane.
         lane_delta: Reg,
+        /// Type of the exchanged value.
         ty: ScalarType,
     },
+    /// Bitmask of the subgroup lanes whose predicate is true, low bit =
+    /// lane 0. Truncated to 32 bits.
     WaveBallot {
+        /// Register receiving the mask.
         dst: Reg,
+        /// Per-lane predicate.
         predicate: Reg,
     },
+    /// Whether the predicate holds in at least one lane of the subgroup.
     WaveAny {
+        /// Register receiving the boolean result.
         dst: Reg,
+        /// Per-lane predicate.
         predicate: Reg,
     },
+    /// Whether the predicate holds in every lane of the subgroup.
     WaveAll {
+        /// Register receiving the boolean result.
         dst: Reg,
+        /// Per-lane predicate.
         predicate: Reg,
     },
 
     // Type conversion
+    /// Value-preserving conversion between scalar types — `as` in the DSL.
     Cast {
+        /// Register receiving the converted value.
         dst: Reg,
+        /// Register holding the value to convert.
         src: Reg,
+        /// Type the source register holds.
         from: ScalarType,
+        /// Type to convert to.
         to: ScalarType,
     },
+    /// Materialize a literal into a register.
     Const {
+        /// Register receiving the literal.
         dst: Reg,
+        /// The literal, which also fixes the register's type.
         value: ConstValue,
     },
 
@@ -612,50 +867,91 @@ pub enum KernelOp {
     // per-channel). `src`/`dst` of Quantize are f32→int code; Dequantize is
     // int code→f32. zero_point is 0 for Symmetric but carried so Affine is
     // a value change, not a shape change.
+    /// Map an f32 value to its integer code under `scheme`.
     Quantize {
+        /// Register receiving the integer code.
         dst: Reg,
+        /// Register holding the f32 value.
         src: Reg,
+        /// Register holding the affine scale.
         scale: Reg,
+        /// Register holding the affine zero point — 0 under a symmetric
+        /// scheme, but carried so that affine is a value change only.
         zero_point: Reg,
+        /// Level and mode the mapping follows.
         scheme: QuantScheme,
     },
+    /// Map an integer code back to f32 under `scheme`.
     Dequantize {
+        /// Register receiving the f32 value.
         dst: Reg,
+        /// Register holding the integer code.
         src: Reg,
+        /// Register holding the affine scale.
         scale: Reg,
+        /// Register holding the affine zero point — 0 under a symmetric
+        /// scheme, but carried so that affine is a value change only.
         zero_point: Reg,
+        /// Level and mode the mapping follows.
         scheme: QuantScheme,
     },
 
     // Vector
+    /// Pack scalar registers into a vector register; the component count
+    /// sets the vector's width.
     VecConstruct {
+        /// Register receiving the vector.
         dst: Reg,
+        /// Component registers, in order.
         components: Vec<Reg>,
+        /// Element type of every component.
         ty: ScalarType,
     },
+    /// Read one component out of a vector register.
     VecExtract {
+        /// Register receiving the component.
         dst: Reg,
+        /// Register holding the vector.
         vec: Reg,
+        /// Zero-based component index.
         component: u8,
+        /// Element type of the vector.
         ty: ScalarType,
     },
+    /// Multiply two matrix-typed registers.
     MatMul {
+        /// Register receiving the product.
         dst: Reg,
+        /// Left operand.
         a: Reg,
+        /// Right operand.
         b: Reg,
+        /// Square dimension of the operands. Carried for completeness — no
+        /// emitter reads it, since the operand registers already carry their
+        /// own matrix type.
         size: u8,
+        /// Element type.
         ty: ScalarType,
     },
     /// Cooperative matrix multiply-accumulate (tensor cores / SIMD group matrix).
     /// D = A * B + C where A, B, C, D are SIMD-group-scoped matrices.
     CooperativeMMA {
+        /// Fragment register receiving `D`.
         dst: Reg,
+        /// Fragment register holding `A`.
         a: Reg,
+        /// Fragment register holding `B`.
         b: Reg,
+        /// Fragment register holding the `C` accumulator.
         c: Reg,
+        /// Rows of `A` and of the accumulator.
         m: u8,
+        /// Columns of `B` and of the accumulator.
         n: u8,
+        /// Shared inner dimension — columns of `A`, rows of `B`.
         k: u8,
+        /// Element type of `D`. Operand types are resolved through the
+        /// registers that wrote them, since hardware forms are mixed.
         ty: ScalarType,
     },
     /// Load a cooperative-matrix fragment from a buffer. The fragment is a
@@ -668,118 +964,205 @@ pub enum KernelOp {
     /// backend lowers to its native fragment load (`simdgroup_load` /
     /// `OpCooperativeMatrixLoadKHR`).
     CooperativeMatrixLoad {
+        /// Fragment register receiving the tile.
         dst: Reg,
+        /// Buffer binding slot, or a `SharedDecl` id when `from_shared`.
         field: u32,
+        /// Element index of the tile's top-left corner.
         index: Reg,
+        /// Row stride of the source matrix, in elements.
         stride: Reg,
+        /// Which operand slot of `D = A·B + C` the tile fills.
         frag: MatrixFrag,
+        /// Whether `field` names threadgroup memory rather than a buffer.
         from_shared: bool,
+        /// Rows of `A` and of the accumulator.
         m: u8,
+        /// Columns of `B` and of the accumulator.
         n: u8,
+        /// Shared inner dimension — columns of `A`, rows of `B`.
         k: u8,
+        /// Element type of the fragment.
         ty: ScalarType,
     },
     /// Store a cooperative-matrix accumulator fragment to a buffer. Mirrors
     /// `CooperativeMatrixLoad`; `src` is the fragment register, written as an
     /// `m×n` tile at `(field, index)` with row `stride`.
     CooperativeMatrixStore {
+        /// Buffer binding slot to write.
         field: u32,
+        /// Element index of the tile's top-left corner.
         index: Reg,
+        /// Row stride of the destination matrix, in elements.
         stride: Reg,
+        /// Fragment register holding the accumulator tile.
         src: Reg,
+        /// Rows of the accumulator.
         m: u8,
+        /// Columns of the accumulator.
         n: u8,
+        /// Shared inner dimension of the GEMM the tile came from.
         k: u8,
+        /// Element type of the fragment.
         ty: ScalarType,
     },
 
     // Texture
+    /// Sample a `&Sampled2D` through the fixed NEAREST/CLAMP_TO_EDGE
+    /// sampler. Refused against a texel slot — see
+    /// [`reject_sample_on_storage`].
     TextureSample2D {
+        /// Register receiving the sampled texel.
         dst: Reg,
+        /// Binding slot of the texture.
         texture: u32,
+        /// Horizontal coordinate.
         x: Reg,
+        /// Vertical coordinate.
         y: Reg,
+        /// Type of the sampled value.
         ty: ScalarType,
     },
+    /// Sample a `&Sampled3D` through the fixed NEAREST/CLAMP_TO_EDGE
+    /// sampler.
     TextureSample3D {
+        /// Register receiving the sampled texel.
         dst: Reg,
+        /// Binding slot of the texture.
         texture: u32,
+        /// Horizontal coordinate.
         x: Reg,
+        /// Vertical coordinate.
         y: Reg,
+        /// Depth coordinate.
         z: Reg,
+        /// Type of the sampled value.
         ty: ScalarType,
     },
+    /// Write one texel of a `&mut Texture2D`. Refused against a read-only
+    /// texel slot — see [`reject_write_on_read_only`].
     TextureWrite2D {
+        /// Binding slot of the texture.
         texture: u32,
+        /// Horizontal coordinate.
         x: Reg,
+        /// Vertical coordinate.
         y: Reg,
+        /// Register holding the texel to write.
         value: Reg,
+        /// Texel type, which fixes the storage format.
         ty: ScalarType,
     },
+    /// Query a texture's dimensions.
     TextureSize {
+        /// Register receiving the width in texels.
         dst_w: Reg,
+        /// Register receiving the height in texels.
         dst_h: Reg,
+        /// Binding slot of the texture.
         texture: u32,
     },
 
     // Register copy (for loop-carried variable updates)
+    /// Move a value between registers. How a loop-carried variable is
+    /// updated: the destination is a mutable cell, not a fresh SSA name.
     Copy {
+        /// Register written.
         dst: Reg,
+        /// Register read.
         src: Reg,
+        /// Type of the value.
         ty: ScalarType,
     },
 
     // Control flow
+    /// Leave the innermost enclosing `Loop`.
     Break,
 
     // Dynamic parallelism
+    /// Launch a nested dispatch from inside the kernel. No backend
+    /// implements it: the shader emitters drop it and the LLVM path
+    /// refuses it, so the host must enqueue the child wave instead.
     Dispatch {
+        /// Register holding the wave handle to launch.
         wave: Reg,
+        /// Workgroup counts along x, y and z.
         groups: [Reg; 3],
     },
 
     // Device function call (user-defined helper)
+    /// Call a `#[quanta::device]` helper defined alongside the kernel.
     DeviceCall {
+        /// Register receiving the return value.
         dst: Reg,
+        /// Name of the [`DeviceFnDef`] to call.
         func_name: String,
+        /// Argument registers, in declaration order.
         args: Vec<Reg>,
+        /// Return type of the helper.
         ty: ScalarType,
     },
 
     // Bit manipulation
+    /// Reinterpret a register's bits at another type of the same width.
     Bitcast {
+        /// Register receiving the reinterpreted value.
         dst: Reg,
+        /// Register holding the bits.
         src: Reg,
+        /// Type the source register holds.
         from: ScalarType,
+        /// Type to reinterpret as.
         to: ScalarType,
     },
+    /// Number of zero bits below the lowest set bit.
     CountTrailingZeros {
+        /// Register receiving the count.
         dst: Reg,
+        /// Register holding the value.
         src: Reg,
+        /// Integer type, which fixes the bit width.
         ty: ScalarType,
     },
+    /// Number of zero bits above the highest set bit.
     CountLeadingZeros {
+        /// Register receiving the count.
         dst: Reg,
+        /// Register holding the value.
         src: Reg,
+        /// Integer type, which fixes the bit width.
         ty: ScalarType,
     },
+    /// Number of set bits.
     PopCount {
+        /// Register receiving the count.
         dst: Reg,
+        /// Register holding the value.
         src: Reg,
+        /// Integer type, which fixes the bit width.
         ty: ScalarType,
     },
 
     // Dot product (vector)
+    /// Dot product of two vector registers.
     Dot {
+        /// Register receiving the scalar result.
         dst: Reg,
+        /// Left operand.
         a: Reg,
+        /// Right operand.
         b: Reg,
+        /// Element type.
         ty: ScalarType,
+        /// Vector width. Carried for completeness — no emitter reads it,
+        /// since the operand registers already carry their own vector type.
         width: u8,
     },
 
     // Subgroup
+    /// Number of lanes in a subgroup on this device.
     SubgroupSize {
+        /// Register receiving the size.
         dst: Reg,
     },
     /// This thread's lane index within its subgroup, `0..SubgroupSize`.
@@ -789,54 +1172,93 @@ pub enum KernelOp {
     /// cohorts use. Never `ProtonId` — the two agree only while the
     /// workgroup fits in one subgroup.
     SubgroupLaneId {
+        /// Register receiving the lane index.
         dst: Reg,
     },
 
     // Subgroup scan/reduce
+    /// Sum of the contributed values across the subgroup, broadcast to
+    /// every lane.
     SubgroupReduceAdd {
+        /// Register receiving the reduction.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// Type of the values.
         ty: ScalarType,
     },
+    /// Minimum across the subgroup, broadcast to every lane.
     SubgroupReduceMin {
+        /// Register receiving the reduction.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// Type of the values.
         ty: ScalarType,
     },
+    /// Maximum across the subgroup, broadcast to every lane.
     SubgroupReduceMax {
+        /// Register receiving the reduction.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// Type of the values.
         ty: ScalarType,
     },
+    /// Prefix sum over the subgroup, excluding this lane's own value —
+    /// lane 0 receives the identity.
     SubgroupExclusiveAdd {
+        /// Register receiving the prefix sum.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// Type of the values.
         ty: ScalarType,
     },
+    /// Prefix sum over the subgroup, including this lane's own value.
     SubgroupInclusiveAdd {
+        /// Register receiving the prefix sum.
         dst: Reg,
+        /// Register whose value this lane contributes.
         src: Reg,
+        /// Type of the values.
         ty: ScalarType,
     },
 
     // Texture load without sampler
+    /// Read one texel of a `&Texture2D` / `&mut Texture2D` by integer
+    /// coordinate. The only way to read a texel slot — sampling one is
+    /// refused.
     TextureLoad2D {
+        /// Register receiving the texel.
         dst: Reg,
+        /// Binding slot of the texture.
         texture: u32,
+        /// Horizontal coordinate.
         x: Reg,
+        /// Vertical coordinate.
         y: Reg,
+        /// Texel type, which fixes the storage format.
         ty: ScalarType,
     },
 
     // Dynamic shared memory declaration (size determined at dispatch)
+    /// Declare a shared array whose length comes from the dispatch's
+    /// `dynamic_shared_bytes` rather than from the kernel source.
     SharedDeclDyn {
+        /// Shared-array id, the handle the shared load/store ops address.
         id: u32,
+        /// Element type of the array.
         ty: ScalarType,
     },
 
     // GPU debug print (writes value + thread_id to a debug buffer)
+    /// Append `(quark_id, value)` to the kernel's debug buffer, for
+    /// inspecting a running kernel from the host.
     DebugPrint {
+        /// Register holding the value to record.
         src: Reg,
+        /// Type of the value, which fixes how it is widened to a word.
         ty: ScalarType,
     },
 }
@@ -848,22 +1270,31 @@ pub enum KernelOp {
 /// `OpFunctionCall` instructions.
 #[derive(Debug, Clone)]
 pub struct DeviceFnDef {
+    /// Function name, as `KernelOp::DeviceCall` spells it.
     pub name: String,
+    /// Parameters as `(name, type)` pairs, in declaration order.
     pub params: Vec<(String, ScalarType)>,
+    /// Return type.
     pub return_type: ScalarType,
+    /// The function body.
     pub body: Vec<KernelOp>,
+    /// Next unused register number in the function's own register space.
     pub next_reg: u32,
 }
 
 /// Complete kernel definition in IR form.
 #[derive(Debug, Clone)]
 pub struct KernelDef {
+    /// Kernel name, which becomes the entry point's name in emitted source.
     pub name: String,
+    /// Bindings the kernel takes, in positional order.
     pub params: Vec<KernelParam>,
+    /// The kernel body.
     pub body: Vec<KernelOp>,
     /// Raw Rust source of the body (temporary — used for string-based MSL/WGSL
     /// emission until Phase 2 populates `body` with real KernelOps).
     pub body_source: Option<String>,
+    /// Next unused register number — the allocator's high-water mark.
     pub next_reg: u32,
     /// Optimization level: 0 (none), 1, 2, 3 (aggressive). Default: 3.
     pub opt_level: u8,

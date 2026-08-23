@@ -5,6 +5,8 @@
 //! (`quanta-compiler`). Defines the platform-agnostic IR that represents
 //! GPU kernels between parsing and code generation.
 
+#![deny(missing_docs)]
+
 pub mod caps;
 pub mod const_analysis;
 pub mod dispatch_fold;

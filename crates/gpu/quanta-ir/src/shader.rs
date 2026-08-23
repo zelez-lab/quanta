@@ -3,7 +3,9 @@
 /// Shader pipeline stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderStage {
+    /// Vertex stage — consumes attributes, returns the varyings struct.
     Vertex = 0,
+    /// Fragment stage — consumes the varyings struct, returns a colour.
     Fragment = 1,
 }
 
@@ -13,11 +15,18 @@ pub enum ShaderStage {
 /// append-only: existing tags 0-5 must never move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderType {
+    /// Single-precision scalar.
     F32 = 0,
+    /// Two-component float vector.
     Vec2 = 1,
+    /// Three-component float vector.
     Vec3 = 2,
+    /// Four-component float vector — also the type of the `#[position]`
+    /// varying.
     Vec4 = 3,
+    /// 4×4 float matrix.
     Mat4 = 4,
+    /// 3×3 float matrix.
     Mat3 = 5,
     /// 32-bit unsigned integer scalar. As a vertex attribute it is an integer
     /// Input (fed by `AttributeFormat::UInt`); as a varying it must be
@@ -40,16 +49,22 @@ pub enum ShaderType {
 /// `ShaderDef` carrying a plain value param is rejected by every emitter.
 #[derive(Debug, Clone)]
 pub struct ShaderParam {
+    /// Parameter name as written in the source.
     pub name: String,
+    /// The parameter's type, or the element type when `is_slice` is set.
     pub ty: ShaderType,
+    /// Whether the parameter is a `&T` uniform.
     pub is_uniform: bool,
+    /// Whether the parameter is a `&[T]` storage-buffer array.
     pub is_slice: bool,
 }
 
 /// One named varying of a vertex↔fragment interface struct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaryingField {
+    /// Field name, which both stages spell to reach the varying.
     pub name: String,
+    /// The varying's type.
     pub ty: ShaderType,
 }
 
@@ -99,11 +114,17 @@ impl ShaderVaryings {
 /// textures / `frag_coord()` only).
 #[derive(Debug, Clone)]
 pub struct ShaderDef {
+    /// Shader name, which becomes the entry point's name.
     pub name: String,
+    /// Which pipeline stage this shader is.
     pub stage: ShaderStage,
+    /// Attributes, uniforms and slice bindings the shader takes.
     pub params: Vec<ShaderParam>,
+    /// The stage's return type.
     pub return_type: ShaderType,
+    /// Raw Rust source of the body, which the emitters translate.
     pub body_source: String,
+    /// The vertex↔fragment interface, or `None` when the stage has none.
     pub varyings: Option<ShaderVaryings>,
 }
 
@@ -117,9 +138,14 @@ pub struct ShaderDef {
 /// among them by compile target (see `ShaderBinary::for_artifact`).
 #[derive(Debug, Clone)]
 pub struct ShaderOutput {
+    /// SPIR-V module for the Vulkan driver.
     pub spirv: Option<Vec<u8>>,
+    /// Metal library built for macOS.
     pub metallib: Option<Vec<u8>>,
+    /// Metal library built for an iOS device.
     pub metallib_ios: Option<Vec<u8>>,
+    /// Metal library built for the iOS simulator.
     pub metallib_ios_sim: Option<Vec<u8>>,
+    /// WGSL source for the WebGPU driver.
     pub wgsl: Option<String>,
 }

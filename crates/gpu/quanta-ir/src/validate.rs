@@ -38,12 +38,16 @@ pub struct ValidationIssue {
 /// emitted for this backend.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ValidationReport {
+    /// Name of the backend the kernel was checked against.
     pub backend_name: &'static str,
+    /// Name of the kernel that was checked.
     pub kernel_name: String,
+    /// Every unsupported-type finding, in the order the walk met them.
     pub issues: Vec<ValidationIssue>,
 }
 
 impl ValidationReport {
+    /// Whether the kernel can be emitted for this backend.
     pub fn is_ok(&self) -> bool {
         self.issues.is_empty()
     }

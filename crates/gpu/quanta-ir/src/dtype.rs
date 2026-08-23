@@ -208,8 +208,9 @@ fn round_shift_rne(v: u32, s: u32) -> u32 {
     if big { 0 } else { r }
 }
 
-/// Exponent/mantissa widths for the two fp8 formats.
+/// Exponent/mantissa widths of fp8 E5M2 — the wider-range 8-bit float.
 pub const E5M2: (u32, u32) = (5, 2);
+/// Exponent/mantissa widths of fp8 E4M3 — the higher-precision 8-bit float.
 pub const E4M3: (u32, u32) = (4, 3);
 
 // ── int8 / int4 symmetric quantization ───────────────────────────────

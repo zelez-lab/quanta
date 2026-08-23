@@ -83,9 +83,13 @@ pub enum QuantMode {
 /// The full quantization scheme threaded through Quantize/Dequantize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QuantScheme {
+    /// Numeric semantics of an element.
     pub value: QuantValue,
+    /// Physical layout the elements are packed in.
     pub store: QuantStore,
+    /// Granularity the scale and zero point apply at.
     pub level: QuantLevel,
+    /// Whether the zero point is fixed at 0 or carried.
     pub mode: QuantMode,
 }
 

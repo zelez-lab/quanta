@@ -18,29 +18,42 @@ use crate::{
 /// and expected outputs are carried as length-1 vectors.
 #[derive(Clone, Debug)]
 pub enum RawValues {
+    /// Single-precision values.
     F32(Vec<f32>),
+    /// Double-precision values.
     F64(Vec<f64>),
+    /// Unsigned 32-bit values.
     U32(Vec<u32>),
+    /// Unsigned 64-bit values.
     U64(Vec<u64>),
+    /// Signed 32-bit values.
     I32(Vec<i32>),
+    /// Signed 64-bit values.
     I64(Vec<i64>),
     /// Narrow ints, carried at their native width (tight 1-/2-byte
     /// storage on every lane that runs them; WGSL rejects them).
     U8(Vec<u8>),
+    /// Signed 8-bit values, at native width.
     I8(Vec<i8>),
+    /// Unsigned 16-bit values, at native width.
     U16(Vec<u16>),
+    /// Signed 16-bit values, at native width.
     I16(Vec<i16>),
     /// bfloat16 values carried as their raw 16-bit storage patterns.
     BF16(Vec<u16>),
     /// fp8 values carried as their raw 8-bit storage patterns.
     FP8E5M2(Vec<u8>),
+    /// fp8 E4M3 values carried as their raw 8-bit storage patterns.
     FP8E4M3(Vec<u8>),
     /// Quantized integer codes (symmetric int8 / int4), carried as i8.
     Q8(Vec<i8>),
+    /// Symmetric int4 codes, carried one per `i8`.
     Q4(Vec<i8>),
 }
 
 impl RawValues {
+    /// Short lowercase name of the carried scalar type, as the case names
+    /// spell it.
     pub fn type_tag(&self) -> &'static str {
         match self {
             RawValues::F32(_) => "f32",
@@ -62,6 +75,8 @@ impl RawValues {
     }
 }
 
+/// Kernel-name prefix every generated case shares — each case's kernel is
+/// named `op_matrix_<op>_<type>`.
 pub const NAME_PREFIX: &str = "op_matrix";
 
 /// One row in the matrix: a single (op, ty, a, b) instance and the
@@ -74,11 +89,17 @@ pub const NAME_PREFIX: &str = "op_matrix";
 /// bit across compilers for division.
 #[derive(Clone, Debug)]
 pub struct OpCase {
+    /// Case name — the kernel's name, and the label a failure reports.
     pub name: String,
+    /// The one-op kernel this case dispatches.
     pub def: KernelDef,
+    /// Value bound to the kernel's first input buffer.
     pub input_a: RawValues,
+    /// Value bound to the kernel's second input buffer.
     pub input_b: RawValues,
+    /// CPU-computed output the lane's result is compared against.
     pub expected: RawValues,
+    /// Comparator tolerance in ULPs; 0 demands bit-exactness.
     pub max_ulps: u32,
     /// Some cases can't run on every backend yet — e.g. F64 on
     /// Metal is unsupported. The driver skips a case when its
