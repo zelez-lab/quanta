@@ -193,7 +193,7 @@ fn my_kernel(d: &MyData) {
 }
 ```
 
-See `crates/quanta-rand-import-test/` in the Quanta workspace for
+See `crates/sci/quanta-rand/tests/cross_crate_device_import.rs` for
 end-to-end examples of both flavors.
 
 ## Why counter-based?
@@ -232,7 +232,7 @@ and produces ~5× more random bytes per round than xoshiro.
 - 10 Kolmogorov-Smirnov / χ² goodness-of-fit checks at n=50,000
   (f32 + f64 for uniform / normal / exponential / lognormal,
   proportion test for bernoulli, χ² for poisson)
-- Cross-crate device-fn import test (`crates/quanta-rand-import-test/`)
+- Cross-crate device-fn import test (`tests/cross_crate_device_import.rs`)
   validating both `import_devices!` and auto-discovery flavors
 
 Run with:

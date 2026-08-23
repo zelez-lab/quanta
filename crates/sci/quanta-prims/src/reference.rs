@@ -507,40 +507,6 @@ pub fn radix_sort_u32(xs: &[u32]) -> Vec<u32> {
     out.sort_unstable();
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reduce_handles_overflow() {
-        // u32::MAX + 1 wraps to 0; u32::MAX + 2 wraps to 1.
-        assert_eq!(reduce_add_u32(&[u32::MAX, 1]), 0);
-        assert_eq!(reduce_add_u32(&[u32::MAX, 2]), 1);
-    }
-
-    #[test]
-    fn scan_inclusive_first_eq_input_first() {
-        // Inclusive scan: scan[0] always equals xs[0].
-        for xs in [vec![7u32], vec![1, 2], vec![5, 10, 15]] {
-            let s = scan_add_u32(&xs);
-            assert_eq!(s[0], xs[0]);
-        }
-    }
-
-    #[test]
-    fn radix_sort_is_length_preserving_permutation() {
-        let xs = vec![3u32, 1, 4, 1, 5, 9, 2, 6];
-        let sorted = radix_sort_u32(&xs);
-        assert_eq!(sorted.len(), xs.len());
-        // Same multiset of values — every original element
-        // appears the same number of times in the result.
-        let mut a = xs.clone();
-        a.sort_unstable();
-        assert_eq!(a, sorted);
-    }
-}
-
 /// Per-block top-k over f32 keys, totalOrder descending.
 ///
 /// Reference impl for `block_top_k_f32_buffer`. Ordering is IEEE
@@ -607,5 +573,38 @@ pub fn segmented_top_k_f32_blocks(data: &[f32], top_k_out: &mut [f32], seg_len: 
         let mut sorted: Vec<f32> = data[start..start + seg_len].to_vec();
         sorted.sort_unstable_by(|a, b| b.total_cmp(a)); // totalOrder descending
         top_k_out[s * k..(s + 1) * k].copy_from_slice(&sorted[..k]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reduce_handles_overflow() {
+        // u32::MAX + 1 wraps to 0; u32::MAX + 2 wraps to 1.
+        assert_eq!(reduce_add_u32(&[u32::MAX, 1]), 0);
+        assert_eq!(reduce_add_u32(&[u32::MAX, 2]), 1);
+    }
+
+    #[test]
+    fn scan_inclusive_first_eq_input_first() {
+        // Inclusive scan: scan[0] always equals xs[0].
+        for xs in [vec![7u32], vec![1, 2], vec![5, 10, 15]] {
+            let s = scan_add_u32(&xs);
+            assert_eq!(s[0], xs[0]);
+        }
+    }
+
+    #[test]
+    fn radix_sort_is_length_preserving_permutation() {
+        let xs = vec![3u32, 1, 4, 1, 5, 9, 2, 6];
+        let sorted = radix_sort_u32(&xs);
+        assert_eq!(sorted.len(), xs.len());
+        // Same multiset of values — every original element
+        // appears the same number of times in the result.
+        let mut a = xs.clone();
+        a.sort_unstable();
+        assert_eq!(a, sorted);
     }
 }

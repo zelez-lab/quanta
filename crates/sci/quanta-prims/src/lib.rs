@@ -164,11 +164,7 @@
 // Subgroup intrinsics are FFI imports — the `unsafe` is unavoidable
 // at the call site. The reference module is pure safe Rust; only
 // the gpu_kernel module uses unsafe.
-//
-// `missing_docs` is intentionally not denied because the
-// `#[quanta::kernel]` macro emits statics + dispatch fns without
-// doc strings. We rely on clippy + cargo doc warnings to catch
-// undocumented public items in author-written code.
+#![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod reference;
