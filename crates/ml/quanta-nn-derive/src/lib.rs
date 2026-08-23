@@ -23,11 +23,15 @@
 //! parameter (the scalar). Inside `quanta-nn` itself, point the
 //! generated paths at the crate root with `#[param_tree(crate = crate)]`
 //! (the same convention as `#[quanta_compute_dsl::kernel(crate = …)]`).
+#![deny(missing_docs)]
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
+/// Derives `ParamTree` for a named-field struct with a single scalar type
+/// parameter — the `<Name>Vars` twin plus `bind`, `flatten`, `unflatten`
+/// and `grads`, delegated to each field in declaration order.
 #[proc_macro_derive(ParamTree, attributes(param_tree))]
 pub fn derive_param_tree(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
