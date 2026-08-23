@@ -77,6 +77,9 @@ fn rt_dispatch_in_bounds_succeeds() {
     // T7403 refinement: dispatch on a live pipeline succeeds; the
     // recorded sequence is extended.
     let gpu = quanta::init_cpu();
+    let g = dummy_geom(&gpu);
+    let blas = gpu.acceleration_structure_blas(&[g]).unwrap();
+    let out = gpu.field::<f32>(64 * 64).unwrap();
     let p = gpu
         .ray_tracing_pipeline(&RayTracingPipelineDesc {
             ray_gen: &[],
@@ -85,8 +88,8 @@ fn rt_dispatch_in_bounds_succeeds() {
             max_recursion: 1,
         })
         .unwrap();
-    p.dispatch_rays(64, 64).unwrap();
-    p.dispatch_rays(MAX_DISPATCH_DIM, 1).unwrap();
+    p.dispatch_rays(&blas, &out, 64, 64).unwrap();
+    p.dispatch_rays(&blas, &out, MAX_DISPATCH_DIM, 1).unwrap();
 }
 
 #[test]
@@ -101,7 +104,10 @@ fn rt_dispatch_out_of_range_fails() {
             max_recursion: 1,
         })
         .unwrap();
-    let r = p.dispatch_rays(MAX_DISPATCH_DIM + 1, 1);
+    let g = dummy_geom(&gpu);
+    let blas = gpu.acceleration_structure_blas(&[g]).unwrap();
+    let out = gpu.field::<f32>(64).unwrap();
+    let r = p.dispatch_rays(&blas, &out, MAX_DISPATCH_DIM + 1, 1);
     assert!(r.is_err());
 }
 

@@ -781,7 +781,14 @@ impl QGpuDevice for WebgpuDevice {
     ) -> Result<u64, QuantaError> {
         Err(Self::not_supported("ray tracing is not in the WebGPU spec"))
     }
-    fn dispatch_rays(&self, _pipeline: u64, _w: u32, _h: u32) -> Result<(), QuantaError> {
+    fn dispatch_rays(
+        &self,
+        _pipeline: u64,
+        _accel: u64,
+        _out_field: u64,
+        _w: u32,
+        _h: u32,
+    ) -> Result<(), QuantaError> {
         Err(Self::not_supported("ray tracing is not in the WebGPU spec"))
     }
     fn destroy_acceleration_structure(&self, _handle: u64) -> Result<(), QuantaError> {

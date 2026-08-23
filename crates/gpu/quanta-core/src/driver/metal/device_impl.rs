@@ -769,8 +769,9 @@ impl GpuDevice for MetalDevice {
 
     #[cfg(feature = "render")]
     fn build_acceleration_structure(&self, geometry: &[GeometryDesc]) -> Result<u64, QuantaError> {
-        // Metal ray tracing requires Apple GPU family 6+ (A14/M1 and later).
-        // Check via supportsFamily: with MTLGPUFamilyApple6 (= 1006).
+        // Compute-based Metal ray tracing: real on every Apple GPU
+        // family 6+ device (A14/M1 and later) — no RT hardware needed,
+        // the intersector runs on the shader cores.
         if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray tracing requires Apple GPU family 6+ (A14/M1)",
@@ -782,73 +783,233 @@ impl GpuDevice for MetalDevice {
             ));
         }
 
-        // Allocate a private buffer as backing storage for the acceleration structure.
-        // Real implementation would use MTLAccelerationStructure APIs; for now we
-        // allocate a placeholder and return its handle.
-        let accel_size = geometry
-            .iter()
-            .map(|g| g.vertex_count as u64 * 48)
-            .sum::<u64>()
-            .max(256);
-        let buf = unsafe {
-            ffi::msg_new_buffer(
+        unsafe {
+            // One triangle-geometry descriptor per entry, vertex (and
+            // index) buffers resolved from their Field handles.
+            let buffers = self
+                .buffers
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            let geom_cls =
+                ffi::cls(b"MTLAccelerationStructureTriangleGeometryDescriptor\0") as ffi::Id;
+            let mut geom_descs: Vec<ffi::Id> = Vec::with_capacity(geometry.len());
+            for g in geometry {
+                let vbuf = *buffers.get(&g.vertices).ok_or_else(|| {
+                    QuantaError::not_found("geometry vertex field not found on this device")
+                })?;
+                let d = ffi::msg_id(geom_cls, b"descriptor\0");
+                ffi::msg_void_id(d, b"setVertexBuffer:\0", vbuf);
+                ffi::msg_void_u64(d, b"setVertexStride:\0", g.vertex_stride as u64);
+                if let Some(idx) = g.indices {
+                    let ibuf = *buffers.get(&idx).ok_or_else(|| {
+                        QuantaError::not_found("geometry index field not found on this device")
+                    })?;
+                    ffi::msg_void_id(d, b"setIndexBuffer:\0", ibuf);
+                    // MTLIndexTypeUInt32 = 1.
+                    ffi::msg_void_u64(d, b"setIndexType:\0", 1);
+                    ffi::msg_void_u64(d, b"setTriangleCount:\0", (g.index_count / 3) as u64);
+                } else {
+                    ffi::msg_void_u64(d, b"setTriangleCount:\0", (g.vertex_count / 3) as u64);
+                }
+                geom_descs.push(d);
+            }
+            drop(buffers);
+
+            let arr = ffi::msg_new_array(&geom_descs);
+            let prim_cls = ffi::cls(b"MTLPrimitiveAccelerationStructureDescriptor\0") as ffi::Id;
+            let prim = ffi::msg_id(prim_cls, b"descriptor\0");
+            ffi::msg_void_id(prim, b"setGeometryDescriptors:\0", arr);
+
+            let sizes = ffi::msg_accel_sizes(self.device, prim);
+            if sizes.acceleration_structure_size == 0 {
+                return Err(QuantaError::internal(
+                    "device reported a zero-size acceleration structure",
+                ));
+            }
+            let accel = ffi::msg_id_u64(
                 self.device,
-                accel_size,
+                b"newAccelerationStructureWithSize:\0",
+                sizes.acceleration_structure_size,
+            );
+            if accel.is_null() {
+                return Err(QuantaError::internal(
+                    "failed to allocate the acceleration structure",
+                ));
+            }
+            let scratch = ffi::msg_new_buffer(
+                self.device,
+                sizes.build_scratch_buffer_size.max(16),
                 ffi::MTL_RESOURCE_STORAGE_MODE_PRIVATE,
-            )
-        };
-        if buf.is_null() {
-            return Err(QuantaError::internal(
-                "failed to allocate acceleration structure backing",
-            ));
+            );
+            if scratch.is_null() {
+                return Err(QuantaError::internal("failed to allocate build scratch"));
+            }
+
+            // Synchronous build: commit and wait, so the structure is
+            // ready the moment the handle exists (the MVP contract —
+            // async builds ride the native track).
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let enc = ffi::msg_id(cmd, b"accelerationStructureCommandEncoder\0");
+            if enc.is_null() {
+                return Err(QuantaError::internal(
+                    "accelerationStructureCommandEncoder unavailable",
+                ));
+            }
+            ffi::msg_build_accel(enc, accel, prim, scratch, 0);
+            ffi::msg_void(enc, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+            // MTLCommandBufferStatusCompleted = 4.
+            if ffi::msg_u64(cmd, b"status\0") != 4 {
+                return Err(QuantaError::internal(
+                    "acceleration structure build did not complete",
+                ));
+            }
+
+            let handle = self.alloc_handle();
+            self.accel_structs
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
+                .insert(handle, accel);
+            Ok(handle)
         }
-        let handle = self.alloc_handle();
-        self.buffers
-            .write()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?
-            .insert(handle, buf);
-        Ok(handle)
     }
 
     #[cfg(feature = "render")]
     fn create_ray_tracing_pipeline(
         &self,
-        _desc: &RayTracingPipelineDesc,
+        desc: &RayTracingPipelineDesc,
     ) -> Result<u64, QuantaError> {
-        // Metal ray tracing uses compute pipelines with intersection functions.
-        // Check hardware support first.
         if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray tracing pipelines require Apple GPU family 6+ (A14/M1)",
             ));
         }
-        // Pipeline creation would compile ray generation/hit/miss shaders as compute
-        // functions with visible function tables. Return a handle to track the pipeline.
-        let handle = self.alloc_handle();
-        Ok(handle)
+        // MVP contract: `ray_gen` is MSL source for the whole
+        // intersector kernel (Metal's model runs intersection inline
+        // via `metal::raytracing::intersector`; separate hit/miss
+        // functions are the visible-function-table native tier —
+        // `closest_hit` / `miss` are carried for it, not separately
+        // invoked here). The kernel's ABI: acceleration structure at
+        // buffer(0), output at buffer(1), one thread per ray.
+        let mut src_bytes: Vec<u8> = desc.ray_gen.to_vec();
+        src_bytes.push(0);
+        let ns_src = ffi::nsstring(&src_bytes);
+        unsafe {
+            let (lib, error) = ffi::msg_new_library_with_source(self.device, ns_src, ffi::NIL);
+            if lib.is_null() {
+                let msg = if !error.is_null() {
+                    let d = ffi::msg_id(error, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(d);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown MSL compile error".into()
+                };
+                return Err(QuantaError::compilation_failed(format!(
+                    "ray-gen MSL: {}",
+                    msg
+                )));
+            }
+            let names = ffi::msg_function_names(lib);
+            if ffi::msg_array_count(names) == 0 {
+                return Err(QuantaError::compilation_failed(
+                    "ray-gen MSL contains no kernel function",
+                ));
+            }
+            let func_name = ffi::msg_array_object_at(names, 0);
+            let func = ffi::msg_id_id(lib, b"newFunctionWithName:\0", func_name);
+            if func.is_null() {
+                return Err(QuantaError::compilation_failed(
+                    "ray-gen function lookup failed",
+                ));
+            }
+            let (pipe, perr) = ffi::msg_new_compute_pipeline(self.device, func);
+            if pipe.is_null() {
+                let msg = if !perr.is_null() {
+                    let d = ffi::msg_id(perr, b"localizedDescription\0");
+                    let cstr = ffi::msg_utf8_string(d);
+                    std::ffi::CStr::from_ptr(cstr as *const _)
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    "unknown pipeline error".into()
+                };
+                return Err(QuantaError::compilation_failed(format!(
+                    "ray-gen pipeline: {}",
+                    msg
+                )));
+            }
+            let handle = self.alloc_handle();
+            self.rt_pipelines
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
+                .insert(handle, pipe);
+            Ok(handle)
+        }
     }
 
-    fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
-        // Step 063 slice 10 — close the silent-drop. The previous
-        // shim returned Ok(()) on supported hardware without
-        // dispatching the intersection compute encoder, which
-        // violated the no-silent-drops contract. The full path
-        // (encode an intersection compute pipeline with visible
-        // function tables, dispatch (width × height × 1) threads)
-        // is a separate native track.
+    fn dispatch_rays(
+        &self,
+        pipeline: u64,
+        accel: u64,
+        out_field: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<(), QuantaError> {
         if !self.ray_tracing_supported {
             return Err(QuantaError::not_supported(
                 "ray dispatch requires Apple GPU family 6+ (A14/M1)",
             ));
         }
-        Err(QuantaError::not_supported(
-            "Metal ray-tracing dispatch pending — hardware supports it, but the intersection compute pipeline integration is not yet wired",
-        ))
+        let pipe = *self
+            .rt_pipelines
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .get(&pipeline)
+            .ok_or_else(|| QuantaError::not_found("ray tracing pipeline not found"))?;
+        let accel_obj = *self
+            .accel_structs
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .get(&accel)
+            .ok_or_else(|| QuantaError::not_found("acceleration structure not found"))?;
+        let out = *self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .get(&out_field)
+            .ok_or_else(|| QuantaError::not_found("output field not found"))?;
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            let enc = ffi::msg_id(cmd, b"computeCommandEncoder\0");
+            ffi::msg_void_id(enc, b"setComputePipelineState:\0", pipe);
+            ffi::msg_set_accel(enc, accel_obj, 0);
+            ffi::msg_set_buffer(enc, b"setBuffer:offset:atIndex:\0", out, 0, 1);
+            let grid = ffi::MTLSize {
+                width: width as u64,
+                height: height as u64,
+                depth: 1,
+            };
+            let group = ffi::MTLSize {
+                width: 8,
+                height: 8,
+                depth: 1,
+            };
+            ffi::msg_dispatch_threads(enc, grid, group);
+            ffi::msg_void(enc, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+            if ffi::msg_u64(cmd, b"status\0") != 4 {
+                return Err(QuantaError::internal("ray dispatch did not complete"));
+            }
+        }
+        Ok(())
     }
 
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {
-        // Release the backing buffer.
-        self.buffers
+        self.accel_structs
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .remove(&handle);

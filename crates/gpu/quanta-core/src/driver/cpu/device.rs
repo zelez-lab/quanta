@@ -1115,7 +1115,20 @@ impl GpuDevice for CpuDevice {
         Ok(handle)
     }
 
-    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
+    fn dispatch_rays(
+        &self,
+        pipeline: u64,
+        accel: u64,
+        _out_field: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<(), QuantaError> {
+        // Lifecycle tier: the acceleration structure must exist; the
+        // dispatch is recorded, not executed (the output field is
+        // untouched — documented CPU contract).
+        if !self.accel_structures.lock().unwrap().contains_key(&accel) {
+            return Err(QuantaError::not_found("acceleration structure not found"));
+        }
         let mut pipes = self.rt_pipelines.lock().unwrap();
         let pipe = pipes
             .get_mut(&pipeline)

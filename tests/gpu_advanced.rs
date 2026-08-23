@@ -83,8 +83,23 @@ fn dispatch_rays_returns_result() {
         miss: &[],
         max_recursion: 1,
     };
+    let vert = gpu.field::<f32>(9).unwrap();
+    let blas = match gpu.acceleration_structure_blas(&[quanta::GeometryDesc {
+        vertices: vert.handle(),
+        indices: None,
+        vertex_count: 3,
+        index_count: 0,
+        vertex_stride: 12,
+    }]) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("BLAS build not supported (expected off-Metal): {}", e);
+            return;
+        }
+    };
+    let out = gpu.field::<f32>(64 * 64).unwrap();
     match gpu.ray_tracing_pipeline(&desc) {
-        Ok(pipeline) => match pipeline.dispatch_rays(64, 64) {
+        Ok(pipeline) => match pipeline.dispatch_rays(&blas, &out, 64, 64) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("dispatch_rays not supported (expected): {}", e);

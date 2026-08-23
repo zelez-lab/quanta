@@ -193,6 +193,71 @@ pub unsafe fn msg_new_buffer_no_copy(
     )
 }
 
+/// `accelerationStructureSizesWithDescriptor:` — struct return. On
+/// AArch64 the 24-byte struct comes back through the indirect result
+/// register; declaring the transmuted signature with the struct return
+/// makes rustc emit the correct ABI.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct MTLAccelerationStructureSizes {
+    /// Bytes the acceleration structure itself needs.
+    pub acceleration_structure_size: u64,
+    /// Scratch bytes the build needs.
+    pub build_scratch_buffer_size: u64,
+    /// Scratch bytes a refit needs.
+    pub refit_scratch_buffer_size: u64,
+}
+
+/// Build an NSArray from a slice of object Ids
+/// (`arrayWithObjects:count:`).
+pub unsafe fn msg_new_array(objects: &[Id]) -> Id {
+    let f: unsafe extern "C" fn(Id, Sel, *const Id, u64) -> Id =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        cls(b"NSArray ") as Id,
+        sel(b"arrayWithObjects:count: "),
+        objects.as_ptr(),
+        objects.len() as u64,
+    )
+}
+
+/// Send `accelerationStructureSizesWithDescriptor:`.
+pub unsafe fn msg_accel_sizes(device: Id, desc: Id) -> MTLAccelerationStructureSizes {
+    let f: unsafe extern "C" fn(Id, Sel, Id) -> MTLAccelerationStructureSizes =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        device,
+        sel(b"accelerationStructureSizesWithDescriptor: "),
+        desc,
+    )
+}
+
+/// `buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:`
+/// on an acceleration-structure command encoder.
+pub unsafe fn msg_build_accel(encoder: Id, accel: Id, desc: Id, scratch: Id, offset: u64) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, Id, Id, u64) =
+        mem::transmute(objc_msgSend as *const c_void);
+    f(
+        encoder,
+        sel(b"buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset: "),
+        accel,
+        desc,
+        scratch,
+        offset,
+    )
+}
+
+/// `setAccelerationStructure:atBufferIndex:` on a compute encoder.
+pub unsafe fn msg_set_accel(encoder: Id, accel: Id, index: u64) {
+    let f: unsafe extern "C" fn(Id, Sel, Id, u64) = mem::transmute(objc_msgSend as *const c_void);
+    f(
+        encoder,
+        sel(b"setAccelerationStructure:atBufferIndex: "),
+        accel,
+        index,
+    )
+}
+
 /// Send message with no arguments, returning BOOL — used for
 /// `MTLDevice.hasUnifiedMemory`.
 pub unsafe fn msg_bool(obj: Id, name: &[u8]) -> bool {

@@ -482,8 +482,16 @@ impl GpuDevice for ValidationDevice {
         self.inner.create_ray_tracing_pipeline(desc)
     }
 
-    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError> {
-        self.inner.dispatch_rays(pipeline, width, height)
+    fn dispatch_rays(
+        &self,
+        pipeline: u64,
+        accel: u64,
+        out_field: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<(), QuantaError> {
+        self.inner
+            .dispatch_rays(pipeline, accel, out_field, width, height)
     }
 
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError> {

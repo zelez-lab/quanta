@@ -2,8 +2,12 @@
 //!
 //! Backends:
 //!
-//! - Metal: `MTLAccelerationStructureDescriptor` + intersector tables
-//!   invoked from a compute kernel.
+//! - Metal: real `MTLAccelerationStructure` build + the ray-gen MSL
+//!   compiled as a compute kernel using `metal::raytracing::intersector`
+//!   — compute-based, works on every Apple6+ GPU (RT silicon is M3+
+//!   and upgrades it silently). The MVP ABI: acceleration structure at
+//!   buffer(0), output at buffer(1), one thread per ray; separate
+//!   hit/miss visible-function tables are the native tier.
 //! - Vulkan: `VK_KHR_acceleration_structure` +
 //!   `VK_KHR_ray_tracing_pipeline`; `vkCmdTraceRaysKHR(width, height, 1)`.
 //! - WebGPU: not in W3C — `NotSupported`.

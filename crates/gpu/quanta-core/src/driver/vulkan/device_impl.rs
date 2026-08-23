@@ -729,7 +729,14 @@ impl GpuDevice for VulkanDevice {
         Ok(handle)
     }
 
-    fn dispatch_rays(&self, _pipeline: u64, _width: u32, _height: u32) -> Result<(), QuantaError> {
+    fn dispatch_rays(
+        &self,
+        _pipeline: u64,
+        _accel: u64,
+        _out_field: u64,
+        _width: u32,
+        _height: u32,
+    ) -> Result<(), QuantaError> {
         // Step 063 — gate on actual proc-addr availability. The
         // full vkCmdTraceRaysKHR call needs ray-tracing pipeline
         // creation + shader binding tables, which require the

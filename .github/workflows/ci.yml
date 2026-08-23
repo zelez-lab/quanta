@@ -196,6 +196,7 @@ jobs:
           cargo test --test tessellation_basic --features software,render --no-default-features
           cargo test --test mesh_shader_basic --features software,render --no-default-features
           cargo test --test ray_tracing_basic --features software,render --no-default-features
+          cargo test --test gpu_ray_tracing --features software,render,compute --no-default-features
           cargo test --test pipeline_desc_gates --features software,render --no-default-features
 
       # Saturating arithmetic (step 041) and f16 precision (step 042)
@@ -290,7 +291,7 @@ jobs:
         run: cargo test --test gpu_caps --test gpu_field_lifecycle --test wave_lifecycle --test gpu_pulse --test gpu_deferred --test gpu_sampler --test gpu_format_caps -- --test-threads=1
 
       - name: GPU advanced tests
-        run: cargo test --test gpu_advanced --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
+        run: cargo test --test gpu_advanced --test gpu_ray_tracing --test gpu_queue --test gpu_timeline --test gpu_texture_views --test gpu_occlusion --test gpu_indirect_dispatch --test gpu_debug --test gpu_reload -- --test-threads=1
 
       - name: GPU indirect-command-buffer tests (render bundle)
         run: cargo test --test icb_render_metal -- --test-threads=1

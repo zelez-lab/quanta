@@ -162,6 +162,12 @@ pub struct MetalDevice {
     // Resource storage — keyed by handle.
     // RwLock: dispatch/render paths take read locks; alloc/free take write locks.
     pub(crate) buffers: RwLock<HashMap<u64, ffi::Id>>,
+    /// Real MTLAccelerationStructure objects (step 026 — compute-based
+    /// RT works on every Apple6+ GPU, no RT hardware needed).
+    pub(crate) accel_structs: RwLock<HashMap<u64, ffi::Id>>,
+    /// Ray-tracing compute pipelines: the ray-gen intersector kernel
+    /// compiled as a compute pipeline state.
+    pub(crate) rt_pipelines: RwLock<HashMap<u64, ffi::Id>>,
     pub(crate) textures: RwLock<HashMap<u64, ffi::Id>>,
     /// Pixel format per texture handle — the Metal texture object doesn't
     /// round-trip it cheaply, and the compute dispatch needs it to enforce the
@@ -364,6 +370,8 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         caps,
         self_ref: crate::driver::DeviceSelfRef::new(),
         buffers: RwLock::new(HashMap::new()),
+        accel_structs: RwLock::new(HashMap::new()),
+        rt_pipelines: RwLock::new(HashMap::new()),
         textures: RwLock::new(HashMap::new()),
         texture_formats: RwLock::new(HashMap::new()),
         texture_usages: RwLock::new(HashMap::new()),

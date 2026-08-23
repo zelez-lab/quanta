@@ -8,7 +8,7 @@
 //! `Quanta.RayTracing.{AccelerationStructure, Pipeline}` (Lean) and
 //! `quanta-api/ray_tracing_safety.rs` (Verus):
 //!
-//! - `dispatch_rays(w, h)` fails when any dimension exceeds
+//! - `dispatch_rays(accel, out, w, h)` fails when any dimension exceeds
 //!   `MAX_DISPATCH_DIM` or the pipeline is destroyed.
 //! - `Drop` calls the matching destroy method exactly once.
 
@@ -91,16 +91,33 @@ impl RayTracingPipeline {
         self.max_recursion
     }
 
-    /// Trace `width × height` rays through this pipeline.
+    /// Trace `width × height` rays through this pipeline against
+    /// `accel`, writing results into `out` — the MVP ABI on every
+    /// backend: the ray-gen kernel sees the acceleration structure at
+    /// binding 0, the output buffer at binding 1, one thread per ray.
     ///
     /// Returns `Err(InvalidParam)` if either dimension exceeds
-    /// `MAX_DISPATCH_DIM` or the pipeline has been destroyed.
-    /// Refines `Quanta.RayTracing.Pipeline.dispatch` and the Verus
-    /// theorem `t7452_dispatch_appends`.
-    pub fn dispatch_rays(&self, width: u32, height: u32) -> Result<(), QuantaError> {
+    /// `MAX_DISPATCH_DIM`, or the pipeline or acceleration structure
+    /// has been destroyed. Refines
+    /// `Quanta.RayTracing.Pipeline.dispatch` and the Verus theorem
+    /// `t7452_dispatch_appends` (the lifecycle model tracks the
+    /// `(width, height)` history; the bindings are runtime arguments
+    /// outside the model).
+    pub fn dispatch_rays(
+        &self,
+        accel: &AccelerationStructure,
+        out: &quanta_core::Field<f32>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), QuantaError> {
         if !self.live {
             return Err(QuantaError::invalid_param(
                 "ray tracing pipeline is not live",
+            ));
+        }
+        if !accel.live {
+            return Err(QuantaError::invalid_param(
+                "acceleration structure is not live",
             ));
         }
         if width > MAX_DISPATCH_DIM || height > MAX_DISPATCH_DIM {
@@ -108,7 +125,8 @@ impl RayTracingPipeline {
                 "dispatch_rays dimension exceeds MAX_DISPATCH_DIM",
             ));
         }
-        self.device.dispatch_rays(self.handle, width, height)
+        self.device
+            .dispatch_rays(self.handle, accel.handle, out.handle(), width, height)
     }
 }
 

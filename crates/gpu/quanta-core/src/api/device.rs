@@ -869,7 +869,19 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     ) -> Result<u64, QuantaError>;
 
     /// Dispatch rays through a ray tracing pipeline.
-    fn dispatch_rays(&self, pipeline: u64, width: u32, height: u32) -> Result<(), QuantaError>;
+    /// Trace `width × height` rays through `pipeline` against the
+    /// acceleration structure `accel`, writing results into
+    /// `out_field`. The MVP ABI every backend honours: the ray-gen
+    /// kernel sees the acceleration structure at binding 0 and the
+    /// output buffer at binding 1, one thread per ray.
+    fn dispatch_rays(
+        &self,
+        pipeline: u64,
+        accel: u64,
+        out_field: u64,
+        width: u32,
+        height: u32,
+    ) -> Result<(), QuantaError>;
 
     /// Destroy an acceleration structure.
     fn destroy_acceleration_structure(&self, handle: u64) -> Result<(), QuantaError>;
