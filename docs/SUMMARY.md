@@ -68,6 +68,7 @@
 - [Batching and Synchronization](computation/how-to/batching-and-sync.md)
 - [Array Math (NumPy on the GPU)](computation/how-to/arrays-numpy.md)
 - [Training with Autodiff](computation/how-to/autograd-training.md)
+- [BLAS (Linear Algebra)](computation/how-to/blas.md)
 - [FFT (Fourier Transforms)](computation/how-to/fft.md)
 - [Async Copy and GPU Printf](computation/how-to/async-copy-and-printf.md)
 - [Tokenize Text (run a pretrained tokenizer)](computation/how-to/tokenize-text.md)

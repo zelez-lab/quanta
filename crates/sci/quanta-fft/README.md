@@ -145,6 +145,22 @@ enable `gpu` (+ a backend) for the device FFT.
   The Lean proof covers the radix-2 recursion only; Bluestein's correctness
   claim rests on the differential oracle.
 
+## Performance (honest framing)
+
+On a real M1 Pro (Metal), a 2^20 complex transform runs in **172 ms** and beats
+the CPU software lane **113×** — but that is 0.6 GFLOP/s, order 0.01% of the
+part's fp32 peak, and below N≈8192 the GPU *loses* to the CPU. The transform is
+bound by its per-call structure, not its arithmetic: every call round-trips
+through host memory, each of the `log2(N) + 1` radix-2 stages is a separate
+dispatch, and `fft2` pays that per-call cost `H + W` times over (a 512×512 grid
+takes 85 s on the GPU against 6 s on the CPU). `rfft`'s documented "~2×"
+throughput win measures 1.05–1.17× for the same reason, though its halved
+memory traffic is real.
+
+We never hide where we lose — full tables, the per-call cost breakdown, backend
+coverage, and what would have to change are in
+[`PERFORMANCE.md`](PERFORMANCE.md).
+
 ## Coming next
 
 Batched / multi-dimensional (3-D) transforms.

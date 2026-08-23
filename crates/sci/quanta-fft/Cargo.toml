@@ -34,3 +34,13 @@ quanta-ir = { path = "../../gpu/quanta-ir", version = "0.1.0-alpha.13" }
 quanta = { path = "../../..", version = "0.1.0-alpha.13", default-features = false, features = [
     "software",
 ] }
+
+[[bench]]
+name = "fft"
+harness = false
+required-features = ["gpu"]
+
+[[bench]]
+name = "fft2"
+harness = false
+required-features = ["gpu"]
