@@ -741,6 +741,66 @@ example :
        .wend, .wend] = [2, 3, 3, 2] := by
   simp [writtenLocals, writtenLocalsInstr]
 
+/-- The function-level apex: the entry seed stream, then the kernel.
+    Every hypothesis is checkable at the function boundary — the
+    declared locals (all `.u32`, WASM zero-initialises them) cover the
+    kernel's written locals, the entry state is a function entry
+    (empty stack, empty per-frame map, duplicate-free params), and the
+    label-only conditions hold at the seeded state. The op stream is
+    the seed `Const`s followed by the kernel's — production's function
+    body modulo the hoisted per-write declarations
+    (`lower_entry_seed.rs`). -/
+theorem framework_preservation_kernel_fn
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (decls : List (Nat × Quanta.KOps.Scalar))
+    (h_tys : ∀ p ∈ decls, p.snd = Quanta.KOps.Scalar.u32)
+    (h_zero : ∀ p ∈ decls, ws.locals.get? p.fst = some (.wI32 0))
+    (h_stack : s.stack = []) (h_creg : s.currentReg = [])
+    (hnd : KeysNodup s.localReg)
+    (instrs : List WasmInstr)
+    (h_wf : KernelInstrsW2 instrs)
+    (h_fuel : fuel ≥ 2 + h_wf.depth)
+    (h_lab : h_wf.labelStable (fuel + 1) frames (seedLocals decls s).1)
+    (h_written : ∀ j ∈ writtenLocals instrs,
+        (∃ ty, (j, ty) ∈ decls) ∨ (s.lookupLocal j).isSome)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws instrs = some ws')
+    (hl : lowerInstrsP (fuel + 1) frames ⟨(seedLocals decls s).1, []⟩ instrs
+        = some (⟨s', []⟩, ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ((seedLocals decls s).2 ++ ops) = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  obtain ⟨kst_seed, h_seed_eval, R_seed, h_b_seed, _⟩ :=
+    seedLocals_refines decls ws s kst layout R h_tys h_zero h_stack h_creg
+      h_kst_no_broke
+  obtain ⟨kst', F, h_eval, R', h_bridge⟩ :=
+    framework_preservation_kernel_while2_seeded fuel frames ws (seedLocals decls s).1
+      kst_seed layout R_seed h_no_branch h_no_halt h_b_seed
+      h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+      instrs h_wf h_fuel h_lab
+      (seedLocals_keysNodup decls s hnd)
+      (seedLocals_seeded decls s instrs h_written)
+      ws' s' ops hw hl
+  refine ⟨kst', F, ?_, R', h_bridge⟩
+  rw [evalOps_append (h_seed_eval F) h_b_seed]
+  exact h_eval
+
 /-- rustc's `i = 0; while i < n { i += 1 }` — the kernel of
     `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs` and
     of the `while_exit_flag` pins — typechecks as a `KernelInstrsW2`. -/

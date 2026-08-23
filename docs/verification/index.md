@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 1098 — 599 across the core / companion chains + 499 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1103 — 599 across the core / companion chains + 504 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
@@ -112,7 +112,7 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 499
+                                step 059 — Lean `Quanta/Wasm/*`: 504
                                 theorems, 0 sorries.
                                 `framework_preservation_kernel_while2`
                                 over `KernelInstrsW2` = straight-line
@@ -273,7 +273,7 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **499 theorems, 0 sorries**
+Lean, `specs/verify/lean/Quanta/Wasm/` — **504 theorems, 0 sorries**
 (`grep -c '^theorem'`), every file imported from
 `specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
 `PreservationList`):
@@ -335,12 +335,16 @@ with unique keys (`KeysNodup`), every `local.set` upserts the register
 the map already holds and the map never moves
 (`KernelInstrsW2.stable_of_seeded`), so only the label-only face
 (`KernelInstrsW2.labelStable`) remains, and `body2` may rebind any
-number of locals past the exit site. A local FIRST written past the
-exit site is still outside (on the exit path its register was never
-written; production reads its function-entry zero-init, which the
-model does not yet give stable registers). A counter initialised from
-a constant and incremented by a constant satisfies the conditions;
-they are decidable per kernel.
+number of locals past the exit site. The entry itself is
+modeled: `seedLocals` mirrors production's function-entry
+pre-allocation (one default-zero `Const` per declared local, pinned by
+`lower_entry_seed.rs`), `seedLocals_refines` shows the seed stream
+extends the refinement (WASM's own zero-init of locals meets the
+register zeros), and `framework_preservation_kernel_fn` states the
+whole function — seed stream then kernel — with every hypothesis
+checkable at the function boundary. A counter initialised from a
+constant and incremented by a constant satisfies the conditions; they
+are decidable per kernel.
 General nested `block` / `wif` / `br` — a second loop between an exit
 and its target, code between a loop's `end` and its block's, `wif`
 inside loop bodies — is **outside the theorem** (the structured arms are

@@ -18,7 +18,7 @@ import Quanta.Wasm.TranslatePendingAgree
 
 namespace Quanta.Wasm
 
-open Quanta.KOps (KernelOp Reg)
+open Quanta.KOps (KernelOp Reg evalOps regWrite regLookup)
 
 -- ════════════════════════════════════════════════════════════════════
 -- Written locals, seeding, key uniqueness
@@ -533,5 +533,157 @@ theorem seedLocals_seeded
         (∃ ty, (j, ty) ∈ decls) ∨ (s.lookupLocal j).isSome) :
     LocalsSeeded ((seedLocals decls s).1) instrs :=
   fun j hj => seedLocals_binds decls s j (h j hj)
+
+/-- Running the seed stream extends the refinement: from a function
+    entry (empty stack and per-frame map, params already refined), each
+    `Const r 0` writes a fresh register and binds a zero-initialised
+    WASM local to it — the model-side face of production's entry
+    pre-allocation meeting WASM's own zero-init of locals. -/
+theorem seedLocals_refines
+    (decls : List (Nat × Quanta.KOps.Scalar))
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_tys : ∀ p ∈ decls, p.snd = Quanta.KOps.Scalar.u32)
+    (h_zero : ∀ p ∈ decls, ws.locals.get? p.fst = some (.wI32 0))
+    (h_stack : s.stack = []) (h_creg : s.currentReg = [])
+    (h_kst : kst.broke = false) :
+    ∃ kst' : Quanta.KOps.State,
+      (∀ F, evalOps F kst (seedLocals decls s).2 = some kst') ∧
+      Refines ws (seedLocals decls s).1 kst' layout ∧
+      kst'.broke = false ∧ kst'.heap = kst.heap := by
+  induction decls generalizing s kst with
+  | nil => exact ⟨kst, fun F => by simp [seedLocals, evalOps], R, h_kst, rfl⟩
+  | cons d rest ih =>
+      obtain ⟨i, ty⟩ := d
+      have h_ty : ty = Quanta.KOps.Scalar.u32 := h_tys (i, ty) (List.mem_cons_self _ _)
+      subst h_ty
+      have h_zero_i : ws.locals.get? i = some (.wI32 0) :=
+        h_zero (i, .u32) (List.mem_cons_self _ _)
+      let s1 : LowerState := (s.alloc).2.setLocalReg i (s.alloc).1 .u32
+      let kst1 : Quanta.KOps.State :=
+        { kst with rf := regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 0) }
+      have h_b1 : kst1.broke = false := h_kst
+      -- One `Const` evaluates to the register write.
+      have h_step : ∀ F, Quanta.KOps.evalOp F kst
+          (KernelOp.const s.nextReg (LowerState.zeroConst .u32)) = some kst1 := by
+        intro F
+        show _ = some ({ kst with
+          rf := regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 0) } : Quanta.KOps.State)
+        simp [Quanta.KOps.evalOp, Quanta.KOps.evalConst, LowerState.zeroConst]
+        rfl
+      -- The refinement survives the step.
+      have R1 : Refines ws s1 kst1 layout := by
+        refine ⟨?_, ?_, ?_, ?_, ?_, R.heapRefines, ?_, ?_, ?_⟩
+        · -- StackRefines: the stack is untouched; lift past the fresh write.
+          refine ⟨R.stk.left, ?_⟩
+          intro j v hv
+          obtain ⟨svj, h_get, henc⟩ := R.stk.right j v hv
+          refine ⟨svj, h_get, ?_⟩
+          apply WasmValue.encodes_preserved_of_fresh _ henc
+          intro r' hr'
+          exact R.fresh.left svj (List.mem_of_get? h_get) r' hr'
+        · -- LocalsRefines: the new binding reads its zero; the old ones lift.
+          intro k q hfind v hv
+          by_cases hki : k = i
+          · subst hki
+            rw [show s1.localReg = LowerState.upsertAssoc s.localReg k (s.alloc).1 from rfl,
+                LowerState.find?_upsertAssoc_self] at hfind
+            injection hfind with h_pair
+            have hq : (s.alloc).1 = q := ((Prod.mk.injEq _ _ _ _).mp h_pair).2
+            have hv0 : v = .wI32 0 := by
+              rw [h_zero_i] at hv
+              exact ((Option.some.injEq _ _).mp hv).symm
+            subst hv0
+            have h_tyk : localTyOf s1.localTy k = .u32 := by
+              show localTyOf (LowerState.upsertAssoc s.localTy k .u32) k = _
+              unfold localTyOf
+              rw [LowerState.find?_upsertAssoc_self]
+              rfl
+            rw [h_tyk, ← hq]
+            apply encodes_wI32_reg_of_tagVal (Or.inl rfl)
+            show regLookup (regWrite kst.rf s.nextReg (Quanta.KOps.Value.vU32 0))
+                (s.alloc).1 = some (tagVal 0 .u32)
+            rw [show ((s.alloc).1 : Reg) = s.nextReg from rfl,
+                regLookup_regWrite_self]
+            rfl
+          · rw [show s1.localReg = LowerState.upsertAssoc s.localReg i (s.alloc).1 from rfl,
+                LowerState.find?_upsertAssoc_ne _ i k _ hki] at hfind
+            have henc := R.locs k q hfind v hv
+            have h_ty_ne : localTyOf s1.localTy k = localTyOf s.localTy k := by
+              show localTyOf (LowerState.upsertAssoc s.localTy i .u32) k = _
+              unfold localTyOf
+              rw [LowerState.find?_upsertAssoc_ne _ i k _ hki]
+            rw [h_ty_ne]
+            apply WasmValue.encodes_preserved_of_fresh _ henc
+            intro r' hr'
+            have hrq : r' = q := by simpa [SymVal.regs] using hr'
+            subst hrq
+            exact R.fresh.right (k, r') (List.mem_of_find?_eq_some hfind)
+        · -- Fresh: nextReg bumps; the new pair sits at the old nextReg.
+          refine ⟨?_, ?_⟩
+          · intro sv hsv r' hr'
+            exact Nat.lt_succ_of_lt (R.fresh.left sv hsv r' hr')
+          · intro ir hir
+            rw [show s1.localReg = LowerState.upsertAssoc s.localReg i (s.alloc).1
+                  from rfl] at hir
+            rcases LowerState.mem_upsertAssoc_iff.mp hir with h_eq | ⟨h_in, _⟩
+            · rw [h_eq]
+              exact Nat.lt_succ_self _
+            · exact Nat.lt_succ_of_lt (R.fresh.right ir h_in)
+        · -- AliasFree: the fresh register is above every stack register.
+          intro ir hir sv hsv
+          rw [show s1.localReg = LowerState.upsertAssoc s.localReg i (s.alloc).1
+                from rfl] at hir
+          rcases LowerState.mem_upsertAssoc_iff.mp hir with h_eq | ⟨h_in, _⟩
+          · rw [h_eq]
+            intro hcontra
+            exact absurd (R.fresh.left sv hsv _ hcontra) (Nat.lt_irrefl _)
+          · exact R.aliasFree ir h_in sv hsv
+        · -- InjectiveLocals: the new register is above every old one.
+          intro p q hp hq
+          rw [show s1.localReg = LowerState.upsertAssoc s.localReg i (s.alloc).1
+                from rfl] at hp hq
+          rcases LowerState.mem_upsertAssoc_iff.mp hp with hp_eq | ⟨hp_in, _⟩ <;>
+          rcases LowerState.mem_upsertAssoc_iff.mp hq with hq_eq | ⟨hq_in, _⟩
+          · rw [hp_eq, hq_eq]
+            exact Or.inl rfl
+          · right
+            rw [hp_eq]
+            exact Ne.symm (Nat.ne_of_lt (R.fresh.right q hq_in))
+          · right
+            rw [hq_eq]
+            exact Nat.ne_of_lt (R.fresh.right p hp_in)
+          · exact R.injLocals p q hp_in hq_in
+        · -- CurrentRegRefines: the per-frame map is empty at entry.
+          intro k q hfind v _
+          rw [show s1.currentReg = s.currentReg from rfl, h_creg] at hfind
+          cases hfind
+        · -- FreshCurrent: empty.
+          intro ir hir
+          rw [show s1.currentReg = s.currentReg from rfl, h_creg] at hir
+          cases hir
+        · -- CurrentLocalDisjoint: empty.
+          intro p q hp _
+          rw [show s1.currentReg = s.currentReg from rfl, h_creg] at hp
+          cases hp
+      -- Recurse over the tail from the extended state.
+      obtain ⟨kst', h_ops, R', h_b', h_h'⟩ :=
+        ih s1 kst1 R1
+          (fun p hp => h_tys p (List.mem_cons_of_mem _ hp))
+          (fun p hp => h_zero p (List.mem_cons_of_mem _ hp))
+          (show s1.stack = [] from h_stack)
+          (show s1.currentReg = [] from h_creg)
+          h_b1
+      refine ⟨kst', ?_, R', h_b', by rw [h_h']⟩
+      intro F
+      show evalOps F kst
+          (KernelOp.const (s.alloc).1 (LowerState.zeroConst .u32)
+            :: (seedLocals rest s1).2) = some kst'
+      simp only [evalOps, Option.bind_eq_bind]
+      rw [show ((s.alloc).1 : Quanta.KOps.Reg) = s.nextReg from rfl, h_step F]
+      simp only [Option.some_bind, h_b1]
+      rw [if_neg (by simp [h_b1])]
+      exact h_ops F
 
 end Quanta.Wasm
