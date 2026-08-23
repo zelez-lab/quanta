@@ -39,6 +39,7 @@
 //! [`__fragment_varyings`]) that run the real shader compile. Declare the
 //! struct before the shaders (or import its `__quanta_varyings_<Name>`
 //! re-export alongside it from another module).
+#![deny(missing_docs)]
 
 extern crate proc_macro;
 
