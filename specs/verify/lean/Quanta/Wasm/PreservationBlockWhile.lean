@@ -131,6 +131,44 @@ theorem lowerInstrsP_brIf1_exit
     decide
   simp [hasLoopAbove, loopsAbove, exitFlagEntry, loopIndex, LowerState.alloc, h_idx]
 
+/-- Stage-B lowering composes across a straight-line prefix: the prefix
+    is plain Stage A, the rest continues with the pending list it was
+    given. -/
+theorem lowerInstrsP_straightLine_compose
+    {fuel : Nat} {frames : List FrameKind} {pref rest : List WasmInstr}
+    (h_sl : StraightLineInstrs pref)
+    {s s_m : LowerState} {p : List PendingWrap} {sp' : LowerStateP} {ops1 ops2 : List KernelOp}
+    (h_pref : lowerInstrs fuel frames s pref = some (s_m, ops1))
+    (h_rest : lowerInstrsP fuel frames ⟨s_m, p⟩ rest = some (sp', ops2)) :
+    lowerInstrsP fuel frames ⟨s, p⟩ (pref ++ rest) = some (sp', ops1 ++ ops2) := by
+  induction pref generalizing s ops1 with
+  | nil =>
+      simp only [lowerInstrs, Option.some.injEq, Prod.mk.injEq] at h_pref
+      obtain ⟨h_s, h_ops⟩ := h_pref
+      subst h_s; subst h_ops
+      simpa using h_rest
+  | cons i pref' IH =>
+      obtain ⟨h_i, h_pref'⟩ := h_sl
+      rw [lowerInstrs_cons_default fuel frames s i pref'
+          (straightLine_not_structured_lower h_i)] at h_pref
+      rw [List.cons_append, lowerInstrsP_cons_default fuel frames s p i (pref' ++ rest) h_i]
+      cases hli : lowerInstr s i with
+      | none => rw [hli] at h_pref; simp at h_pref
+      | some q =>
+          rw [hli] at h_pref
+          obtain ⟨s1, ops_i⟩ := q
+          simp only [Option.bind_eq_bind, Option.some_bind] at h_pref ⊢
+          cases hlr : lowerInstrs fuel frames s1 pref' with
+          | none => rw [hlr] at h_pref; simp at h_pref
+          | some q2 =>
+              rw [hlr] at h_pref
+              obtain ⟨s2, ops_r⟩ := q2
+              simp only [Option.some_bind, pure, Option.some.injEq, Prod.mk.injEq] at h_pref
+              obtain ⟨h_s, h_ops⟩ := h_pref
+              subst h_s; subst h_ops
+              rw [IH h_pref' hlr]
+              simp [List.append_assoc]
+
 /-- `br 0` at the end of a loop body: no ops, nothing pending. -/
 theorem lowerInstrsP_br0_loop (fuel : Nat) (frames : List FrameKind)
     (s : LowerState) (p : List PendingWrap) :
@@ -235,10 +273,12 @@ theorem blockWhileBody_iteration
     (hw : evalInstrs fuel ws (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some ws')
     (hl : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩
             (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some (sp', ops)) :
-    ∃ (s_flag : LowerState) (flag : Quanta.KOps.Reg) (opsBody2 : List KernelOp)
+    ∃ (s_flag : LowerState) (flag : Quanta.KOps.Reg) (opsSite opsBody2 : List KernelOp)
       (kst' : Quanta.KOps.State) (F : Nat),
       sp'.pending = [{ levels := 1, cond := flag, flag := true, skip := 0 }] ∧
       s.nextReg ≤ flag ∧ flag < s_flag.nextReg ∧
+      lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 1])
+        = some (⟨s_flag, [{ levels := 1, cond := flag, flag := true, skip := 0 }]⟩, opsSite) ∧
       lowerInstrs fuel (.loopK :: .block :: frames) s_flag body2 = some (sp'.base, opsBody2) ∧
       evalOps F kst ops = some kst' ∧
       ws'.halted = false ∧
@@ -309,6 +349,18 @@ theorem blockWhileBody_iteration
   have R_flag : Refines { ws_m with stack := rest_w }
       { s_c with nextReg := s_c.nextReg + 2 } kst_cast layout :=
     R_cast.bump_nextReg (by omega)
+  -- The site's own lowering: the prefix, then the brIf with nothing after.
+  have hl_site : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 1])
+      = some (⟨{ s_c with nextReg := s_c.nextReg + 2 },
+               [{ levels := 1, cond := s_c.nextReg + 1, flag := true, skip := 0 }]⟩,
+              opsPref ++ (opsCommit
+                ++ [KernelOp.cast s_c.nextReg cond .u32 .bool,
+                    KernelOp.branch s_c.nextReg
+                      [.const (s_c.nextReg + 1) (.bool true), .breakOp] []])) := by
+    refine lowerInstrsP_straightLine_compose h_pref hl_pref ?_
+    rw [lowerInstrsP_brIf1_exit, h_pop]
+    simp only [Option.bind_eq_bind, Option.some_bind, h_commit, LowerState.alloc, lowerInstrsP,
+               pure, List.append_nil]
   -- Shared prefix of the IR run: prefix ops, commit ops, the cast.
   have h_ev_to_cast : ∀ F, F1 ≤ F →
       evalOps F kst (opsPref ++ opsCommit
@@ -348,8 +400,8 @@ theorem blockWhileBody_iteration
         R_flag h_ws1_nb h_ws1_nh h_kst_cast_ok h_buf_locals h_no_buf_stack
         h_load_bounds h_store_bounds h_store_layout body2 h_body2 ws_b s_b opsBody2
         hw_body2 hl_body2
-    refine ⟨{ s_c with nextReg := s_c.nextReg + 2 }, s_c.nextReg + 1, opsBody2, kst_b,
-            max F1 F2, rfl, by omega, by simp, hl_body2, ?_, h_bh, Or.inl ⟨rfl, ?_, ?_⟩⟩
+    refine ⟨{ s_c with nextReg := s_c.nextReg + 2 }, s_c.nextReg + 1, _, opsBody2, kst_b,
+            max F1 F2, rfl, by omega, by simp, hl_site, hl_body2, ?_, h_bh, Or.inl ⟨rfl, ?_, ?_⟩⟩
     · rw [h_ev_to_cast (max F1 F2) (Nat.le_max_left _ _),
           evalOps_exitSite_falls_through h_kst_cast_ok h_cb_false]
       exact evalOps_fuel_mono (Nat.le_max_right _ _) h_ev_b
@@ -362,10 +414,10 @@ theorem blockWhileBody_iteration
       rw [h_cb]; simp [hc]
     rw [evalInstrs_of_branch_set rfl, Option.some.injEq] at hw_rest
     subst hw_rest
-    refine ⟨{ s_c with nextReg := s_c.nextReg + 2 }, s_c.nextReg + 1, opsBody2,
+    refine ⟨{ s_c with nextReg := s_c.nextReg + 2 }, s_c.nextReg + 1, _, opsBody2,
             { kst_cast with rf := regWrite kst_cast.rf (s_c.nextReg + 1) (vBool true),
                             broke := true },
-            F1, rfl, by omega, by simp, hl_body2, ?_, h_mh, Or.inr ⟨rfl, rfl, ?_, ?_⟩⟩
+            F1, rfl, by omega, by simp, hl_site, hl_body2, ?_, h_mh, Or.inr ⟨rfl, rfl, ?_, ?_⟩⟩
     · rw [h_ev_to_cast F1 (Nat.le_refl _), evalOps_exitSite_fires h_cb_true]
     · have R_w : Refines { ws_m with stack := rest_w }
           { s_c with nextReg := s_c.nextReg + 1 } kst_cast layout :=
@@ -468,14 +520,13 @@ theorem blockWhile_lowerP
     target at the block and runs the post from the cleared exit state. -/
 theorem preservation_blockWhile_nIterExit
     (f : Nat) (frames : List FrameKind)
-    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout)
     (h_kst_no_broke : kst.broke = false)
     (pref body2 post : List WasmInstr)
     (h_pref : StraightLineInstrs pref) (h_body2 : StraightLineInstrs body2)
-    -- WASM-side iteration trace.
-    (n : Nat) (entries bodyOuts : Fin (n + 1) → WasmState)
-    (h_exit : (bodyOuts (Fin.last n)).branchTarget = some 1)
+    -- WASM-side exit state (the last body-out of the trace).
+    (n : Nat) (bodyOuts : Fin (n + 1) → WasmState)
     (h_exit_nh : (bodyOuts (Fin.last n)).halted = false)
     (ws' : WasmState)
     (h_post_eval : evalInstrs (f + 1) { bodyOuts (Fin.last n) with branchTarget := none } post

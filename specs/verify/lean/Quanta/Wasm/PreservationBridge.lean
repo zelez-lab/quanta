@@ -4160,12 +4160,11 @@ theorem iterLoop_n_iter_exit_post_eval
 -- the caller's to establish (`PreservationWhile`).
 -- ════════════════════════════════════════════════════════════════════
 
-/-- `wloop _ :: rest` preservation, n-iteration exit case.
-    The wloop runs body exactly (n + 1) times: n continues + 1 exit.
-
-    Caller supplies the iteration trace as state sequences and
-    per-iteration preservation evidence. -/
-theorem preservation_evalInstrs_cons_wloop_nIterExit
+/-- The N-iteration theorem with the kernel's lowering already taken
+    apart: the caller supplies `s' = s2` and `ops = loopOp bodyOps ::
+    postOps`, which is how the Stage-B apex, whose post is not a plain
+    lowering, reaches it. -/
+theorem preservation_evalInstrs_cons_wloop_nIterExit_core
     (frames : List FrameKind)
     (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
     (layout : BufferLayout)
@@ -4233,21 +4232,12 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
     (h_fuel_bound : bt ≥ n + 1)
     (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
     (hw : evalInstrs (bt + 1) ws (.wloop 0 :: rest) = some ws')
-    (hl : lowerInstrs (bt + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
+    -- The kernel's lowering, already taken apart (Stage A or Stage B).
+    (h_s_eq : s2 = s') (h_ops_eq : [KernelOp.loopOp bodyOps] ++ postOps = ops) :
     ∃ (kst' : Quanta.KOps.State) (F : Nat),
       evalOps F kst ops = some kst' ∧
       Refines ws' s' kst' layout ∧
       BridgeClauses ws' kst' := by
-  -- Unfold lowering's wloop arm: matches up s1, bodyOps, s2, postOps via h_lb, h_lp.
-  simp only [lowerInstrs] at hl
-  rw [h_split] at hl
-  simp only [Option.bind_eq_bind, Option.some_bind] at hl
-  rw [h_lb] at hl
-  simp only [Option.some_bind] at hl
-  rw [h_lp] at hl
-  simp only [Option.some_bind, Option.some.injEq, Prod.mk.injEq, pure] at hl
-  -- hl should now be: s' = s2 ∧ ops = [.loopOp bodyOps] ++ postOps
-  obtain ⟨h_s_eq, h_ops_eq⟩ := hl
   -- Eval side: wloop arm. Decompose into iterLoop on ws.
   simp only [evalInstrs] at hw
   have h_cond : (ws.halted || ws.branchTarget.isSome) = false := by
@@ -4339,6 +4329,101 @@ theorem preservation_evalInstrs_cons_wloop_nIterExit
       simp [h_reset_nbk, h_ev_p_F]
     exact h_full
   · rw [← h_s_eq]; exact R_p
+
+/-- `wloop _ :: rest` preservation, n-iteration exit case.
+    The wloop runs body exactly (n + 1) times: n continues + 1 exit.
+
+    Caller supplies the iteration trace as state sequences and
+    per-iteration preservation evidence; the kernel's lowering is the
+    plain Stage-A one, taken apart here. -/
+theorem preservation_evalInstrs_cons_wloop_nIterExit
+    (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (_R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (bt : Nat) (rest : List WasmInstr)
+    (body post : List WasmInstr)
+    (h_split : splitAtEnd rest = some (body, post))
+    (n : Nat)
+    -- WASM-side iteration trace: entry states + body-output states.
+    -- entries 0 = ws (loop entry); entries (i+1) = bodyOuts i with
+    -- branchTarget cleared (continue semantics).
+    (wasmEntries wasmBodyOuts : Fin (n + 1) → WasmState)
+    (h_wasm_start : wasmEntries 0 = ws)
+    (h_wasm_step : ∀ i : Fin (n + 1),
+        evalInstrs bt (wasmEntries i) body = some (wasmBodyOuts i))
+    (h_wasm_continue : ∀ i : Fin n,
+        (wasmBodyOuts i.castSucc).branchTarget = some 0 ∧
+        wasmEntries i.succ
+          = { wasmBodyOuts i.castSucc with branchTarget := none })
+    (h_wasm_exit : (wasmBodyOuts (Fin.last n)).branchTarget = none ∧
+                   (wasmBodyOuts (Fin.last n)).halted = false)
+    -- IR-side iteration trace: lowering state s1 (after body lowering,
+    -- from the loop-entry state) + IR body-output state sequence.
+    (s1 : LowerState) (bodyOps : List KernelOp)
+    (h_lb : lowerInstrs bt (.loopK :: frames) { s with currentReg := [] } body
+              = some (s1, bodyOps))
+    (kstStates : Fin (n + 2) → Quanta.KOps.State)
+    (h_kst_start : kstStates 0 = kst)
+    (F_b : Nat)
+    (h_ir_step : ∀ i : Fin (n + 1),
+        evalOps F_b (kstStates i.castSucc) bodyOps
+          = some (kstStates i.succ))
+    (h_ir_continue : ∀ i : Fin n,
+        (kstStates i.castSucc.succ).broke = false)
+    (h_ir_exit : (kstStates (Fin.last (n + 1))).broke = true)
+    -- Per-iteration Refines preservation across body iterations.
+    (h_per_iter_refines : ∀ i : Fin (n + 1),
+        Refines (wasmBodyOuts i) s1 (kstStates i.succ) layout)
+    -- Post-loop bridge, from the loop-close state.
+    (s2 : LowerState) (postOps : List KernelOp)
+    (h_lp : lowerInstrs bt frames { s1 with currentReg := [] } post = some (s2, postOps))
+    -- Stated at the loop-close state the post is lowered from, so a
+    -- caller whose post evidence is conditional on that state (the
+    -- L11 apex's label side condition) can supply it.
+    (post_preserves : ∀ {ws_p : WasmState}
+        {kst_p : Quanta.KOps.State}
+        (_R_p : Refines ws_p { s1 with currentReg := [] } kst_p layout)
+        (_h_nb_p : ws_p.branchTarget = none)
+        (_h_nh_p : ws_p.halted = false)
+        (_h_nbk_p : kst_p.broke = false)
+        {ws'_p : WasmState} {s'_p : LowerState} {postOps' : List KernelOp}
+        (_hw_p : evalInstrs bt ws_p post = some ws'_p)
+        (_hl_p : lowerInstrs bt frames { s1 with currentReg := [] } post
+                   = some (s'_p, postOps')),
+      ∃ (kst'_p : Quanta.KOps.State) (F : Nat),
+        evalOps F kst_p postOps' = some kst'_p ∧
+        Refines ws'_p s'_p kst'_p layout ∧
+        BridgeClauses ws'_p kst'_p)
+    -- Fuel constraint: bt ≥ n + 1 — the n+1 body runs `iterLoop`
+    -- replays (the IR side picks its own fuel, `max … (n + 2)`).
+    -- Exactly the bound `iterLoop_trace_of_eval` hands back.
+    (h_fuel_bound : bt ≥ n + 1)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (bt + 1) ws (.wloop 0 :: rest) = some ws')
+    (hl : lowerInstrs (bt + 1) frames s (.wloop 0 :: rest) = some (s', ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' := by
+  -- Unfold lowering's wloop arm: matches up s1, bodyOps, s2, postOps via h_lb, h_lp.
+  simp only [lowerInstrs] at hl
+  rw [h_split] at hl
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl
+  rw [h_lb] at hl
+  simp only [Option.some_bind] at hl
+  rw [h_lp] at hl
+  simp only [Option.some_bind, Option.some.injEq, Prod.mk.injEq, pure] at hl
+  -- hl should now be: s' = s2 ∧ ops = [.loopOp bodyOps] ++ postOps
+  obtain ⟨h_s_eq, h_ops_eq⟩ := hl
+  exact preservation_evalInstrs_cons_wloop_nIterExit_core frames ws s kst layout _R
+    h_no_branch h_no_halt h_kst_no_broke bt rest body post h_split n wasmEntries wasmBodyOuts
+    h_wasm_start h_wasm_step h_wasm_continue h_wasm_exit s1 bodyOps h_lb kstStates h_kst_start
+    F_b h_ir_step h_ir_continue h_ir_exit h_per_iter_refines s2 postOps h_lp post_preserves
+    h_fuel_bound ws' s' ops hw h_s_eq h_ops_eq
 
 -- ════════════════════════════════════════════════════════════════════
 -- L10 — framework_preservation (straight-line kernels)
