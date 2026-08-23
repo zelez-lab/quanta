@@ -320,6 +320,13 @@ impl GpuDevice for CpuDevice {
         true
     }
 
+    fn subgroup_size(&self) -> u32 {
+        // The width the interpreter slices workgroups into for its
+        // warp-cooperative passes — the same constant `subgroup_size()`
+        // reports inside a kernel.
+        SUBGROUP_SIZE
+    }
+
     // === Fields ===
 
     fn field_alloc(&self, size: usize, _usage: FieldUsage) -> Result<u64, QuantaError> {

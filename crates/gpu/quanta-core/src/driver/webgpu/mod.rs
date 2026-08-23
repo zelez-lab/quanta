@@ -323,6 +323,14 @@ impl QGpuDevice for WebgpuDevice {
         crate::ArtifactKind::Wgsl
     }
 
+    /// WebGPU never states the device's subgroup width: the adapter
+    /// exposes only `subgroupMinSize` / `subgroupMaxSize`, and a shader
+    /// reads `@builtin(subgroup_size)` at runtime. `0` — "not fixed" —
+    /// is the honest answer, and it refuses the dispatches that need one.
+    fn subgroup_size(&self) -> u32 {
+        0
+    }
+
     /// WGSL storage buffers cannot hold 16-/8-bit array elements, so the
     /// WGSL emitter keeps bf16/fp8 on the portable u32-slot layout (one
     /// element per 32-bit word). Hosts must expand tight narrow data

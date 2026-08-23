@@ -350,6 +350,10 @@ impl GpuDevice for ValidationDevice {
         self.inner.supports_subgroups()
     }
 
+    fn subgroup_size(&self) -> u32 {
+        self.inner.subgroup_size()
+    }
+
     // === Async compute ===
 
     fn supports_async_compute(&self) -> bool {

@@ -311,6 +311,13 @@ pub struct VulkanDevice {
     /// (the driver aborts at pipeline creation); llvmpipe supports it.
     /// Queried at discovery via `vkGetPhysicalDeviceProperties2`.
     pub(super) subgroup_arithmetic_supported: bool,
+    /// `VkPhysicalDeviceSubgroupProperties.subgroupSize` — the lane count
+    /// of a subgroup on this device (32 on llvmpipe and NVIDIA, 64 on
+    /// AMD's compute-oriented parts, 16 on Broadcom V3D). `0` on
+    /// 1.0-only loaders, where the properties-2 query never runs:
+    /// callers that must size a dispatch in subgroups refuse rather than
+    /// assume a width. Queried at discovery alongside the arithmetic bit.
+    pub(super) subgroup_size: u32,
     /// The `VK_KHR_cooperative_matrix` shapes this device enumerated at
     /// subgroup scope, already mapped to Quanta types — empty when the
     /// extension is absent (lavapipe < Mesa 24.1, Broadcom V3D, MoltenVK)
@@ -1403,12 +1410,15 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             _ => (false, false, false, false),
         };
 
-        // TASK 37 — subgroup arithmetic capability. Chain
-        // VkPhysicalDeviceSubgroupProperties onto a properties2 query;
-        // the prims subgroup-reduce path is only sound when the
-        // compute stage supports the ARITHMETIC class. V3D: false
-        // (BASIC only); llvmpipe: true.
-        let subgroup_arithmetic_supported = match get_props2_fn {
+        // TASK 37 — subgroup arithmetic capability, and the subgroup
+        // width. Chain VkPhysicalDeviceSubgroupProperties onto a
+        // properties2 query; the prims subgroup-reduce path is only
+        // sound when the compute stage supports the ARITHMETIC class.
+        // V3D: false (BASIC only); llvmpipe: true. `subgroupSize` comes
+        // from the same struct — kernels whose work unit is the subgroup
+        // (the cooperative-matrix GEMM) size their dispatch by it, and a
+        // loader too old for the query leaves it 0 so they refuse.
+        let (subgroup_arithmetic_supported, subgroup_size) = match get_props2_fn {
             Some(get_props2) => {
                 let mut subgroup_props = ffi::VkPhysicalDeviceSubgroupProperties {
                     s_type: ffi::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
@@ -1424,10 +1434,13 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
                     properties: unsafe { core::mem::zeroed::<ffi::VkPhysicalDeviceProperties>() },
                 };
                 unsafe { get_props2(pd, &mut props2) };
-                (subgroup_props.supported_operations & ffi::VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0
-                    && (subgroup_props.supported_stages & ffi::VK_SHADER_STAGE_COMPUTE_BIT) != 0
+                let arithmetic = (subgroup_props.supported_operations
+                    & ffi::VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
+                    != 0
+                    && (subgroup_props.supported_stages & ffi::VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+                (arithmetic, subgroup_props.subgroup_size)
             }
-            None => false,
+            None => (false, 0),
         };
 
         // `VK_KHR_cooperative_matrix` — enumerate the native MMA shapes at
@@ -2064,6 +2077,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             storage_buffer_16bit_supported: storage16_supported,
             storage_buffer_8bit_supported: storage8_supported,
             subgroup_arithmetic_supported,
+            subgroup_size,
             cooperative_matrix_shapes,
             dispatch_base_fn,
             sparse_tile_bindings: RwLock::new(HashMap::new()),

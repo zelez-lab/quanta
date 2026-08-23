@@ -51,9 +51,16 @@ The strategy is ~80% of vendor BLAS on tier-2 (Apple-Silicon) GPUs.
   and validated (`tc_shared_load_probe`) because shared-staging is the right
   strategy on **discrete** GPUs (NVIDIA-style, where global memory is far); it
   is reserved for the Vulkan path.
-- Vulkan `VK_KHR_cooperative_matrix` is **not yet wired** — the Metal
-  `simdgroup_matrix` path is the validated one; the SPIR-V emitter still falls
-  back to scalar (so `supports_cooperative_matrix()` is Metal-only today).
+- The kernel is built for **the shape the device enumerates**, not a baked
+  8×8×8: `gemm_tc::<In, Acc>` picks the first shape with those element types
+  and sizes its fragments, its K step and its tile from it, so a card listing
+  f16 inputs with f32 accumulation at 16×16×16 gets a 64×64 tile per subgroup
+  from the same code. The numbers above are the all-f32 Metal path — the only
+  one measured on hardware so far. The `VK_KHR_cooperative_matrix` lowering is
+  wired and spirv-val-clean (`tests/spirv_val_tc.rs` validates the f32, f16,
+  mixed 16×16×16 and non-square 16×8×16 modules on a host with no such
+  device), but no discrete card has run it yet, so there is no Vulkan
+  tensor-core number to quote.
 - No vendor comparison (Apple Accelerate / cuBLAS) is wired in yet; the numbers
   above are quanta-internal only.
 
@@ -65,7 +72,7 @@ backend coverage exactly — every row below applies to `gemv` too.
 | Backend | GEMM status |
 |---------|-------------|
 | Software (CPU) | correct (differential tests; gemv 9/9; mixed bf16/f16/fp8 11/11; quant int8+int4 11/11). TC: `NotSupported` (CPU lane), gate-tested. |
-| Metal (M1 Pro) | correct + benched on real hardware; gemv 9/9; mixed bf16/f16/fp8 11/11; quant int8+int4 11/11; **tensor-core 6/6** (incl. 128³). |
+| Metal (M1 Pro) | correct + benched on real hardware; gemv 9/9; mixed bf16/f16/fp8 11/11; quant int8+int4 11/11; **tensor-core 11/11** (incl. 128³ f32 and the uniform-f16 shape, bit-exact against the host oracle). |
 | Vulkan (lavapipe, RPi 5 Mesa LLVM 20) | **correct — 15/15 gemm tests pass** (all tiled + partial-tail cases). The tiled kernel's shared-memory + barriers lower to SPIR-V lavapipe accepts. (Note: lavapipe *does* reject subgroup reduce/scan ops — prims block kernels fail there with `VkResult -13` — but GEMM uses neither, only shared memory.) |
 | WebGPU | not yet wired |
 

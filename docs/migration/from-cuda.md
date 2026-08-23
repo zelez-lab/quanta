@@ -298,7 +298,7 @@ find typed wrappers in Quanta. The render-side constructors
 
 | CUDA / NVIDIA            | Quanta                                                       |
 |--------------------------|--------------------------------------------------------------|
-| WMMA / `mma.sync` (tensor cores) | Cooperative-matrix IR ops, used through `quanta-blas` (`gemm` routes to the tensor-core kernel when the device lists its shape); the device's shapes via `gpu.cooperative_matrix_shapes()` — see [Cooperative matrices](../computation/how-to/cooperative-matrix.md) |
+| WMMA / `mma.sync` (tensor cores) | Cooperative-matrix IR ops, used through `quanta-blas`: `gemm` routes to the tensor-core kernel when the device lists its shape, and `gemm_tc::<u16, f32>` is the explicit f16-in / f32-accumulate entry on the shape the card enumerates (`u16` = binary16 bit patterns); the device's shapes via `gpu.cooperative_matrix_shapes()` — see [Cooperative matrices](../computation/how-to/cooperative-matrix.md) |
 | OptiX `optixAccel*` BLAS | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`    |
 | OptiX pipeline           | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`   |
 | `optixLaunch`            | `pipeline.dispatch_rays(width, height)`                       |

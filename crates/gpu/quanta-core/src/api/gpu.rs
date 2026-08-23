@@ -291,6 +291,18 @@ impl Gpu {
         self.ctx.device.supports_subgroups()
     }
 
+    /// How many lanes a subgroup (warp / SIMD-group) has on the active
+    /// device — 32 on Metal and the software lane, the driver's
+    /// `subgroupSize` on Vulkan (64 on AMD compute parts, 16 on Broadcom
+    /// V3D). `0` means the device does not fix one: WebGPU exposes only a
+    /// min/max range, and a Vulkan loader too old for the properties-2
+    /// query cannot answer. Kernels whose work unit IS the subgroup — the
+    /// cooperative-matrix GEMM dispatches one subgroup per output tile —
+    /// size their threads by this and refuse on `0` rather than guess.
+    pub fn subgroup_size(&self) -> u32 {
+        self.ctx.device.subgroup_size()
+    }
+
     /// Whether narrow-float buffers (bf16 / fp8) on the active backend
     /// use the portable u32-slot layout (one element per 32-bit word)
     /// instead of native stride. Only WebGPU: WGSL storage buffers

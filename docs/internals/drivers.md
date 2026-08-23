@@ -353,6 +353,7 @@ chain so each feature is *enabled* alongside being *enumerated*:
 | Mesh shaders | `VK_EXT_mesh_shader` | `VkPhysicalDeviceMeshShaderFeaturesEXT` |
 | Tessellation | (core) | `VkPhysicalDeviceFeatures.tessellationShader` |
 | Ray tracing | `VK_KHR_ray_tracing_pipeline` + `VK_KHR_acceleration_structure` + `VK_KHR_buffer_device_address` + `VK_KHR_deferred_host_operations` | `accelerationStructure` + `bufferDeviceAddress` |
+| Subgroup arithmetic + width | (core 1.1) | `VkPhysicalDeviceSubgroupProperties` — `supportedOperations` and `subgroupSize` |
 
 `bufferDeviceAddress` is required for ray tracing because the
 acceleration-structure build inputs reference vertex / index buffers
@@ -458,6 +459,7 @@ the up-front check fail explicitly rather than silently.
 | Variable rate shading | ✅ native (rate enumeration + `vkCmdSetFragmentShadingRateKHR`) | ✅ native (`MTLRasterizationRateMap`) | `NotSupported` | software lifecycle |
 | Sparse residency | ✅ native (`vkQueueBindSparse`, 2D / single-mip) | ✅ native (`MTLHeap` placement, 2D / single-mip) | `NotSupported` | software lifecycle |
 | Cooperative matrix | ✅ native (`SPV_KHR_cooperative_matrix` — `OpCooperativeMatrixLoadKHR` / `MulAddKHR` / `StoreKHR`, subgroup scope, row-major; device enumerates its shapes via `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`, a kernel on any other shape is refused at `wave_jit`) | ✅ native (`simdgroup_matrix<T,8,8>`, f32/f16, family 7+) | `NotSupported` (refused at validation — WGSL has no matrix type) | `NotSupported` (refused at validation — no fragment model) |
+| Subgroup width (`subgroup_size()`) | `VkPhysicalDeviceSubgroupProperties.subgroupSize`, queried at discovery (0 on a 1.0-only loader) | 32 (every Apple GPU's SIMD-group) | `0` — the spec exposes only `subgroupMinSize`/`subgroupMaxSize` | 32 (the interpreter's warp width) |
 | Ray tracing | ⚠️ real BLAS path in `driver/vulkan/accel.rs` (AS create + scratch/storage alloc + command-buffer record), build short-circuited to `NotSupported` pending RT hardware (lavapipe segfault, awaiting AMDGPU runner) | ⚠️ placeholder AS buffer + bare pipeline handle (no `MTLAccelerationStructure` yet); dispatch `NotSupported` | `NotSupported` | software lifecycle |
 | Indirect command buffer | ✅ native (secondary command buffers + `vkCmdExecuteCommands`; render bundles record in `RENDER_PASS_CONTINUE` mode) | ✅ native (`MTLIndirectCommandBuffer`, compute + render-bundle draw via `executeCommandsInBuffer`) | `NotSupported` (render bundles are a separate path) | ✅ full software |
 | Occlusion queries | ✅ native | ✅ native | ✅ native (async read via `mapAsync`; sync `occlusion_query_read` returns `NotSupported`) | ✅ software |

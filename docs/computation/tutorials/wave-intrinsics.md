@@ -173,7 +173,10 @@ the `subgroups` feature.
 | Apple     | 32          | Same as NVIDIA                        |
 
 Write kernels that work for both widths. Use `subgroup_size()` at runtime
-rather than hard-coding 32.
+rather than hard-coding 32. The host has the same question and the same
+answer: `gpu.subgroup_size()` reports the device's lane count before you
+build a wave (`0` when the backend does not fix one — WebGPU), which is
+how a dispatch whose work unit is the subgroup sizes its thread count.
 
 ## Next
 

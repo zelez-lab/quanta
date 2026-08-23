@@ -1,54 +1,154 @@
-//! Tensor-core / cooperative-matrix GEMM (f32) — Metal `simdgroup_matrix`.
+//! Tensor-core / cooperative-matrix GEMM, on the device's own shape.
 //!
-//! `C ← A·B + C`, row-major f32, with `m`/`n` multiples of 32 and `k` a
-//! multiple of 8. Each subgroup (32 lanes) owns a **32×32 output tile** held as
-//! a 4×4 grid of 8×8 `simdgroup_matrix` accumulators (loaded from C). It sweeps
-//! K in 8-wide steps loading 4 A row-strip fragments + 4 B col-strip fragments
-//! and issuing 16 `simdgroup_multiply_accumulate`s — so 8 global fragment loads
-//! feed 16 MMAs (each A-frag feeds 4 MMAs, each B-frag 4), the arithmetic
-//! intensity that lets the tensor-core units beat the SIMT tiled kernel
-//! (~1.5× at N=512 on M1 Pro, 553 vs 372 GFLOP/s). The accumulators are stored
-//! back at the end. The blocking factor is `BR`×`BC` (currently 4×4).
+//! `C ← A·B + C`, row-major, with the fragment shape and the element types
+//! taken from what the device enumerates — 8×8×8 f32 or f16 on Metal
+//! (`simdgroup_matrix`), 16×16×16 (and non-square forms) with f16 inputs and
+//! f32 accumulation on the `VK_KHR_cooperative_matrix` cards. Each subgroup
+//! owns a `BR`×`BC` grid of accumulator fragments loaded from C — a
+//! `(shape.m·BR)`×`(shape.n·BC)` output tile, so 32×32 on the 8×8×8 shape and
+//! 64×64 on a 16×16×16 one. It sweeps K in `shape.k`-wide steps loading `BR` A
+//! row-strip fragments + `BC` B col-strip fragments and issuing `BR·BC` MMAs —
+//! `BR+BC` global fragment loads feed `BR·BC` MMAs (each fragment reused 4×
+//! at 4×4), the arithmetic intensity that lets the tensor-core units beat the
+//! SIMT tiled kernel (~1.5× at N=512 on M1 Pro, 553 vs 372 GFLOP/s). The
+//! accumulators are stored back at the end.
 //!
 //! Reuses the proven `gemmEntry` contract — the differential test against the
 //! f32 reference is the binding check, no new Lean. The kernel is hand-built
 //! `KernelDef` IR: the cooperative-matrix ops (`CooperativeMatrixLoad` /
 //! `CooperativeMMA` / `CooperativeMatrixStore`) have no `#[quanta::kernel]`
 //! Rust surface and are subgroup-collective, so the WASM route can't express
-//! them. Only devices that enumerate the **8×8×8 f32** shape run this (Metal
-//! `simdgroup_matrix`; a `VK_KHR_cooperative_matrix` device only if it lists
-//! that shape — NVIDIA and AMD expose f16/bf16 inputs at 16×16×16, so the
-//! f16-input / f32-accumulate GEMM on the device's own shape is the next
-//! increment); others return `NotSupported` and `gemm` takes the tiled path.
+//! them. A device that enumerates no shape with the requested element types —
+//! or that does not fix a subgroup size — returns `NotSupported`, never a
+//! silent fallback; the public `gemm` router is what takes the tiled path.
 //!
-//! Scope: `C += A·B` (α = β = 1), m/n multiple of 32, k multiple of 8. General
-//! α/β, tails, and threadgroup-shared staging of the A/B tiles (which would cut
-//! the global fragment loads further) are later increments; the public `gemm`
-//! routes everything else to the tiled kernel.
+//! Scope: `C += A·B` (α = β = 1), `m` a multiple of `shape.m·BR`, `n` of
+//! `shape.n·BC`, `k` of `shape.k`. General α/β, tails, and threadgroup-shared
+//! staging of the A/B tiles (which would cut the global fragment loads
+//! further) are later increments.
 
-use quanta_core::{Field, Gpu, QuantaError};
+use quanta_core::{CoopMatrixShape, Field, Gpu, QuantaError};
 use quanta_ir::{
     BinOp, ConstValue, KernelDef, KernelOp, KernelParam, MatrixFrag, Reg, ScalarType,
     serialize_kernel,
 };
 
-const FRAG: u32 = 8; // simdgroup_matrix fragment edge (8×8×8 MMA)
 const BR: u32 = 4; // accumulator fragments down (rows) per subgroup
 const BC: u32 = 4; // accumulator fragments across (cols) per subgroup
-const TILE_M: u32 = FRAG * BR; // output tile rows per subgroup (32)
-const TILE_N: u32 = FRAG * BC; // output tile cols per subgroup (32)
 
-/// `gemm_f32_tc`: `C ← A·B + C` on the cooperative-matrix path. Requires the
-/// device to enumerate the 8×8×8 f32 shape (see
-/// `Gpu::cooperative_matrix_shapes`), `m`/`n` multiples of 32 and `k` a
-/// multiple of 8; otherwise returns `NotSupported` so the caller can fall
-/// back to the tiled kernel.
+/// Fragment edge of the single-tile shared-staging probe below, which is
+/// pinned to the 8×8×8 f32 shape (the one Metal enumerates).
+const PROBE_FRAG: u32 = 8;
+
+/// Host element types that fill a cooperative-matrix fragment.
 ///
-/// Register-blocked: each subgroup owns a 32×32 output tile = a 4×4 grid of 8×8
-/// accumulator fragments. Per K-step it loads 4 A row-strip fragments + 4 B
-/// col-strip fragments and issues 16 MMAs — so 8 loads feed 16 MMAs (each
-/// fragment reused 4×), the arithmetic intensity that lets the tensor-core
-/// units beat the SIMT tiled path (~1.5× at N=512 on M1 Pro).
+/// The host type is the *storage* of the fragment element, not its
+/// arithmetic: f16 has no host type in Rust, so a `u16` holds the IEEE
+/// binary16 bit pattern — the same narrow-dtype storage contract
+/// `Field<u16>` carries everywhere else in this crate.
+pub trait TcElem: Copy + 'static {
+    /// The fragment element type the kernel declares for this host type.
+    const TY: ScalarType;
+}
+
+impl TcElem for f32 {
+    const TY: ScalarType = ScalarType::F32;
+}
+
+impl TcElem for u16 {
+    const TY: ScalarType = ScalarType::F16;
+}
+
+/// The shape this device would run a cooperative-matrix GEMM on with `A`/`B`
+/// elements of `in_ty` and `C`/`D` of `acc_ty`: the **first** matching shape
+/// in [`Gpu::cooperative_matrix_shapes`], the enumeration order being the
+/// device's own preference. `None` when it lists none — ask before
+/// allocating, since [`gemm_tc`] refuses rather than fall back.
+pub fn tc_shape_for(gpu: &Gpu, in_ty: ScalarType, acc_ty: ScalarType) -> Option<CoopMatrixShape> {
+    gpu.cooperative_matrix_shapes()
+        .into_iter()
+        .find(|s| s.ab_ty == in_ty && s.c_ty == acc_ty && s.result_ty == acc_ty)
+}
+
+/// `C ← A·B + C` on the cooperative-matrix path, on the first shape the
+/// device enumerates with `A`/`B` elements of `In::TY` and `C`/`D` of
+/// `Acc::TY` (see [`tc_shape_for`]). Requires `m` a multiple of
+/// `shape.m·BR`, `n` of `shape.n·BC`, `k` of `shape.k`, and a device that
+/// fixes its subgroup size; otherwise `NotSupported` — never a silent
+/// fallback, which is what you want when you are measuring.
+///
+/// Register-blocked: each subgroup owns a `BR`×`BC` grid of accumulator
+/// fragments, i.e. a 32×32 output tile on an 8×8×8 shape and 64×64 on a
+/// 16×16×16 one. Per K-step it loads `BR` A row-strip fragments + `BC` B
+/// col-strip fragments and issues `BR·BC` MMAs — 8 loads feed 16 MMAs at
+/// 4×4 (each fragment reused 4×), the arithmetic intensity that lets the
+/// tensor-core units beat the SIMT tiled path (~1.5× at N=512 on M1 Pro).
+///
+/// `In = Acc = f32` is the Metal-accelerated form; `In = u16` (binary16 bit
+/// patterns) with `Acc = f32` is what the discrete cards enumerate first.
+pub fn gemm_tc<In: TcElem, Acc: TcElem>(
+    gpu: &Gpu,
+    m: u32,
+    n: u32,
+    k: u32,
+    a: &Field<In>,
+    b: &Field<In>,
+    c: &Field<Acc>,
+) -> Result<(), QuantaError> {
+    let Some(shape) = tc_shape_for(gpu, In::TY, Acc::TY) else {
+        return Err(QuantaError::not_supported(format!(
+            "no cooperative-matrix shape with {:?} inputs and {:?} accumulation on this device",
+            In::TY,
+            Acc::TY
+        )));
+    };
+    let subgroup = gpu.subgroup_size();
+    if subgroup == 0 {
+        return Err(QuantaError::not_supported(
+            "gemm_tc dispatches one subgroup per output tile, and this device does not fix its subgroup size",
+        ));
+    }
+    let (tile_m, tile_n) = (u32::from(shape.m) * BR, u32::from(shape.n) * BC);
+    let step_k = u32::from(shape.k);
+    if !m.is_multiple_of(tile_m) || !n.is_multiple_of(tile_n) || !k.is_multiple_of(step_k) {
+        return Err(QuantaError::not_supported(format!(
+            "gemm_tc on this device's {}x{}x{} shape requires m multiple of {tile_m}, \
+             n multiple of {tile_n}, k multiple of {step_k}",
+            shape.m, shape.n, shape.k
+        )));
+    }
+    let (mu, nu, ku) = (m as usize, n as usize, k as usize);
+    if a.len() != mu * ku {
+        return Err(QuantaError::invalid_param("gemm_tc: A length must be m*k"));
+    }
+    if b.len() != ku * nu {
+        return Err(QuantaError::invalid_param("gemm_tc: B length must be k*n"));
+    }
+    if c.len() != mu * nu {
+        return Err(QuantaError::invalid_param("gemm_tc: C length must be m*n"));
+    }
+    if mu * nu == 0 || ku == 0 {
+        return Ok(());
+    }
+
+    let mut def = build_tc_def(shape, n, k);
+    // One subgroup per output tile: the workgroup is exactly the device's
+    // subgroup, so the tile index is the workgroup index (`NucleusId`).
+    def.workgroup_size = [subgroup, 1, 1];
+    def.subgroup_size = Some(subgroup);
+    let bytes = serialize_kernel(&def);
+    let mut wave = gpu.wave_jit(&bytes)?;
+    wave.bind(0, a);
+    wave.bind(1, b);
+    wave.bind(2, c); // in place: C is the accumulator (read + written)
+    let tiles = (m / tile_m) * (n / tile_n);
+    gpu.dispatch(&wave, tiles * subgroup)?.wait()?;
+    Ok(())
+}
+
+/// `C ← A·B + C` on the all-f32 cooperative-matrix shape — the form Metal
+/// accelerates (8×8×8, so `m`/`n` multiples of 32 and `k` a multiple of 8)
+/// and the one the public [`gemm`](crate::gemm) router tries.
 pub fn gemm_f32_tc(
     gpu: &Gpu,
     m: u32,
@@ -58,46 +158,7 @@ pub fn gemm_f32_tc(
     b: &Field<f32>,
     c: &Field<f32>,
 ) -> Result<(), QuantaError> {
-    if !device_has_f32_8x8x8(gpu) {
-        return Err(QuantaError::not_supported(
-            "this kernel is built on 8x8x8 f32 cooperative matrices, which this device does not enumerate",
-        ));
-    }
-    if !m.is_multiple_of(TILE_M) || !n.is_multiple_of(TILE_N) || !k.is_multiple_of(FRAG) {
-        return Err(QuantaError::not_supported(
-            "gemm_f32_tc requires m multiple of 32, n multiple of 32, k multiple of 8",
-        ));
-    }
-    let (mu, nu, ku) = (m as usize, n as usize, k as usize);
-    if a.len() != mu * ku {
-        return Err(QuantaError::invalid_param(
-            "gemm_f32_tc: A length must be m*k",
-        ));
-    }
-    if b.len() != ku * nu {
-        return Err(QuantaError::invalid_param(
-            "gemm_f32_tc: B length must be k*n",
-        ));
-    }
-    if c.len() != mu * nu {
-        return Err(QuantaError::invalid_param(
-            "gemm_f32_tc: C length must be m*n",
-        ));
-    }
-    if mu * nu == 0 || ku == 0 {
-        return Ok(());
-    }
-
-    let def = build_tc_def(n, k);
-    let bytes = serialize_kernel(&def);
-    let mut wave = gpu.wave_jit(&bytes)?;
-    wave.bind(0, a);
-    wave.bind(1, b);
-    wave.bind(2, c); // in place: C is the accumulator (read + written)
-    // One subgroup (32 lanes) per TILE_M×TILE_N output tile.
-    let tiles = (m / TILE_M) * (n / TILE_N);
-    gpu.dispatch(&wave, tiles * 32)?.wait()?;
-    Ok(())
+    gemm_tc::<f32, f32>(gpu, m, n, k, a, b, c)
 }
 
 /// Probe: single-tile (8×8×8, one subgroup) shared-staged GEMM `C = A·B`.
@@ -130,7 +191,7 @@ pub fn gemm_f32_tc_shared_probe(
 
 fn build_tc_shared_probe_def() -> KernelDef {
     use ScalarType::{F32, U32};
-    let f8: u8 = FRAG as u8;
+    let f8: u8 = PROBE_FRAG as u8;
     // Shared tiles: id 0 = A (8×8), id 1 = B (8×8).
     let mut next = 50u32;
     let mut fresh = || {
@@ -315,7 +376,7 @@ fn build_tc_shared_probe_def() -> KernelDef {
 fn device_has_f32_8x8x8(gpu: &Gpu) -> bool {
     use quanta_core::ScalarType::F32;
     gpu.cooperative_matrix_shapes().iter().any(|s| {
-        (s.m, s.n, s.k) == (FRAG as u8, FRAG as u8, FRAG as u8)
+        (s.m, s.n, s.k) == (PROBE_FRAG as u8, PROBE_FRAG as u8, PROBE_FRAG as u8)
             && s.ab_ty == F32
             && s.c_ty == F32
             && s.result_ty == F32
@@ -325,33 +386,76 @@ fn device_has_f32_8x8x8(gpu: &Gpu) -> bool {
 /// The hand-built tensor-core kernels, for emitter validation (spirv-val
 /// on the SPIR-V lowering, which cannot run on this crate's GPU tests
 /// without a `VK_KHR_cooperative_matrix` device). Not API.
+///
+/// One entry per shape family the cards enumerate, so the SPIR-V a real
+/// device would be handed is validated on a host that has none: uniform
+/// f32 and f16 at Metal's 8×8×8, mixed f16→f32 at the square 16×16×16, and
+/// the non-square 16×8×16 (A 16×16, B 16×8, accumulator 16×8) that the
+/// same drivers list next to it.
 #[doc(hidden)]
 pub fn tc_kernel_defs_for_validation() -> Vec<(&'static str, KernelDef)> {
+    use ScalarType::{F16, F32};
+    let shape = |m: u8, n: u8, k: u8, ab: ScalarType, acc: ScalarType| CoopMatrixShape {
+        m,
+        n,
+        k,
+        ab_ty: ab,
+        c_ty: acc,
+        result_ty: acc,
+    };
     vec![
-        ("gemm_f32_tc[n=64,k=16]", build_tc_def(64, 16)),
+        (
+            "gemm_tc[8x8x8 f32,n=64,k=16]",
+            build_tc_def(shape(8, 8, 8, F32, F32), 64, 16),
+        ),
+        (
+            "gemm_tc[8x8x8 f16,n=64,k=16]",
+            build_tc_def(shape(8, 8, 8, F16, F16), 64, 16),
+        ),
+        (
+            "gemm_tc[16x16x16 f16->f32,n=64,k=32]",
+            build_tc_def(shape(16, 16, 16, F16, F32), 64, 32),
+        ),
+        (
+            "gemm_tc[16x8x16 f16->f32,n=64,k=32]",
+            build_tc_def(shape(16, 8, 16, F16, F32), 64, 32),
+        ),
         ("gemm_f32_tc_shared_probe", build_tc_shared_probe_def()),
     ]
 }
 
-/// Build the register-blocked cooperative-matrix GEMM kernel (`C += A·B`,
-/// `TILE_M×TILE_N` output tile per subgroup, `BR×BC` fragments). `n`, `k` are
-/// baked constants. The op sequence is generated programmatically over the
-/// fragment grid so the blocking factor is just `BR`/`BC`.
+/// Build the register-blocked cooperative-matrix GEMM kernel (`C += A·B`)
+/// for one device shape: A fragments are `shape.m × shape.k`, B fragments
+/// `shape.k × shape.n`, the `BR×BC` accumulators `shape.m × shape.n`, so the
+/// output tile one subgroup owns is `(shape.m·BR) × (shape.n·BC)` — 32×32 on
+/// 8×8×8, 64×64 on 16×16×16 — and the K sweep steps by `shape.k`. A/B
+/// fragments carry `shape.ab_ty`, the accumulator load, the MMA and the store
+/// carry `shape.c_ty`; the driver matches exactly that against the shape it
+/// enumerated. `n`, `k` are baked constants. The op sequence is generated
+/// programmatically over the fragment grid so the blocking factor is just
+/// `BR`/`BC`.
 ///
 /// Each loaded A row-strip fragment feeds `BC` MMAs and each B col-strip feeds
 /// `BR`, so a `BR×BC` tile does `BR·BC` MMAs from `BR+BC` global loads per
 /// K-step — the arithmetic intensity that lets the MMA units run ahead of the
 /// memory system.
 ///
+/// The workgroup is one subgroup wide at the 32-lane default; `gemm_tc`
+/// re-stamps it with the device's own width before the JIT, since the tile
+/// index is the workgroup index.
+///
 /// Register map (the MSL JIT emitter declares `rN` per op, so a dst must never
 /// alias an operand and every result takes a fresh register):
-/// - r0..r10: tile coordinates + loop bounds (fixed).
+/// - r0..r11: tile coordinates + loop bounds (fixed).
 /// - acc fragments: a fixed block starting at `ACC` (persist across the loop).
 /// - rowbase[r] / colbase[c] / c_index[r][c]: fixed blocks the store reuses.
 /// - everything else: `fresh()`.
-fn build_tc_def(n: u32, k: u32) -> KernelDef {
-    use ScalarType::{F32, U32};
-    let f8: u8 = FRAG as u8;
+fn build_tc_def(shape: CoopMatrixShape, n: u32, k: u32) -> KernelDef {
+    use ScalarType::U32;
+    let (fm, fn_, fk) = (shape.m, shape.n, shape.k);
+    let (in_ty, acc_ty) = (shape.ab_ty, shape.c_ty);
+    let tile_m = u32::from(fm) * BR;
+    let tile_n = u32::from(fn_) * BC;
     let frag = |dst, field, index, stride, role| KernelOp::CooperativeMatrixLoad {
         dst,
         field,
@@ -359,10 +463,13 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         stride,
         frag: role,
         from_shared: false,
-        m: f8,
-        n: f8,
-        k: f8,
-        ty: F32,
+        m: fm,
+        n: fn_,
+        k: fk,
+        ty: match role {
+            MatrixFrag::Accumulator => acc_ty,
+            MatrixFrag::A | MatrixFrag::B => in_ty,
+        },
     };
 
     // Fixed register blocks.
@@ -378,18 +485,19 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         r
     };
 
-    // r0=tile id; r1=FRAG(8); r2=TILE_N; r3=n; r4=k; r5=tiles_n=n/TILE_N;
-    // r6=block_row; r7=block_col; r8=row0=block_row*TILE_M; r9=col0;
-    // r10=num_k_tiles=k/8. (TILE_M baked as a const where needed.)
+    // r0=tile id; r1=shape.k (the K step); r2=tile_n; r3=n; r4=k;
+    // r5=tiles_n=n/tile_n; r6=block_row; r7=block_col;
+    // r8=row0=block_row*tile_m; r9=col0; r10=num_k_tiles=k/shape.k;
+    // r11=tile_m.
     let mut body = vec![
         KernelOp::NucleusId { dst: Reg(0) },
         KernelOp::Const {
             dst: Reg(1),
-            value: ConstValue::U32(FRAG),
+            value: ConstValue::U32(u32::from(fk)),
         },
         KernelOp::Const {
             dst: Reg(2),
-            value: ConstValue::U32(TILE_N),
+            value: ConstValue::U32(tile_n),
         },
         KernelOp::Const {
             dst: Reg(3),
@@ -401,7 +509,7 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         },
         KernelOp::Const {
             dst: Reg(11),
-            value: ConstValue::U32(TILE_M),
+            value: ConstValue::U32(tile_m),
         },
         KernelOp::BinOp {
             dst: Reg(5),
@@ -447,12 +555,12 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         },
     ];
 
-    // rowbase[r] = row0 + r*8
+    // rowbase[r] = row0 + r*shape.m
     for r in 0..BR {
         let off = fresh();
         body.push(KernelOp::Const {
             dst: Reg(off),
-            value: ConstValue::U32(r * FRAG),
+            value: ConstValue::U32(r * u32::from(fm)),
         });
         body.push(KernelOp::BinOp {
             dst: Reg(rowbase + r),
@@ -462,12 +570,12 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
             ty: U32,
         });
     }
-    // colbase[c] = col0 + c*8
+    // colbase[c] = col0 + c*shape.n
     for c in 0..BC {
         let off = fresh();
         body.push(KernelOp::Const {
             dst: Reg(off),
-            value: ConstValue::U32(c * FRAG),
+            value: ConstValue::U32(c * u32::from(fn_)),
         });
         body.push(KernelOp::BinOp {
             dst: Reg(colbase + c),
@@ -509,15 +617,15 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
     // K-loop: load BR A row-strips + BC B col-strips, then BR·BC MMAs.
     let kt = fresh();
     let mut loop_body: Vec<KernelOp> = Vec::new();
-    let kt8 = fresh();
+    let k_off = fresh(); // kt * shape.k — the K position of this step
     loop_body.push(KernelOp::BinOp {
-        dst: Reg(kt8),
+        dst: Reg(k_off),
         a: Reg(kt),
         b: Reg(1),
         op: BinOp::Mul,
         ty: U32,
     });
-    // a_frag[r] from A at rowbase[r]*k + kt8 (stride k).
+    // a_frag[r] from A at rowbase[r]*k + k_off (stride k).
     let a_frag: Vec<u32> = (0..BR).map(|_| fresh()).collect();
     for r in 0..BR {
         let mul = fresh();
@@ -532,7 +640,7 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
         loop_body.push(KernelOp::BinOp {
             dst: Reg(aidx),
             a: Reg(mul),
-            b: Reg(kt8),
+            b: Reg(k_off),
             op: BinOp::Add,
             ty: U32,
         });
@@ -544,14 +652,14 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
             MatrixFrag::A,
         ));
     }
-    // b_frag[c] from B at kt8*n + colbase[c] (stride n).
+    // b_frag[c] from B at k_off*n + colbase[c] (stride n).
     let b_frag: Vec<u32> = (0..BC).map(|_| fresh()).collect();
     for c in 0..BC {
         let mul = fresh();
         let bidx = fresh();
         loop_body.push(KernelOp::BinOp {
             dst: Reg(mul),
-            a: Reg(kt8),
+            a: Reg(k_off),
             b: Reg(3),
             op: BinOp::Mul,
             ty: U32,
@@ -580,10 +688,10 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
                 a: Reg(a_frag[r as usize]),
                 b: Reg(b_frag[c as usize]),
                 c: Reg(acc),
-                m: f8,
-                n: f8,
-                k: f8,
-                ty: F32,
+                m: fm,
+                n: fn_,
+                k: fk,
+                ty: acc_ty,
             });
         }
     }
@@ -600,31 +708,31 @@ fn build_tc_def(n: u32, k: u32) -> KernelDef {
             index: Reg(cidx + idx),
             stride: Reg(3),
             src: Reg(ACC + idx),
-            m: f8,
-            n: f8,
-            k: f8,
-            ty: F32,
+            m: fm,
+            n: fn_,
+            k: fk,
+            ty: acc_ty,
         });
     }
     let nr = next;
 
     KernelDef {
-        name: "blas_gemm_f32_tc".into(),
+        name: format!("blas_gemm_tc_{fm}x{fn_}x{fk}_{in_ty:?}_{acc_ty:?}"),
         params: vec![
             KernelParam::FieldRead {
                 name: "a".into(),
                 slot: 0,
-                scalar_type: F32,
+                scalar_type: in_ty,
             },
             KernelParam::FieldRead {
                 name: "b".into(),
                 slot: 1,
-                scalar_type: F32,
+                scalar_type: in_ty,
             },
             KernelParam::FieldWrite {
                 name: "c".into(),
                 slot: 2,
-                scalar_type: F32,
+                scalar_type: acc_ty,
             },
         ],
         body,

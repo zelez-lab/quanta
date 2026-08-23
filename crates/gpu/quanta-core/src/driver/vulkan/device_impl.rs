@@ -91,6 +91,10 @@ impl GpuDevice for VulkanDevice {
         self.subgroup_arithmetic_supported
     }
 
+    fn subgroup_size(&self) -> u32 {
+        self.subgroup_size
+    }
+
     fn supported_shading_rates(&self) -> Vec<(u32, u32)> {
         self.supported_shading_rates.clone()
     }

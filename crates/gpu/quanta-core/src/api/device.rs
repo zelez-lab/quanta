@@ -267,6 +267,19 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         false
     }
 
+    /// How many lanes a subgroup (warp / SIMD-group) has on this device,
+    /// or `0` when the device does not fix one. Required — a kernel whose
+    /// work unit IS the subgroup (the cooperative-matrix GEMM: one
+    /// subgroup owns one output tile) has to size its workgroup and its
+    /// thread count from this, and a backend that cannot answer must say
+    /// so rather than have the caller assume 32. Metal: 32 on every GPU
+    /// Quanta targets. Vulkan: `VkPhysicalDeviceSubgroupProperties
+    /// .subgroupSize` as queried at discovery (0 when the 1.1
+    /// properties-2 query is unavailable). The CPU reference interpreter:
+    /// its cooperative warp width. WebGPU: `0` — WGSL exposes only a
+    /// min/max range, never the device's actual width.
+    fn subgroup_size(&self) -> u32;
+
     /// Whether narrow-float buffers (bf16 / fp8) on this backend use the
     /// portable u32-slot layout — one element per 32-bit word — instead of
     /// native stride (16-/8-bit elements, the contract shared by the host

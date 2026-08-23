@@ -19,7 +19,9 @@ reductions).
 | `nrm2` | `nrm2(gpu, &x) -> f32` | `√(Σ xᵢ²)` |
 | `gemv` | `gemv(gpu, m, n, α, &a, &x, β, &y)` | `y ← α·A·x + β·y`, A row-major `m×n`, in place on y |
 | `gemm` | `gemm(gpu, m, n, k, α, &a, &b, β, &c)` | `C ← α·A·B + β·C`, row-major, in place on C (auto-routes to the tensor-core path when it fits) |
-| `gemm_f32_tc` | `gemm_f32_tc(gpu, m, n, k, &a, &b, &c)` | `C ← A·B + C` via Metal `simdgroup_matrix` (4×4 blocked); needs cooperative-matrix support, m/n mult 32, k mult 8 |
+| `gemm_tc` | `gemm_tc::<In, Acc>(gpu, m, n, k, &a, &b, &c)` | `C ← A·B + C` on the cooperative-matrix shape the device enumerates for `In`/`Acc` (4×4 blocked); `In` = `f32` or `u16` (binary16 bits), `Acc` = `f32` or `u16`; m/n/k multiples of the shape's tile |
+| `gemm_f32_tc` | `gemm_f32_tc(gpu, m, n, k, &a, &b, &c)` | the all-f32 form of `gemm_tc` — Metal's 8×8×8 `simdgroup_matrix`; m/n mult 32, k mult 8 |
+| `tc_shape_for` | `tc_shape_for(gpu, in_ty, acc_ty) -> Option<CoopMatrixShape>` | the shape `gemm_tc` would use for those element types, before you allocate |
 | `gemm_mixed` | `gemm_mixed(gpu, dtype, …, &a: Field<u16>, …)` | mixed-precision, 2-byte inputs (bf16/f16), C f32 |
 | `gemm_mixed8` | `gemm_mixed8(gpu, dtype, …, &a: Field<u8>, …)` | mixed-precision, 1-byte inputs (fp8 E5M2/E4M3), C f32 |
 | `gemv_mixed` / `gemv_mixed8` | `gemv_mixed(gpu, dtype, m, n, α, &a, &x, β, &y)` | mixed-precision GEMV (via `gemm_mixed*` N=1) |
@@ -104,8 +106,10 @@ quanta-blas = { version = "0.1", features = ["gpu-metal"] } # or gpu-vulkan
 ```
 
 The dtype matrix is complete (f32 + bf16/f16/fp8/int8/int4) and `gemm` has a
-**tensor-core** path (`gemm_f32_tc`, Metal `simdgroup_matrix`). Coming next:
-deeper fragment reuse for GEMM and the Vulkan cooperative-matrix path.
+**tensor-core** path (`gemm_tc`, built for the shape the device enumerates —
+Metal's 8×8×8 f32/f16, the discrete cards' f16-in/f32-out forms). Coming next:
+deeper fragment reuse for GEMM, and threadgroup-shared staging of the A/B
+tiles for the discrete cards.
 
 ## Performance (honest framing)
 

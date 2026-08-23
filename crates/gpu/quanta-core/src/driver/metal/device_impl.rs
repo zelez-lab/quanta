@@ -96,6 +96,13 @@ impl GpuDevice for MetalDevice {
         true
     }
 
+    fn subgroup_size(&self) -> u32 {
+        // Every Apple GPU Quanta targets executes 32-wide SIMD-groups
+        // (`threadExecutionWidth` is 32 on all of them); the JIT kernels
+        // that pin `subgroup_size` already bake that width.
+        32
+    }
+
     fn supports_narrow_int(&self) -> bool {
         // MSL has native `uchar` / `char` / `ushort` / `short` device
         // pointers on every Metal GPU Quanta targets; narrow-int

@@ -59,6 +59,7 @@ path without throwing.
 | `supports_f64()` | `bool` | Kernels may use 64-bit floats. True on the software lane and llvmpipe; false on Metal (MSL has no `double`) and Broadcom V3D |
 | `supports_i64()` | `bool` | Kernels may use 64-bit integers (`shaderInt64` on Vulkan). True on the software lane and llvmpipe; false on Metal and Broadcom V3D |
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
+| `subgroup_size()` | `u32` | How many lanes a subgroup has: 32 on Metal and the software lane, the driver's `subgroupSize` on Vulkan (64 on AMD compute parts, 16 on Broadcom V3D). `0` = the device does not fix one — WebGPU exposes only a min/max range. Kernels whose work unit IS the subgroup (`quanta-blas`'s `gemm_tc` dispatches one per output tile) size their threads by it and refuse on `0` |
 | `supports_async_compute()` | `bool` | Whether a dedicated async-compute queue is available. **Returns `false` on every backend today** — no driver overrides it yet. For overlapping submission use `gpu.queue(QueueType::Compute)` |
 | `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Sampled2D` sampled reads, `&Texture2D` read-only texel access, `&mut Texture2D` read-write texel access). True on Metal, the software driver, and native Vulkan; false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` and `Field::native_handle()` return a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
@@ -87,6 +88,7 @@ device-family- and extension-dependent within a backend.
 | `supports_f64` | ✗ | driver | ✓ | ✗ |
 | `supports_i64` | ✗ | driver | ✓ | ✗ |
 | `supports_subgroups` | ✓ | driver | ✓ | ✗ |
+| `subgroup_size` | 32 | `subgroupSize` | 32 | 0 |
 | `supports_async_compute` | ✗ | ✗ | ✗ | ✗ |
 | `supports_compute_textures` | ✓ | ✓ | ✓ | ✗ |
 | `supports_native_handle_export` | ✓ | ✓ | ✗ | ✗ |

@@ -15,8 +15,10 @@
 //! - [`gemv`] — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
 //! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel; routes to
 //!   the tensor-core path when supported)
-//! - [`gemm_f32_tc`] — `C ← A·B + C` via Metal
-//!   `simdgroup_matrix` (cooperative-matrix / tensor cores)
+//! - [`gemm_tc`] — `C ← A·B + C` on the cooperative-matrix
+//!   path (tensor cores), built for the shape the device enumerates: f32 or
+//!   f16 inputs, f32 or f16 accumulation. [`gemm_f32_tc`]
+//!   is the all-f32 form the `gemm` router tries
 //! - [`gemm_mixed`] / [`gemv_mixed`] —
 //!   narrow float inputs (bf16 / f16 via `gemm_mixed`; fp8 via `gemm_mixed8`),
 //!   f32 accumulate
@@ -165,7 +167,7 @@ pub use mixed::{GemmInputType, gemm_mixed, gemm_mixed8, gemv_mixed, gemv_mixed8}
 #[cfg(feature = "gpu")]
 pub use mixed_quant::{GemmQuantType, gemm_quant, gemm_quant4, gemv_quant, gemv_quant4};
 #[cfg(feature = "gpu")]
-pub use mixed_tc::gemm_f32_tc;
+pub use mixed_tc::{TcElem, gemm_f32_tc, gemm_tc, tc_shape_for};
 #[cfg(feature = "gpu")]
 pub use qr::{lstsq, qr};
 #[cfg(feature = "gpu")]
