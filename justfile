@@ -43,6 +43,19 @@ test-conformance:
 test-conformance-validate:
     QUANTA_VALIDATE=1 cargo test --test conformance_test
 
+# Multi-backend render parity: the same corpus of draws on every
+# backend, frames compared against the committed goldens. The goldens
+# are blessed from Metal on an Apple machine; CI cross-checks lavapipe
+# against them. Re-bless after adding a case or changing one — and
+# commit the .frame files with it.
+conform-bless:
+    cargo build -p quanta-conform --features metal
+    ./target/debug/quanta-conform --bless metal --golden-dir crates/tools/quanta-conform/goldens
+
+conform:
+    cargo build -p quanta-conform --features metal
+    ./target/debug/quanta-conform --backends metal --golden-dir crates/tools/quanta-conform/goldens
+
 # Run examples
 example-hello:
     cargo run --example hello_quanta
