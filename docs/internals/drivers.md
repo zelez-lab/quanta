@@ -496,6 +496,25 @@ the `RenderPassDescriptor.occlusionQuerySet` field before
 `beginRenderPass`, since WebGPU validates the attachment up front
 rather than letting `begin_occlusion_query` discover the missing set.
 
+## Barriers and fences
+
+One execution barrier and one memory-fence op cover the semantics every
+backend can honestly deliver; there is deliberately no device-scope
+execution barrier (mid-kernel grid-wide sync has no forward-progress
+guarantee on any of these APIs — the dispatch boundary IS the device
+sync).
+
+| op | Metal (MSL) | Vulkan (SPIR-V) | WebGPU (WGSL) | CPU |
+|---|---|---|---|---|
+| workgroup barrier | `threadgroup_barrier(mem_threadgroup)` | `OpControlBarrier Workgroup/Workgroup` | `workgroupBarrier()` | interpreter phase sync |
+| `Fence { order }` | `atomic_thread_fence(mem_device, order)` — MSL defines only `relaxed`/`seq_cst`, so acquire/release/acq_rel are **promoted to seq_cst** | `OpMemoryBarrier` with the order's semantics bits; `Relaxed` emits nothing (orders nothing) | `storageBarrier()` for any non-relaxed order (WGSL has no order vocabulary); `Relaxed` emits nothing | honours the order |
+
+Two facts the litmus falsifiers (MP/SB, software + Metal + Vulkan lanes)
+established and the table above encodes: the Metal promotion is
+load-bearing (MSL rejects the intermediate orders), and on Metal a
+device fence between *plain* accesses does not forbid MP/SB — the
+synchronizing accesses themselves must be atomic.
+
 ## Validation layer (`crates/gpu/quanta-core/src/driver/validation.rs`)
 
 Wraps any `GpuDevice` and adds runtime checks:
