@@ -133,10 +133,14 @@ fn philox4x32_10_first_u32_kernel(c0: u32, c1: u32, c2: u32, c3: u32, k0: u32, k
 
 // ── u32 fill ─────────────────────────────────────────────────────────
 
+/// Buffer and key for the raw-u32 uniform fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformU32Data {
+    /// Destination, one Philox word per quark.
     pub out: Vec<u32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -163,10 +167,14 @@ pub fn fill_uniform_u32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u32>
 
 // ── u64 fill ─────────────────────────────────────────────────────────
 
+/// Buffer and key for the u64 uniform fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformU64Data {
+    /// Destination, one packed pair of Philox words per quark.
     pub out: Vec<u64>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -200,10 +208,14 @@ pub fn fill_uniform_u64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<u64>
 
 // ── f32 fill (uniform [0, 1)) ────────────────────────────────────────
 
+/// Buffer and key for the f32 uniform fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformF32Data {
+    /// Destination, one value in `[0, 1)` per quark.
     pub out: Vec<f32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -233,10 +245,14 @@ pub fn fill_uniform_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>
 
 // ── f64 fill (uniform [0, 1)) ────────────────────────────────────────
 
+/// Buffer and key for the f64 uniform fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillUniformF64Data {
+    /// Destination, one value in `[0, 1)` per quark.
     pub out: Vec<f64>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -318,10 +334,14 @@ pub fn fill_uniform_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>
 // independent Philox draws (counter words 0 and 1), then produces
 // the pair n1/n2 from u1/u2.
 
+/// Buffer and key for the f32 Box-Muller normal fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillNormalF32Data {
+    /// Destination, two N(0, 1) values per quark — the Box-Muller pair.
     pub out: Vec<f32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -385,10 +405,14 @@ pub fn fill_normal_f32_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f32>,
 
 // ── Normal f64 ───────────────────────────────────────────────────────
 
+/// Buffer and key for the f64 Box-Muller normal fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillNormalF64Data {
+    /// Destination, two N(0, 1) values per quark — the Box-Muller pair.
     pub out: Vec<f64>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
 }
 
@@ -429,6 +453,8 @@ pub fn fill_normal_f64(d: &FillNormalF64Data) {
     d.out[idx1 as usize] = n2;
 }
 
+/// Host-side dispatch for `fill_normal_f64`. Same pair-per-quark
+/// dispatch and trim as the f32 form, at f64 precision.
 pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>, QuantaError> {
     require_f64(gpu)?;
     if len == 0 {
@@ -454,10 +480,14 @@ pub fn fill_normal_f64_gpu(gpu: &Gpu, len: usize, seed: u64) -> Result<Vec<f64>,
 // `U > 0`, then sample `-ln(U) / lambda` — equivalent in
 // distribution because U and 1-U have the same uniform law.
 
+/// Buffer, key and rate for the f32 exponential fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillExponentialF32Data {
+    /// Destination, one Exponential(lambda) draw per quark.
     pub out: Vec<f32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
     /// Rate parameter `lambda` (mean of the distribution is `1/lambda`).
     pub lambda: f32,
@@ -493,14 +523,20 @@ pub fn fill_exponential_f32_gpu(
 
 // ── Exponential f64 ─────────────────────────────────────────────────
 
+/// Buffer, key and rate for the f64 exponential fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillExponentialF64Data {
+    /// Destination, one Exponential(lambda) draw per quark.
     pub out: Vec<f64>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
+    /// Rate parameter `lambda` (mean of the distribution is `1/lambda`).
     pub lambda: f64,
 }
 
+/// Per-quark Exponential(lambda) draw at f64 precision, inverse-CDF.
 #[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_exponential_f64(d: &FillExponentialF64Data) {
     let id = quark_id();
@@ -515,6 +551,7 @@ pub fn fill_exponential_f64(d: &FillExponentialF64Data) {
     d.out[id as usize] = v;
 }
 
+/// Host-side dispatch for `fill_exponential_f64`.
 pub fn fill_exponential_f64_gpu(
     gpu: &Gpu,
     len: usize,
@@ -534,15 +571,24 @@ pub fn fill_exponential_f64_gpu(
 
 // ── LogNormal f64 ────────────────────────────────────────────────────
 
+/// Buffer, key and shape parameters for the f64 lognormal fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillLogNormalF64Data {
+    /// Destination, two LogNormal(mu, sigma) draws per quark.
     pub out: Vec<f64>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
+    /// Mean of the underlying normal.
     pub mu: f64,
+    /// Standard deviation of the underlying normal.
     pub sigma: f64,
 }
 
+/// Per-quark LogNormal(mu, sigma) at f64 precision. Same Box-Muller
+/// pair structure as `fill_normal_f64`, exp'd through the
+/// (mu, sigma) shift+scale.
 #[quanta_compute_dsl::kernel(crate = quanta_core)]
 pub fn fill_lognormal_f64(d: &FillLogNormalF64Data) {
     let id = quark_id();
@@ -573,6 +619,7 @@ pub fn fill_lognormal_f64(d: &FillLogNormalF64Data) {
     d.out[idx1 as usize] = v2;
 }
 
+/// Host-side dispatch for `fill_lognormal_f64`.
 pub fn fill_lognormal_f64_gpu(
     gpu: &Gpu,
     len: usize,
@@ -603,12 +650,18 @@ pub fn fill_lognormal_f64_gpu(
 // LogNormal(mu, sigma): `X = exp(mu + sigma * N)` where `N ~ N(0, 1)`.
 // Uses Box-Muller for the normal, same shape as `fill_normal_f32`.
 
+/// Buffer, key and shape parameters for the f32 lognormal fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillLogNormalF32Data {
+    /// Destination, two LogNormal(mu, sigma) draws per quark.
     pub out: Vec<f32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
+    /// Mean of the underlying normal.
     pub mu: f32,
+    /// Standard deviation of the underlying normal.
     pub sigma: f32,
 }
 
@@ -668,10 +721,14 @@ pub fn fill_lognormal_f32_gpu(
 // as `u < p` where `u` is uniform in `[0, 1)`. Output stored as u32
 // (1 or 0) for compactness; users who want bool can cast on host.
 
+/// Buffer, key and success probability for the Bernoulli fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillBernoulliU32Data {
+    /// Destination, one 1-or-0 draw per quark.
     pub out: Vec<u32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
     /// Success probability in `[0, 1]`. Out-of-range values still
     /// produce defined behaviour: p ≤ 0 → all zeros, p ≥ 1 → all ones.
@@ -724,10 +781,14 @@ pub fn fill_bernoulli_u32_gpu(
 
 const POISSON_MAX_K_U32: u32 = 64u32;
 
+/// Buffer, key and mean for the Knuth Poisson fill.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillPoissonU32Data {
+    /// Destination, one count per quark.
     pub out: Vec<u32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
     /// Mean of the Poisson distribution. v0.1 supports lambda up to
     /// ~30 with the iteration cap at 64.
@@ -829,8 +890,11 @@ fn log_gamma_f32(z_in: f32) -> f32 {
 /// Poisson distribution data for large-lambda kernel.
 #[derive(quanta_compute_dsl::Fields)]
 pub struct FillPoissonLargeU32Data {
+    /// Destination, one count per quark.
     pub out: Vec<u32>,
+    /// Low 32 bits of the 64-bit Philox key.
     pub seed_lo: u32,
+    /// High 32 bits of the 64-bit Philox key.
     pub seed_hi: u32,
     /// Mean of the Poisson distribution. PTRD is preferred for
     /// lambda ≥ 10; smaller values should use `fill_poisson_u32`

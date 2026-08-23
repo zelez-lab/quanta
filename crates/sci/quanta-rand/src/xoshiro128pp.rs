@@ -19,9 +19,13 @@
 /// 4×u32 state of the xoshiro128++ generator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct State {
+    /// First state word — one of the two output-function operands.
     pub s0: u32,
+    /// Second state word — the shift source (`s1 << 9`) of the advance.
     pub s1: u32,
+    /// Third state word — advance-only; the output never reads it.
     pub s2: u32,
+    /// Fourth state word — the other output-function operand.
     pub s3: u32,
 }
 

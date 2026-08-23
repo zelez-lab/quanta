@@ -129,8 +129,10 @@
 //! The explicit form using `quanta::import_devices!(...)` at file
 //! scope also works if you prefer it.
 //!
-//! See `crates/tools/quanta-rand-import-test/` for a complete cross-crate
-//! example with bit-exact validation of both flavors.
+//! See `crates/sci/quanta-rand/tests/cross_crate_device_import.rs` for a
+//! complete cross-crate example with bit-exact validation of both flavors.
+
+#![deny(missing_docs)]
 
 pub mod philox4x32;
 pub mod threefry4x32;
