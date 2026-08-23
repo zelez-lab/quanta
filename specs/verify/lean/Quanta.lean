@@ -63,6 +63,7 @@ import Quanta.Wasm.PreservationWhileExit
 import Quanta.Wasm.TranslatePendingAgree
 import Quanta.Wasm.SeededLocals
 import Quanta.Wasm.PreservationBlockWhile
+import Quanta.Wasm.PreservationBackedgeTail
 import Quanta.Wasm.PreservationKernelWhile
 
 -- Indirect Command Buffers (steps 032 + 033)
