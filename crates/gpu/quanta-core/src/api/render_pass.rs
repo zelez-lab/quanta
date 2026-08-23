@@ -1,3 +1,12 @@
+//! The render-pass op stream: attachments, the ops recorded against
+//! them, and the [`RenderPass`] that carries both.
+//!
+//! A pass is a recording, not a submission — ops accumulate until the
+//! device encodes and submits them. Keeping the stream as plain data
+//! is what lets every backend replay the same pass and lets the
+//! encoder validate attachment shapes against the bound pipeline
+//! before anything reaches the driver.
+
 use alloc::vec::Vec;
 
 use crate::{

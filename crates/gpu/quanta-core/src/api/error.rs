@@ -1,3 +1,11 @@
+//! The one error type every Quanta operation returns, and its
+//! category enum.
+//!
+//! `QuantaError` pairs a [`QuantaErrorKind`] category with optional
+//! call-site context. Both are `#[non_exhaustive]`, so callers match
+//! with a wildcard arm and construct through the convenience
+//! constructors rather than the struct literal.
+
 use alloc::format;
 use alloc::string::String;
 
@@ -12,7 +20,12 @@ use alloc::string::String;
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct QuantaError {
+    /// What went wrong, as a category plus whatever detail the driver
+    /// could report.
     pub kind: QuantaErrorKind,
+    /// Where it went wrong — the operation that produced the error,
+    /// attached by [`QuantaError::with_context`]. `None` when the
+    /// error was returned unannotated.
     pub context: Option<String>,
 }
 
@@ -70,6 +83,8 @@ impl QuantaError {
 
     // --- Convenience constructors (keep call-sites concise) ---
 
+    /// Construct a `NoDevice` error — discovery found no GPU at the
+    /// requested index.
     pub fn no_device() -> Self {
         Self {
             kind: QuantaErrorKind::NoDevice,
@@ -77,6 +92,7 @@ impl QuantaError {
         }
     }
 
+    /// Construct an `OutOfMemory` error — a device allocation failed.
     pub fn out_of_memory() -> Self {
         Self {
             kind: QuantaErrorKind::OutOfMemory,
@@ -84,6 +100,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `CompilationFailed` error — `msg` carries the
+    /// backend compiler's log.
     pub fn compilation_failed(msg: impl Into<String>) -> Self {
         Self {
             kind: QuantaErrorKind::CompilationFailed(msg.into()),
@@ -91,6 +109,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `SubmitFailed` error — the driver rejected a
+    /// command-buffer submission.
     pub fn submit_failed() -> Self {
         Self {
             kind: QuantaErrorKind::SubmitFailed,
@@ -98,6 +118,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `Timeout` error — a wait expired before the GPU
+    /// signalled.
     pub fn timeout() -> Self {
         Self {
             kind: QuantaErrorKind::Timeout,
@@ -105,6 +127,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct a `DeviceLost` error — the device went away under us
+    /// (hardware removed, driver reset).
     pub fn device_lost() -> Self {
         Self {
             kind: QuantaErrorKind::DeviceLost,
@@ -112,6 +136,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct an `InvalidParam` error — the caller passed a value
+    /// outside the documented range.
     pub fn invalid_param(msg: impl Into<String>) -> Self {
         Self {
             kind: QuantaErrorKind::InvalidParam(msg.into()),
@@ -147,6 +173,8 @@ impl QuantaError {
         }
     }
 
+    /// Construct an `Internal` error — an invariant of Quanta's own
+    /// bookkeeping broke (a poisoned lock, an impossible state).
     pub fn internal(msg: impl Into<String>) -> Self {
         Self {
             kind: QuantaErrorKind::Internal(msg.into()),

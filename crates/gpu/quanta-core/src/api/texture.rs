@@ -1,3 +1,6 @@
+//! Images and how shaders read them: [`Texture`] and its descriptor,
+//! [`TextureView`] sub-ranges, and [`Sampler`] filtering state.
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -42,12 +45,15 @@ impl Texture {
         self.device = Some(device);
     }
 
+    /// Width in texels.
     pub fn width(&self) -> u32 {
         self.width
     }
+    /// Height in texels.
     pub fn height(&self) -> u32 {
         self.height
     }
+    /// The pixel format the texture was created with.
     pub fn format(&self) -> Format {
         self.format
     }
@@ -56,6 +62,8 @@ impl Texture {
     pub fn sample_count(&self) -> u32 {
         self.sample_count
     }
+    /// The raw driver handle, for binding this texture into a wave or
+    /// a render pass.
     pub fn handle(&self) -> u64 {
         self.handle
     }
@@ -231,10 +239,13 @@ impl Drop for Texture {
 /// ```
 #[non_exhaustive]
 pub struct TextureDesc {
+    /// Width in texels.
     pub width: u32,
+    /// Height in texels.
     pub height: u32,
     /// Depth for 3D textures (1 for 2D).
     pub depth: u32,
+    /// Pixel format of every level and layer.
     pub format: Format,
     /// Texture kind — 2D, 3D, cube, array.
     pub kind: TextureKind,
@@ -349,10 +360,12 @@ impl TextureUsage {
     /// Usable as a render target (color attachment).
     pub const RENDER_TARGET: Self = Self(1 << 2);
 
+    /// Combine usage flags.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
+    /// Check whether a usage flag is set.
     pub const fn has(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0
     }
@@ -384,6 +397,7 @@ pub struct TextureView {
 }
 
 impl TextureView {
+    /// The raw driver handle of the view.
     pub fn handle(&self) -> u64 {
         self.handle
     }
@@ -410,6 +424,7 @@ pub struct Sampler {
 }
 
 impl Sampler {
+    /// The raw driver handle of the sampler.
     pub fn handle(&self) -> u64 {
         self.handle
     }
@@ -452,11 +467,19 @@ impl Drop for Sampler {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerDesc {
+    /// Filter used when the texture is minified — more than one texel
+    /// falls in a pixel.
     pub min_filter: Filter,
+    /// Filter used when the texture is magnified — one texel covers
+    /// more than a pixel.
     pub mag_filter: Filter,
+    /// Filter applied between mip levels.
     pub mip_filter: Filter,
+    /// How horizontal coordinates outside `[0, 1]` are resolved.
     pub address_u: AddressMode,
+    /// How vertical coordinates outside `[0, 1]` are resolved.
     pub address_v: AddressMode,
+    /// Maximum anisotropic-filtering ratio; 1 disables anisotropy.
     pub max_anisotropy: u8,
     /// Comparison function for depth/shadow samplers. None = regular sampler.
     pub compare: Option<CompareOp>,
@@ -510,15 +533,24 @@ impl SamplerDesc {
     }
 }
 
+/// How a sampler weighs texels when the sample point falls between
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Filter {
+    /// Take the nearest texel — blocky, exact, and the only filter
+    /// valid for non-filterable formats.
     Nearest,
+    /// Blend the neighbouring texels.
     Linear,
 }
 
+/// How a sampler resolves texture coordinates outside `[0, 1]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AddressMode {
+    /// Clamp to the edge texel.
     ClampToEdge,
+    /// Tile the texture.
     Repeat,
+    /// Tile the texture, mirroring every other repetition.
     MirrorRepeat,
 }

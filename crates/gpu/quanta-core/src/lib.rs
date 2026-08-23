@@ -20,6 +20,7 @@
 //! compute ICBs) lives here behind `compute`.
 
 #![no_std]
+#![deny(missing_docs)]
 
 extern crate alloc;
 
@@ -288,7 +289,7 @@ pub fn devices() -> alloc::vec::Vec<Gpu> {
 ///   `QUANTA_CPU=1`.
 /// - **Linux / Android / Windows:** Vulkan, then the CPU software device
 ///   when `QUANTA_CPU=1`.
-/// - **wasm:** WebGPU — through the async [`init_webgpu_async`]; sync
+/// - **wasm:** WebGPU — through the async `init_webgpu_async`; sync
 ///   `init` never returns a WebGPU device (the platform requires an async
 ///   adapter handshake).
 /// - **Last resort (all native platforms):** when nothing is forced and

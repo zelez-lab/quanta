@@ -22,7 +22,10 @@ macro_rules! shader_vec {
         #[repr(C)]
         #[derive(Debug, Clone, Copy, PartialEq, Default)]
         pub struct $name {
-            $(pub $field: f32,)+
+            $(
+                #[doc = concat!("The `", stringify!($field), "` component.")]
+                pub $field: f32,
+            )+
         }
 
         impl $name {
@@ -52,7 +55,9 @@ shader_vec! {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderStage {
+    /// Vertex shader — one invocation per vertex.
     Vertex,
+    /// Fragment (pixel) shader — one invocation per covered fragment.
     Fragment,
     /// Tessellation control (hull) shader.
     TessControl,
@@ -104,7 +109,7 @@ pub struct ShaderBinary {
 
 impl ShaderBinary {
     /// The shader artifact for the driver that asked: Metal takes the
-    /// platform-correct metallib (see [`Self::apple_metallib`]) and
+    /// platform-correct metallib (`apple_metallib`) and
     /// falls back to SPIR-V; Vulkan takes SPIR-V; WebGPU takes the WGSL
     /// source bytes; the IR kind has no render path and gets `None`.
     pub fn for_artifact(&self, kind: crate::ArtifactKind) -> Option<&[u8]> {

@@ -1,3 +1,13 @@
+//! Buffers: the typed GPU-resident storage kernels and draws read and
+//! write.
+//!
+//! Four spellings of the same allocation, differing in who owns the
+//! memory and where it lives: [`Field`] (device-resident, the
+//! default), [`MappedField`] (permanently CPU-mapped, zero-copy
+//! uploads), [`HostField`] (a host region the device imports read-only
+//! without copying), and [`SharedField`] (one `Field` with many
+//! holders, freed when the last one drops).
+
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -7,7 +17,7 @@ use crate::{GpuDevice, QuantaError};
 
 /// GPU-resident typed buffer. Data that quarks operate on.
 ///
-/// Created via [`Gpu::field`]. Freed when dropped.
+/// Created via [`Gpu::field`](crate::Gpu::field). Freed when dropped.
 /// Type parameter ensures type-safe reads and writes.
 ///
 /// Resources own their operations — write, read, copy are methods
@@ -53,6 +63,7 @@ impl<T: Copy> MappedField<T> {
         self.count
     }
 
+    /// Whether the field holds zero elements.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -137,6 +148,7 @@ impl<T: Copy> HostField<'_, T> {
         self.count
     }
 
+    /// Whether the field holds zero elements.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -247,6 +259,7 @@ impl<T: Copy> Field<T> {
         self.count
     }
 
+    /// Whether the field holds zero elements.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }

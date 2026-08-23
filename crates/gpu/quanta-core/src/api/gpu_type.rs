@@ -16,7 +16,9 @@ pub use quanta_ir::ScalarType;
 
 /// Marker trait for types that can be used in GPU kernels.
 pub trait GpuType: Copy + 'static {
+    /// Size of one element in device memory, in bytes.
     fn gpu_size() -> usize;
+    /// The kernel-language scalar tag this Rust type lowers to.
     fn scalar_type() -> ScalarType;
 }
 
@@ -117,16 +119,22 @@ impl GpuType for i8 {
 /// every variant the compiler produced and [`KernelBinary::for_artifact`]
 /// picks the platform-correct one by `cfg`.
 pub struct KernelBinary {
+    /// SPIR-V module, for the Vulkan driver.
     pub spirv: Option<&'static [u8]>,
+    /// macOS-platform Metal library.
     pub metallib: Option<&'static [u8]>,
+    /// iOS-device Metal library — a macOS-platform one is rejected
+    /// there.
     pub metallib_ios: Option<&'static [u8]>,
+    /// iOS-simulator Metal library.
     pub metallib_ios_sim: Option<&'static [u8]>,
+    /// WGSL source, for the WebGPU driver.
     pub wgsl: Option<&'static str>,
 }
 
 impl KernelBinary {
     /// The artifact for the driver that asked. Metal: the
-    /// platform-correct metallib (see [`Self::apple_metallib`]); Vulkan:
+    /// platform-correct metallib (`apple_metallib`); Vulkan:
     /// SPIR-V; WebGPU: WGSL source bytes; IR (the CPU device): always
     /// `None` — it executes the embedded `KernelDef` through `wave_jit`.
     /// `None` for any driver means "no precompiled artifact, JIT".

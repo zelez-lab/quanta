@@ -1,3 +1,10 @@
+//! [`Batch`] — many dispatches encoded into one command buffer.
+//!
+//! A batch amortizes the per-dispatch commit: the waves are recorded
+//! as they arrive and the whole run reaches the queue once, behind a
+//! single pulse. It owns a keep-alive on its device, so a batch parked
+//! in the deferred lane can always hand its command buffers back.
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 

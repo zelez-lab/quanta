@@ -1,3 +1,12 @@
+//! [`Gpu`] — the cloneable device handle every Quanta program starts
+//! from.
+//!
+//! `Gpu` is a thin `Arc` over the per-device context: the
+//! `Arc<dyn GpuDevice>` driver plus the singletons that must exist
+//! exactly once per device (the deferred lane, the wave cache, the
+//! MSAA pool). Cloning shares them, so two `init()` calls over the
+//! same physical device still satisfy the "one per device" contracts.
+
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -144,22 +153,30 @@ impl Gpu {
 
     // === Device info ===
 
+    /// The active device's capability record — unit counts, limits,
+    /// vendor, name and memory topology.
     pub fn caps(&self) -> &Caps {
         self.ctx.device.caps()
     }
 
+    /// Compute units on the device (an SM on NVIDIA, a CU on AMD).
     pub fn nuclei(&self) -> u32 {
         self.caps().nuclei
     }
 
+    /// Cores per compute unit.
     pub fn protons_per_nucleus(&self) -> u32 {
         self.caps().protons_per_nucleus
     }
 
+    /// Threads per core — the warp / wave width, 32 or 64 on real
+    /// hardware.
     pub fn quarks_per_proton(&self) -> u32 {
         self.caps().quarks_per_proton
     }
 
+    /// Total parallel execution units: the product of the three counts
+    /// above. A sizing hint for dispatch grids, not a hard limit.
     pub fn total_quarks(&self) -> u32 {
         self.caps().total_quarks()
     }
@@ -346,6 +363,8 @@ impl Gpu {
         self.ctx.device.supports_compute_textures()
     }
 
+    /// The device's reported name, for diagnostics and device
+    /// selection.
     pub fn name(&self) -> &str {
         &self.caps().name
     }
@@ -598,7 +617,8 @@ impl Gpu {
     }
 
     /// Submit all deferred dispatches and block until they complete.
-    /// The explicit sync point for consumers that bypass [`Pulse`]s —
+    /// The explicit sync point for consumers that bypass
+    /// [`Pulse`](crate::Pulse)s —
     /// e.g. an external reader of a
     /// [`Field::native_handle`](crate::Field::native_handle) export.
     /// A no-op when nothing is pending.

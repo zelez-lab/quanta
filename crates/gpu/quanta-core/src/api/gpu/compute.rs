@@ -13,7 +13,7 @@ impl Gpu {
     ///
     /// Repeat creations of the same bytes on one device return fresh
     /// `Wave` handles over ONE cached driver pipeline (see
-    /// [`crate::api::wave_cache`]) — creation cost is paid once per
+    /// `api::wave_cache`) — creation cost is paid once per
     /// distinct kernel, and bindings/push state stay per-`Wave`.
     pub fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError> {
         #[cfg(feature = "std")]
@@ -101,6 +101,11 @@ impl Gpu {
         Ok(wave)
     }
 
+    /// Dispatch `wave` over an explicit threadgroup grid.
+    ///
+    /// Unlike the 1-D [`Gpu::dispatch`] entry point this never defers:
+    /// it commits whatever the lane already holds, then submits, so
+    /// queue order stays program order.
     pub fn wave_dispatch(&self, wave: &Wave, groups: [u32; 3]) -> Result<Pulse, QuantaError> {
         // A submission that bypasses the deferred lane: commit the
         // pending batch first so queue order stays program order (the
@@ -112,7 +117,7 @@ impl Gpu {
 
     /// Dispatch a 1D wave over exactly `quarks` threads.
     /// Metal uses dispatchThreads (clips to exact count).
-    /// Vulkan uses dispatchGroups with ceil(quarks/workgroup_size[0]).
+    /// Vulkan uses dispatchGroups with `ceil(quarks/workgroup_size[0])`.
     ///
     /// Dispatch is **deferred**: the wave is encoded into the shared
     /// per-device batch and the returned pulse's `wait` flushes the
@@ -292,8 +297,8 @@ impl Gpu {
 
     // === M5.2: Indirect command buffers (steps 032 + 033) ===
 
-    /// Create a typed [`IndirectCommandBuffer`] with the given
-    /// capacity.
+    /// Create a typed [`IndirectCommandBuffer`](crate::IndirectCommandBuffer)
+    /// with the given capacity.
     ///
     /// The buffer can hold up to `max_commands` recorded dispatches.
     /// Records past capacity return an error; `Drop` releases the

@@ -1,3 +1,7 @@
+//! Completion signals: [`Pulse`] (one submission), [`Timeline`] (a
+//! monotonic counter) and the two query wrappers ([`TimestampQuery`],
+//! [`OcclusionQuery`]).
+
 use crate::{GpuDevice, QuantaError};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -95,6 +99,7 @@ impl Pulse {
         Ok(())
     }
 
+    /// The raw driver handle this pulse waits on.
     pub fn handle(&self) -> u64 {
         self.handle
     }

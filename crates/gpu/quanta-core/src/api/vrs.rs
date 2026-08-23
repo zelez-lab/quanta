@@ -25,12 +25,20 @@
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ShadingRate {
+    /// Full rate — one invocation per pixel.
     R1x1,
+    /// One invocation per 1×2 pixel block.
     R1x2,
+    /// One invocation per 2×1 pixel block.
     R2x1,
+    /// One invocation per 2×2 pixel block — the usual quarter-rate
+    /// setting.
     R2x2,
+    /// One invocation per 2×4 pixel block.
     R2x4,
+    /// One invocation per 4×2 pixel block.
     R4x2,
+    /// One invocation per 4×4 pixel block — the coarsest Tier 1 rate.
     R4x4,
 }
 

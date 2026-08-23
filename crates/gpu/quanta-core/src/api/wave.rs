@@ -1,3 +1,10 @@
+//! [`Wave`] — a compiled kernel plus the bindings a dispatch reads.
+//!
+//! All binding state is inline (fixed-size arrays, no heap on the hot
+//! path), so rebinding and re-dispatching one wave is the cheap path.
+//! The compiled pipeline behind it may be shared with other waves
+//! through the per-device wave cache.
+
 use alloc::sync::Arc;
 
 use crate::api::types::{MAX_BINDINGS, MAX_TEXTURES, PUSH_DATA_CAP};
@@ -137,6 +144,8 @@ impl Wave {
         }
     }
 
+    /// The raw driver handle for the compiled pipeline behind this
+    /// wave.
     pub fn handle(&self) -> u64 {
         self.handle
     }

@@ -1,3 +1,7 @@
+//! The shared vocabulary both faces speak: pixel formats, buffer
+//! usage, colors, device capabilities, resource states, queue kinds
+//! and the artifact-target tag.
+
 use alloc::string::String;
 
 /// Pixel/data format for textures.
@@ -10,14 +14,26 @@ use alloc::string::String;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
+    /// 8-bit RGBA, unsigned normalized. The default color format.
     RGBA8,
+    /// 8-bit BGRA, unsigned normalized — the swapchain-native channel
+    /// order on Metal and most Windows surfaces.
     BGRA8,
+    /// Single 8-bit unsigned-normalized channel (masks, coverage).
     R8,
+    /// Single half-precision float channel.
     R16Float,
+    /// Single single-precision float channel — the storage-image
+    /// format compute kernels write.
     R32Float,
+    /// Two single-precision float channels.
     RG32Float,
+    /// Four half-precision float channels — HDR intermediates at half
+    /// the bandwidth of `RGBA32Float`.
     RGBA16Float,
+    /// Four single-precision float channels.
     RGBA32Float,
+    /// Single-precision float depth. Depth attachments only.
     Depth32Float,
 
     // Compressed formats (M2.4)
@@ -111,6 +127,8 @@ impl FieldUsage {
         self.0 & flag.0 == flag.0
     }
 
+    /// The raw flag bits, for drivers translating usage into their own
+    /// native flags.
     pub const fn bits(self) -> u8 {
         self.0
     }
@@ -119,25 +137,33 @@ impl FieldUsage {
 /// Color value (linear, 0.0-1.0).
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
+    /// Red channel.
     pub r: f32,
+    /// Green channel.
     pub g: f32,
+    /// Blue channel.
     pub b: f32,
+    /// Alpha channel — 1.0 is fully opaque.
     pub a: f32,
 }
 
 impl Color {
+    /// Opaque white.
     pub const WHITE: Self = Self {
         r: 1.0,
         g: 1.0,
         b: 1.0,
         a: 1.0,
     };
+    /// Opaque black.
     pub const BLACK: Self = Self {
         r: 0.0,
         g: 0.0,
         b: 0.0,
         a: 1.0,
     };
+    /// Fully transparent black — the usual clear value for a color
+    /// attachment that will be composited.
     pub const CLEAR: Self = Self {
         r: 0.0,
         g: 0.0,
@@ -145,10 +171,12 @@ impl Color {
         a: 0.0,
     };
 
+    /// An opaque color from three linear channels.
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
         Self { r, g, b, a: 1.0 }
     }
 
+    /// A color from four linear channels.
     pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
@@ -218,12 +246,19 @@ impl Caps {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vendor {
+    /// AMD.
     Amd,
+    /// NVIDIA.
     Nvidia,
+    /// Intel.
     Intel,
+    /// Apple silicon.
     Apple,
+    /// Broadcom — the Raspberry Pi's VideoCore.
     Broadcom,
+    /// The in-tree CPU software device, which has no silicon behind it.
     Software,
+    /// The driver reported an ID Quanta does not recognize.
     Unknown,
 }
 
@@ -316,13 +351,22 @@ impl ResolveTarget {
 /// Comparison operation for depth/stencil testing and comparison samplers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompareOp {
+    /// The test never passes.
     Never,
+    /// Passes when the new value is less than the stored one.
     Less,
+    /// Passes when the two values are equal.
     Equal,
+    /// Passes when the new value is less than or equal to the stored one.
     LessEqual,
+    /// Passes when the new value is greater than the stored one.
     Greater,
+    /// Passes when the two values differ.
     NotEqual,
+    /// Passes when the new value is greater than or equal to the stored
+    /// one.
     GreaterEqual,
+    /// The test always passes.
     Always,
 }
 
@@ -340,11 +384,17 @@ pub enum CompareOp {
 /// `CooperativeMatrixStore` carry `m`, `n`, `k` and the type per op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoopMatrixShape {
+    /// Rows of `A`, `C` and `D`.
     pub m: u8,
+    /// Columns of `B`, `C` and `D`.
     pub n: u8,
+    /// The contracted dimension: columns of `A`, rows of `B`.
     pub k: u8,
+    /// Element type of the two multiplicands `A` and `B`.
     pub ab_ty: quanta_ir::ScalarType,
+    /// Element type of the accumulator input `C`.
     pub c_ty: quanta_ir::ScalarType,
+    /// Element type of the result `D`.
     pub result_ty: quanta_ir::ScalarType,
 }
 
@@ -355,8 +405,8 @@ pub struct CoopMatrixShape {
 /// was handed PTX / GCN ELF that no driver could execute, while the
 /// Vulkan driver — the one actually running on that card — only accepts
 /// SPIR-V. The vendor says who made the chip; the driver says what bytes
-/// it can load. [`KernelBinary::for_artifact`] and
-/// [`ShaderBinary::for_artifact`] take this, and every driver reports
+/// it can load. `KernelBinary::for_artifact` and
+/// `ShaderBinary::for_artifact` take this, and every driver reports
 /// its own through [`crate::Gpu::artifact_kind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactKind {

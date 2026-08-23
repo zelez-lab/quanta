@@ -1,3 +1,11 @@
+//! [`PipelineDesc`] and everything it names: shader sources, vertex
+//! layouts, blend / depth / stencil state, rasterization, and the
+//! optional tessellation and mesh-shader stages.
+//!
+//! These are the descriptors the `GpuDevice` trait and the drivers
+//! speak, plus the [`Pipeline`] handle a driver hands back. The typed
+//! builders that assemble them live in `quanta-render`.
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -51,6 +59,7 @@ impl Pipeline {
         }
     }
 
+    /// The raw driver handle of the compiled pipeline.
     pub fn handle(&self) -> u64 {
         self.handle
     }
@@ -480,13 +489,21 @@ impl Default for StencilState {
 /// Stencil operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StencilOp {
+    /// Leave the stored value alone.
     Keep,
+    /// Store zero.
     Zero,
+    /// Store the pass's stencil reference value.
     Replace,
+    /// Add one, saturating at the maximum representable value.
     IncrementClamp,
+    /// Subtract one, saturating at zero.
     DecrementClamp,
+    /// Bitwise-invert the stored value.
     Invert,
+    /// Add one, wrapping to zero past the maximum.
     IncrementWrap,
+    /// Subtract one, wrapping to the maximum below zero.
     DecrementWrap,
 }
 
@@ -503,7 +520,10 @@ pub struct VertexLayout {
 /// How a vertex buffer advances — per vertex or per instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepMode {
+    /// Advance one stride per vertex.
     Vertex,
+    /// Advance one stride per instance — the per-instance data of an
+    /// instanced draw.
     Instance,
 }
 
@@ -525,18 +545,31 @@ pub struct VertexAttribute {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttributeFormat {
+    /// One `f32`.
     Float,
+    /// Two `f32`s.
     Float2,
+    /// Three `f32`s.
     Float3,
+    /// Four `f32`s.
     Float4,
+    /// One `i32`.
     Int,
+    /// Two `i32`s.
     Int2,
+    /// Three `i32`s.
     Int3,
+    /// Four `i32`s.
     Int4,
+    /// One `u32`.
     UInt,
+    /// Two `u32`s.
     UInt2,
+    /// Three `u32`s.
     UInt3,
+    /// Four `u32`s.
     UInt4,
+    /// Four `u8`s, normalized to `0.0..=1.0` — packed vertex colors.
     UByte4Norm,
 }
 
@@ -549,12 +582,20 @@ pub enum AttributeFormat {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct BlendState {
+    /// Whether blending runs at all; when false the fragment
+    /// overwrites the destination.
     pub enabled: bool,
+    /// Factor scaling the source color channels.
     pub src_rgb: BlendFactor,
+    /// Factor scaling the destination color channels.
     pub dst_rgb: BlendFactor,
+    /// Factor scaling the source alpha channel.
     pub src_alpha: BlendFactor,
+    /// Factor scaling the destination alpha channel.
     pub dst_alpha: BlendFactor,
+    /// How the two scaled color terms combine.
     pub op_rgb: BlendOp,
+    /// How the two scaled alpha terms combine.
     pub op_alpha: BlendOp,
 }
 
@@ -611,15 +652,27 @@ impl BlendState {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendFactor {
+    /// Scale by zero — drops the term.
     Zero,
+    /// Scale by one — keeps the term unchanged.
     One,
+    /// Scale by the source alpha.
     SrcAlpha,
+    /// Scale by one minus the source alpha.
     OneMinusSrcAlpha,
+    /// Scale by the destination alpha.
     DstAlpha,
+    /// Scale by one minus the destination alpha.
     OneMinusDstAlpha,
+    /// Scale each channel by the matching source color channel.
     SrcColor,
+    /// Scale each channel by one minus the matching source color
+    /// channel.
     OneMinusSrcColor,
+    /// Scale each channel by the matching destination color channel.
     DstColor,
+    /// Scale each channel by one minus the matching destination color
+    /// channel.
     OneMinusDstColor,
 }
 
@@ -630,10 +683,15 @@ pub enum BlendFactor {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlendOp {
+    /// Source plus destination.
     Add,
+    /// Source minus destination.
     Subtract,
+    /// Destination minus source.
     ReverseSubtract,
+    /// The per-channel minimum of the two.
     Min,
+    /// The per-channel maximum of the two.
     Max,
 }
 
@@ -644,8 +702,12 @@ pub enum BlendOp {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CullMode {
+    /// Draw every triangle, whichever way it faces.
     None,
+    /// Discard front-facing triangles.
     Front,
+    /// Discard back-facing triangles — the usual setting for closed
+    /// meshes.
     Back,
 }
 
@@ -656,10 +718,16 @@ pub enum CullMode {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Primitive {
+    /// One point per vertex.
     Point,
+    /// One line segment per vertex pair.
     Line,
+    /// A connected polyline: each vertex extends the previous segment.
     LineStrip,
+    /// One triangle per vertex triple.
     Triangle,
+    /// A connected triangle strip: each vertex adds a triangle with
+    /// the previous two.
     TriangleStrip,
 }
 
@@ -680,9 +748,13 @@ pub struct SpecConstant {
 /// Specialization constant value.
 #[derive(Debug, Clone, Copy)]
 pub enum SpecValue {
+    /// An unsigned 32-bit constant.
     U32(u32),
+    /// A signed 32-bit constant.
     I32(i32),
+    /// A single-precision float constant.
     F32(f32),
+    /// A boolean constant.
     Bool(bool),
 }
 

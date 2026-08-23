@@ -1,3 +1,11 @@
+//! The `GpuDevice` trait — the raw driver seam every backend implements.
+//!
+//! The trait speaks bytes and opaque handles so it stays
+//! dyn-compatible; the typed surface users hold is [`Gpu`](crate::Gpu),
+//! which wraps an `Arc<dyn GpuDevice>`. It is sealed, so the only
+//! implementors are the in-tree drivers — that is what licenses adding
+//! methods with default bodies after the API freeze.
+
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -38,6 +46,8 @@ pub(crate) mod sealed {
 pub trait GpuDevice: sealed::Sealed + Send + Sync {
     // === Device info ===
 
+    /// The device's capability record — unit counts, limits, vendor,
+    /// name and memory topology, resolved once at discovery.
     fn caps(&self) -> &Caps;
 
     /// Hand the device a weak reference to the shared `Arc` it is held
@@ -301,10 +311,18 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     // === Fields (GPU memory) ===
 
+    /// Allocate `size` bytes of device memory for `usage`, returning the
+    /// driver handle the rest of the field methods key on.
     fn field_alloc(&self, size: usize, usage: FieldUsage) -> Result<u64, QuantaError>;
+    /// Release the allocation behind `handle`. Called exactly once, from
+    /// the owning wrapper's `Drop`.
     fn field_free(&self, handle: u64);
+    /// Upload `data` into the field from byte 0.
     fn field_write_bytes(&self, handle: u64, data: &[u8]) -> Result<(), QuantaError>;
+    /// Read the field's first `size` bytes back to the host.
     fn field_read_bytes(&self, handle: u64, size: usize) -> Result<Vec<u8>, QuantaError>;
+    /// Copy `size` bytes device-to-device, from the start of `src` to the
+    /// start of `dst`.
     fn field_copy_bytes(&self, dst: u64, src: u64, size: usize) -> Result<(), QuantaError>;
 
     /// Write `data` into a field starting at byte offset `byte_offset`,
@@ -379,8 +397,12 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     // === Textures ===
 
+    /// Create a texture matching `desc` and return the handle wrapper.
     fn texture_create(&self, desc: &TextureDesc) -> Result<Texture, QuantaError>;
+    /// Upload a full mip-0 image, tightly packed row-major in the
+    /// texture's format (no row padding).
     fn texture_write(&self, texture: &Texture, data: &[u8]) -> Result<(), QuantaError>;
+    /// Read mip level 0 back to the host, tightly packed row-major.
     fn texture_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
 
     /// Whether compute kernels can bind textures (`&Sampled2D` /
@@ -406,15 +428,21 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
             "sub-region texture writes not supported on this backend",
         ))
     }
+    /// Create the sampler `desc` describes. Backends that cache by
+    /// descriptor hand back a shared entry.
     fn sampler_create(
         &self,
         desc: &crate::texture::SamplerDesc,
     ) -> Result<crate::Sampler, QuantaError>;
+    /// Fill mip levels 1..N of `texture` by successive downsampling of
+    /// its level 0.
     fn generate_mipmaps(&self, texture: &Texture) -> Result<(), QuantaError>;
 
     // === Compute === (compute-typed; gated with the `compute` feature,
     // mirroring the render-gated methods below)
 
+    /// Compile a wave from an already-emitted kernel binary (AOT
+    /// artifact bytes in this backend's shader format).
     #[cfg(feature = "compute")]
     fn wave(&self, kernel: &[u8]) -> Result<Wave, QuantaError>;
 
@@ -475,16 +503,24 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
 
     // === Render === (render-typed; gated with the `render` feature, step 085)
 
+    /// Compile a render pipeline from `desc` (shader stages, vertex
+    /// layout, blend / depth / raster state).
     #[cfg(feature = "render")]
     fn pipeline_create(&self, desc: &crate::PipelineDesc) -> Result<Pipeline, QuantaError>;
+    /// Open a render pass drawing into `target`. The pass records ops;
+    /// nothing reaches the GPU until `render_end`.
     #[cfg(feature = "render")]
     fn render_begin(&self, target: &Texture) -> Result<RenderPass, QuantaError>;
+    /// Encode and submit a recorded pass; the pulse signals when the
+    /// target is finished.
     #[cfg(feature = "render")]
     fn render_end(&self, pass: RenderPass) -> Result<Pulse, QuantaError>;
 
     // === Sync ===
 
+    /// Block the calling thread until `pulse`'s work has completed.
     fn pulse_wait(&self, pulse: &mut Pulse) -> Result<(), QuantaError>;
+    /// Whether `pulse`'s work has completed, without blocking.
     fn pulse_poll(&self, pulse: &Pulse) -> bool;
 
     // === Timestamps ===
