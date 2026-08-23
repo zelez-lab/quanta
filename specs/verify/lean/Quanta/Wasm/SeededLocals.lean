@@ -38,6 +38,16 @@ def writtenLocals (instrs : List WasmInstr) : List Nat :=
 
 @[simp] theorem writtenLocals_nil : writtenLocals [] = [] := rfl
 
+@[simp] theorem writtenLocalsInstr_block (a : Nat) :
+    writtenLocalsInstr (.block a) = [] := rfl
+@[simp] theorem writtenLocalsInstr_wloop (a : Nat) :
+    writtenLocalsInstr (.wloop a) = [] := rfl
+@[simp] theorem writtenLocalsInstr_wend : writtenLocalsInstr .wend = [] := rfl
+@[simp] theorem writtenLocalsInstr_br (d : Nat) :
+    writtenLocalsInstr (.br d) = [] := rfl
+@[simp] theorem writtenLocalsInstr_brIf (d : Nat) :
+    writtenLocalsInstr (.brIf d) = [] := rfl
+
 @[simp] theorem writtenLocals_cons (i : WasmInstr) (rest : List WasmInstr) :
     writtenLocals (i :: rest) = writtenLocalsInstr i ++ writtenLocals rest := rfl
 
@@ -55,6 +65,11 @@ theorem LocalsSeeded.tail {s : LowerState} {i : WasmInstr} {rest : List WasmInst
     (h : LocalsSeeded s (i :: rest)) : LocalsSeeded s rest := by
   intro idx hmem
   exact h idx (by rw [writtenLocals_cons]; exact List.mem_append_right _ hmem)
+
+theorem LocalsSeeded.of_subset {s : LowerState} {a b : List WasmInstr}
+    (h_sub : ∀ i, i ∈ writtenLocals a → i ∈ writtenLocals b)
+    (h : LocalsSeeded s b) : LocalsSeeded s a :=
+  fun i hi => h i (h_sub i hi)
 
 /-- Seeding only reads `localReg`, so it transports along equal maps. -/
 theorem LocalsSeeded.of_localReg_eq {s s' : LowerState} {instrs : List WasmInstr}
@@ -307,5 +322,117 @@ theorem lowerInstrsP_localReg_seeded {fuel : Nat} {frames : List FrameKind}
   -- The empty rest: sp' is s_m with the pending list untouched.
   simp only [lowerInstrsP, Option.some.injEq, Prod.mk.injEq] at h_rest
   rw [← h_rest.1, h_m]
+
+-- ════════════════════════════════════════════════════════════════════
+-- Structure plumbing: splitters reconstruct, writtenLocals distributes
+-- ════════════════════════════════════════════════════════════════════
+
+@[simp] theorem writtenLocals_append (a b : List WasmInstr) :
+    writtenLocals (a ++ b) = writtenLocals a ++ writtenLocals b := by
+  induction a with
+  | nil => simp
+  | cons i rest ih =>
+      rw [List.cons_append, writtenLocals_cons, writtenLocals_cons, ih,
+          List.append_assoc]
+
+theorem LocalsSeeded.of_append_left {s : LowerState} {a b : List WasmInstr}
+    (h : LocalsSeeded s (a ++ b)) : LocalsSeeded s a := by
+  intro idx hmem
+  exact h idx (by rw [writtenLocals_append]; exact List.mem_append_left _ hmem)
+
+theorem LocalsSeeded.of_append_right {s : LowerState} {a b : List WasmInstr}
+    (h : LocalsSeeded s (a ++ b)) : LocalsSeeded s b := by
+  intro idx hmem
+  exact h idx (by rw [writtenLocals_append]; exact List.mem_append_right _ hmem)
+
+/-- The walker reconstructs its input: what it took, the closer it
+    stopped at, and the rest are exactly the accumulator and the list. -/
+theorem walkUntilCloser_append :
+    ∀ (l : List WasmInstr) (n : Nat) (acc taken : List WasmInstr)
+      (marker : WasmInstr) (rest : List WasmInstr),
+    walkUntilCloser l n acc = some (taken, marker, rest) →
+    taken ++ marker :: rest = acc.reverse ++ l := by
+  intro l
+  induction l with
+  | nil => intro n acc taken marker rest h; cases h
+  | cons i tl ih =>
+      intro n acc taken marker rest h
+      rw [walkUntilCloser.eq_def] at h
+      split at h
+      · exact absurd h (by simp)
+      · -- depth-0 `wend`: the walker stops here.
+        rename_i heq
+        injection heq with h_i h_tl
+        subst h_i; subst h_tl
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨h_t, h_m, h_r⟩ := h
+        subst h_t; subst h_m; subst h_r
+        rfl
+      · -- depth-0 `welse`: same shape.
+        rename_i heq
+        injection heq with h_i h_tl
+        subst h_i; subst h_tl
+        simp only [Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨h_t, h_m, h_r⟩ := h
+        subst h_t; subst h_m; subst h_r
+        rfl
+      · -- Every other instruction: consume and recurse.
+        injections
+        subst_vars
+        have h_rec := ih _ _ _ _ _ h
+        rw [h_rec]
+        simp
+
+/-- `splitAtEnd` reconstructs: the input is the body, its closer, and
+    the tail. -/
+theorem splitAtEnd_append {l body post : List WasmInstr}
+    (h : splitAtEnd l = some (body, post)) :
+    body ++ .wend :: post = l := by
+  unfold splitAtEnd at h
+  cases hw : walkUntilCloser l 0 [] with
+  | none => rw [hw] at h; cases h
+  | some t =>
+      rw [hw] at h
+      obtain ⟨taken, marker, rest⟩ := t
+      simp only [Option.bind_eq_bind, Option.some_bind] at h
+      cases marker with
+      | wend =>
+          simp only [Option.some.injEq, Prod.mk.injEq] at h
+          obtain ⟨h_b, h_p⟩ := h
+          subst h_b; subst h_p
+          simpa using walkUntilCloser_append l 0 [] taken .wend rest hw
+      | _ => cases h
+
+-- ════════════════════════════════════════════════════════════════════
+-- The do-while body under seeding
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The `WhileBody` lowering leaves the stable layer alone — the seeded
+    analog of `whileBody_lowering_frame`, local writes admitted. -/
+theorem whileBody_localReg_of_seeded
+    {fuel : Nat} {frames : List FrameKind} {pref : List WasmInstr}
+    (h_sl : StraightLineInstrs pref)
+    {s s' : LowerState} {ops : List KernelOp}
+    (hnd : KeysNodup s.localReg) (h_seed : LocalsSeeded s pref)
+    (hl : lowerInstrs fuel (.loopK :: frames) s (pref ++ [.brIf 0]) = some (s', ops)) :
+    s'.localReg = s.localReg := by
+  obtain ⟨s_m, ops1, ops2, hl_pref, hl_br, _⟩ :=
+    lowerInstrs_straightLine_append h_sl hl
+  have h_lr : s_m.localReg = s.localReg :=
+    lowerInstrs_localReg_seeded h_sl hnd h_seed hl_pref
+  rw [lowerInstrs_brIf0_loop_empty_tail fuel (.loopK :: frames) s_m rfl] at hl_br
+  rcases h_pop : s_m.popSym with _ | ⟨svCond, s0⟩
+  · rw [h_pop] at hl_br; simp at hl_br
+  rw [h_pop] at hl_br
+  simp only [Option.bind_eq_bind, Option.some_bind] at hl_br
+  rcases h_commit : s0.commit svCond with _ | ⟨cond, s1, opsCommit⟩
+  · rw [h_commit] at hl_br; simp at hl_br
+  rw [h_commit] at hl_br
+  simp only [Option.some_bind, LowerState.alloc, pure, Option.some.injEq,
+             Prod.mk.injEq] at hl_br
+  obtain ⟨h_s', _⟩ := hl_br
+  subst h_s'
+  simp only
+  rw [LowerState.commit_localReg h_commit, LowerState.popSym_localReg h_pop, h_lr]
 
 end Quanta.Wasm

@@ -18,6 +18,7 @@ corollary.
 -/
 
 import Quanta.Wasm.PreservationBlockWhile
+import Quanta.Wasm.SeededLocals
 
 namespace Quanta.Wasm
 
@@ -97,6 +98,99 @@ def KernelInstrsW2.stable : ∀ {instrs : List WasmInstr},
               post_wf.stable (f + 1) frames { s1 with currentReg := [] }
 
 -- ════════════════════════════════════════════════════════════════════
+-- Seeding discharges the exit-side registers condition
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Under seeding, the rustc-while arm's `localReg` conjuncts hold
+    outright: prefix, exit site and `body2` all leave the stable layer
+    list-identical, so the state at the body's end IS the site's map —
+    no matter how many (bound) locals `body2` rebinds. -/
+theorem blockWhile_localReg_of_seeded
+    {fuel : Nat} {frames : List FrameKind} {pref body2 : List WasmInstr}
+    (h_pref : StraightLineInstrs pref) (h_body2 : StraightLineInstrs body2)
+    {s s_site s1 : LowerState} {p1 p2 : List PendingWrap}
+    {ops1 bodyOps : List KernelOp}
+    (hnd : KeysNodup s.localReg)
+    (h_seed_pref : LocalsSeeded s pref) (h_seed_body2 : LocalsSeeded s body2)
+    (hl_site : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩ (pref ++ [.brIf 1])
+        = some (⟨s_site, p1⟩, ops1))
+    (h_lb : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩
+        (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some (⟨s1, p2⟩, bodyOps)) :
+    s1.localReg = s_site.localReg ∧ s_site.localReg = s.localReg := by
+  -- Split both lowerings at the straight-line prefix.
+  obtain ⟨s_m, opsP, opsR, h_low_pref, h_brIf, _⟩ :=
+    lowerInstrsP_straightLine_append h_pref hl_site
+  have h_lb' : lowerInstrsP fuel (.loopK :: .block :: frames) ⟨s, []⟩
+      (pref ++ (.brIf 1 :: (body2 ++ [.br 0]))) = some (⟨s1, p2⟩, bodyOps) := by
+    have h_shape : pref ++ [.brIf 1] ++ body2 ++ [.br 0]
+        = pref ++ (.brIf 1 :: (body2 ++ [.br 0])) := by
+      simp [List.append_assoc]
+    rw [← h_shape]
+    exact h_lb
+  obtain ⟨s_m2, opsP2, opsR2, h_low_pref2, h_rest2, _⟩ :=
+    lowerInstrsP_straightLine_append h_pref h_lb'
+  -- Determinism: the prefix lowering is one function call.
+  rw [h_low_pref] at h_low_pref2
+  have h_m2 : s_m = s_m2 := by
+    have h_pair := (Option.some.injEq _ _).mp h_low_pref2
+    exact ((Prod.mk.injEq _ _ _ _).mp h_pair).1
+  rw [← h_m2] at h_rest2
+  -- The prefix leaves the stable layer alone.
+  have h_pref_lr : s_m.localReg = s.localReg :=
+    lowerInstrs_localReg_seeded h_pref hnd h_seed_pref h_low_pref
+  -- Unfold the br_if arm in both continuations.
+  have h_singleton : ([.brIf 1] : List WasmInstr) = .brIf 1 :: [] := rfl
+  rw [h_singleton, lowerInstrsP_brIf1_exit] at h_brIf
+  rw [lowerInstrsP_brIf1_exit] at h_rest2
+  -- The pop and the commit are the same in both.
+  rcases hpop : s_m.popSym with _ | ⟨svCond, s0⟩
+  · rw [hpop] at h_brIf; simp at h_brIf
+  rw [hpop] at h_brIf h_rest2
+  simp only [Option.bind_eq_bind, Option.some_bind] at h_brIf h_rest2
+  rcases hcommit : s0.commit svCond with _ | ⟨cond, s_c, opsCommit⟩
+  · rw [hcommit] at h_brIf; simp at h_brIf
+  rw [hcommit] at h_brIf h_rest2
+  simp only [Option.some_bind, LowerState.alloc] at h_brIf h_rest2
+  -- The flag state's stable layer is the prefix end's.
+  have h_c_lr : s_c.localReg = s.localReg := by
+    rw [LowerState.commit_localReg hcommit, LowerState.popSym_localReg hpop, h_pref_lr]
+  -- Site continuation: rest = [], the lowering is the flag state.
+  simp only [lowerInstrsP, Option.some_bind, pure, Option.some.injEq, Prod.mk.injEq,
+             LowerStateP.mk.injEq] at h_brIf
+  obtain ⟨⟨h_site_eq, _⟩, _⟩ := h_brIf
+  -- Body continuation: split at body2, close with the inert `br 0`.
+  rcases hrest : lowerInstrsP fuel (.loopK :: .block :: frames)
+      ⟨{ s_c with nextReg := s_c.nextReg + 1 + 1 }, []⟩ (body2 ++ [.br 0])
+      with _ | ⟨sp_b, restOps⟩
+  · rw [hrest] at h_rest2; simp at h_rest2
+  rw [hrest] at h_rest2
+  simp only [Option.some_bind, pure, Option.some.injEq, Prod.mk.injEq,
+             LowerStateP.mk.injEq] at h_rest2
+  obtain ⟨⟨h_s1_eq, _⟩, _⟩ := h_rest2
+  obtain ⟨s_b, opsB2, opsBr, h_low_b2, h_br0, _⟩ :=
+    lowerInstrsP_straightLine_append h_body2 hrest
+  rw [lowerInstrsP_br0_loop] at h_br0
+  have h_spb : sp_b = ⟨s_b, []⟩ := by
+    have := (Option.some.injEq _ _).mp h_br0
+    exact ((Prod.mk.injEq _ _ _ _).mp this).1.symm
+  -- body2 leaves the stable layer alone, from the flag state.
+  have h_flag_lr : ({ s_c with nextReg := s_c.nextReg + 1 + 1 } : LowerState).localReg
+      = s.localReg := h_c_lr
+  have h_b2_lr : s_b.localReg = s.localReg := by
+    have := lowerInstrs_localReg_seeded h_body2
+      (show KeysNodup ({ s_c with nextReg := s_c.nextReg + 1 + 1 } : LowerState).localReg by
+        rw [h_flag_lr]; exact hnd)
+      (h_seed_body2.of_localReg_eq h_flag_lr) h_low_b2
+    rw [this, h_flag_lr]
+  constructor
+  · rw [← h_s1_eq, h_spb]
+    show s_b.localReg = s_site.localReg
+    rw [h_b2_lr, ← h_site_eq]
+    exact h_c_lr.symm
+  · rw [← h_site_eq]
+    exact h_c_lr
+
+-- ════════════════════════════════════════════════════════════════════
 -- The site's lowering, out of the body's
 -- ════════════════════════════════════════════════════════════════════
 
@@ -137,6 +231,141 @@ theorem blockWhileBody_site_lowerP
   rw [lowerInstrsP_brIf1_exit, h_pop]
   simp only [Option.bind_eq_bind, Option.some_bind, h_commit, LowerState.alloc, lowerInstrsP,
              pure, List.append_nil]
+
+-- ════════════════════════════════════════════════════════════════════
+-- Label-only side conditions + the seeded bridge
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The label-only side conditions: `stable` minus the `localReg`
+    conjunct the seeded discharge provides. What remains is the
+    label-stability face (`localTy`). -/
+def KernelInstrsW2.labelStable : ∀ {instrs : List WasmInstr},
+    KernelInstrsW2 instrs → Nat → List FrameKind → LowerState → Prop
+  | _, .empty, _, _, _ => True
+  | _, @sl_cons i _ _ rest_wf, fuel, frames, s =>
+      ∀ s1 ops, lowerInstr s i = some (s1, ops) → rest_wf.labelStable fuel frames s1
+  | _, @while_cons _ body _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => True
+      | f + 1 =>
+          ∀ s1 bodyOps,
+            lowerInstrs f (.loopK :: frames) { s with currentReg := [] } body
+              = some (s1, bodyOps) →
+            s1.localTy = s.localTy ∧
+            post_wf.labelStable f frames { s1 with currentReg := [] }
+  | _, @block_while_cons pref body2 _ _ _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => True
+      | 1 => True
+      | f + 2 =>
+          ∀ s_site p1 ops1,
+            lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                (pref ++ [.brIf 1]) = some (⟨s_site, p1⟩, ops1) →
+            ∀ s1 p2 bodyOps,
+              lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                  (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) = some (⟨s1, p2⟩, bodyOps) →
+              s1.localTy = s.localTy ∧ s1.localTy = s_site.localTy ∧
+              post_wf.labelStable (f + 1) frames { s1 with currentReg := [] }
+
+/-- Seeding turns the label-only conditions into the full `stable`: the
+    rustc-while arm's `localReg` conjunct holds outright, and the
+    seeding+uniqueness invariants ride the (unchanged) stable layer
+    into every recursive position. -/
+theorem KernelInstrsW2.stable_of_seeded :
+    ∀ {instrs : List WasmInstr} (wf : KernelInstrsW2 instrs)
+      (fuel : Nat) (frames : List FrameKind) (s : LowerState),
+    wf.labelStable fuel frames s →
+    KeysNodup s.localReg →
+    LocalsSeeded s instrs →
+    wf.stable fuel frames s := by
+  intro instrs wf
+  induction wf with
+  | empty => intro fuel frames s _ _ _; trivial
+  | @sl_cons i rest h_i rest_wf IH =>
+      intro fuel frames s h_lab hnd h_seed
+      intro s1 ops hl
+      have h_lr : s1.localReg = s.localReg :=
+        lowerInstr_localReg_seeded h_i hnd h_seed.head hl
+      exact IH fuel frames s1 (h_lab s1 ops hl)
+        (by rw [h_lr]; exact hnd) (h_seed.tail.of_localReg_eq h_lr)
+  | @while_cons rest body post h_split h_body post_wf IH =>
+      intro fuel frames s h_lab hnd h_seed
+      cases fuel with
+      | zero => trivial
+      | succ f =>
+          intro s1 bodyOps hl
+          obtain ⟨h_lt, h_post_lab⟩ := h_lab s1 bodyOps hl
+          refine ⟨h_lt, ?_⟩
+          obtain ⟨pref', h_sl', h_ht', h_beq⟩ := h_body
+          rw [h_beq] at hl
+          have h_shape := splitAtEnd_append h_split
+          have h_wl : writtenLocals (WasmInstr.wloop 0 :: rest)
+              = writtenLocals pref' ++ writtenLocals post := by
+            rw [writtenLocals_cons, ← h_shape, h_beq]
+            simp
+          have h_seed_pref : LocalsSeeded ({ s with currentReg := [] } : LowerState) pref' := by
+            refine LocalsSeeded.of_subset (b := .wloop 0 :: rest) ?_
+              (h_seed.of_localReg_eq rfl)
+            intro j hj
+            rw [h_wl]
+            exact List.mem_append_left _ hj
+          have h_lr : s1.localReg = s.localReg :=
+            whileBody_localReg_of_seeded (s := { s with currentReg := [] })
+              h_sl' hnd h_seed_pref hl
+          have h_seed_post : LocalsSeeded ({ s1 with currentReg := [] } : LowerState) post := by
+            refine LocalsSeeded.of_subset (b := .wloop 0 :: rest) ?_
+              (h_seed.of_localReg_eq (show ({ s1 with currentReg := [] } : LowerState).localReg
+                = s.localReg from h_lr))
+            intro j hj
+            rw [h_wl]
+            exact List.mem_append_right _ hj
+          exact IH f frames { s1 with currentReg := [] } h_post_lab
+            (show KeysNodup ({ s1 with currentReg := [] } : LowerState).localReg by
+              show KeysNodup s1.localReg; rw [h_lr]; exact hnd) h_seed_post
+  | @block_while_cons pref body2 post h_pref h_body2 h_ht_pref h_ht_body2 post_wf IH =>
+      intro fuel frames s h_lab hnd h_seed
+      cases fuel with
+      | zero => trivial
+      | succ f0 =>
+      cases f0 with
+      | zero => trivial
+      | succ f =>
+          intro s_site p1 ops1 hl_site s1 p2 bodyOps h_lb
+          obtain ⟨h_lt, h_lt_site, h_post_lab⟩ :=
+            h_lab s_site p1 ops1 hl_site s1 p2 bodyOps h_lb
+          have h_wl : writtenLocals (WasmInstr.block 0 :: .wloop 0 ::
+                (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) ++ [.wend] ++ [] ++ [.wend] ++ post)
+              = writtenLocals pref ++ writtenLocals body2 ++ writtenLocals post := by
+            simp
+          have h_seed_shape : ∀ j, j ∈ writtenLocals pref ∨ j ∈ writtenLocals body2 ∨
+              j ∈ writtenLocals post →
+              (s.lookupLocal j).isSome := by
+            intro j hj
+            apply h_seed
+            rw [h_wl]
+            rcases hj with h | h | h
+            · exact List.mem_append_left _ (List.mem_append_left _ h)
+            · exact List.mem_append_left _ (List.mem_append_right _ h)
+            · exact List.mem_append_right _ h
+          have h_seed_pref : LocalsSeeded ({ s with currentReg := [] } : LowerState) pref :=
+            fun j hj => h_seed_shape j (Or.inl hj)
+          have h_seed_body2 : LocalsSeeded ({ s with currentReg := [] } : LowerState) body2 :=
+            fun j hj => h_seed_shape j (Or.inr (Or.inl hj))
+          obtain ⟨h_lr_site_eq, h_site_s⟩ :=
+            blockWhile_localReg_of_seeded (s := { s with currentReg := [] })
+              h_pref h_body2 hnd h_seed_pref h_seed_body2 hl_site h_lb
+          refine ⟨h_lt, h_lr_site_eq, h_lt_site, ?_⟩
+          have h_lr : s1.localReg = s.localReg := by rw [h_lr_site_eq, h_site_s]
+          have h_seed_post : LocalsSeeded ({ s1 with currentReg := [] } : LowerState) post := by
+            intro j hj
+            have h_s := h_seed_shape j (Or.inr (Or.inr hj))
+            rw [lookupLocal_find?] at h_s ⊢
+            show ((s1.localReg.find? (fun p => p.fst = j)).map Prod.snd).isSome
+            rw [h_lr]
+            exact h_s
+          exact IH (f + 1) frames { s1 with currentReg := [] } h_post_lab
+            (show KeysNodup ({ s1 with currentReg := [] } : LowerState).localReg by
+              show KeysNodup s1.localReg; rw [h_lr]; exact hnd) h_seed_post
 
 -- ════════════════════════════════════════════════════════════════════
 -- The apex
@@ -437,6 +666,80 @@ theorem framework_preservation_kernel_while_of_W2
     instrs h_wf.toW2 (by rw [KernelInstrsW.toW2_depth]; exact h_fuel)
     (h_wf.stable_toW2 (fuel + 1) frames s h_ts) ws' s' ops hw
     (lowerInstrsP_agrees_with_lowerInstrs (fuel + 1) frames s instrs hl)
+
+/-- The apex under seeding: the entry state binds every local the
+    kernel writes (production's function-entry pre-allocation), so the
+    side conditions reduce to the label-only face — `body2` may rebind
+    any number of locals past the exit site. -/
+theorem framework_preservation_kernel_while2_seeded
+    (fuel : Nat) (frames : List FrameKind)
+    (ws : WasmState) (s : LowerState) (kst : Quanta.KOps.State)
+    (layout : BufferLayout)
+    (R : Refines ws s kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (instrs : List WasmInstr)
+    (h_wf : KernelInstrsW2 instrs)
+    (h_fuel : fuel ≥ 2 + h_wf.depth)
+    (h_lab : h_wf.labelStable (fuel + 1) frames s)
+    (hnd : KeysNodup s.localReg)
+    (h_seed : LocalsSeeded s instrs)
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs (fuel + 1) ws instrs = some ws')
+    (hl : lowerInstrsP (fuel + 1) frames ⟨s, []⟩ instrs = some (⟨s', []⟩, ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ops = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' :=
+  framework_preservation_kernel_while2 fuel frames ws s kst layout R h_no_branch
+    h_no_halt h_kst_no_broke h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds
+    h_store_layout instrs h_wf h_fuel
+    (h_wf.stable_of_seeded (fuel + 1) frames s h_lab hnd h_seed)
+    ws' s' ops hw hl
+
+/-- A TWO-local while — `i = 0; acc = 0; while i < n { acc += i; i += 1 }`
+    — typechecks, and its seeding hypothesis is a concrete map: under the
+    old list-level side condition the `local.set 3` in `body2` PERMUTED
+    the assoc list whenever local 2 sat at its head, so this kernel was
+    out of reach; upsert + seeding admit it. -/
+example : KernelInstrsW2
+    [.i32Const 0, .localSet 2, .i32Const 0, .localSet 3,
+     .block 0, .wloop 0,
+       .localGet 2, .localGet 1, .i32GeU, .brIf 1,
+       .localGet 3, .localGet 2, .i32Add, .localSet 3,
+       .localGet 2, .i32Const 1, .i32Add, .localSet 2,
+       .br 0,
+     .wend, .wend] :=
+  .sl_cons trivial (.sl_cons trivial (.sl_cons trivial (.sl_cons trivial
+    (.block_while_cons (pref := [.localGet 2, .localGet 1, .i32GeU])
+      (body2 := [.localGet 3, .localGet 2, .i32Add, .localSet 3,
+                 .localGet 2, .i32Const 1, .i32Add, .localSet 2]) (post := [])
+      (by simp [StraightLineInstrs, StraightLineInstr])
+      (by simp [StraightLineInstrs, StraightLineInstr])
+      rfl rfl .empty))))
+
+/-- Its written locals are exactly the two counters, so any entry state
+    binding locals 2 and 3 is seeded. -/
+example :
+    writtenLocals
+      [.i32Const 0, .localSet 2, .i32Const 0, .localSet 3,
+       .block 0, .wloop 0,
+         .localGet 2, .localGet 1, .i32GeU, .brIf 1,
+         .localGet 3, .localGet 2, .i32Add, .localSet 3,
+         .localGet 2, .i32Const 1, .i32Add, .localSet 2,
+         .br 0,
+       .wend, .wend] = [2, 3, 3, 2] := by
+  simp [writtenLocals, writtenLocalsInstr]
 
 /-- rustc's `i = 0; while i < n { i += 1 }` — the kernel of
     `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs` and

@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 1074 — 599 across the core / companion chains + 475 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1098 — 599 across the core / companion chains + 499 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
@@ -112,7 +112,7 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 475
+                                step 059 — Lean `Quanta/Wasm/*`: 499
                                 theorems, 0 sorries.
                                 `framework_preservation_kernel_while2`
                                 over `KernelInstrsW2` = straight-line
@@ -273,7 +273,7 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **475 theorems, 0 sorries**
+Lean, `specs/verify/lean/Quanta/Wasm/` — **499 theorems, 0 sorries**
 (`grep -c '^theorem'`), every file imported from
 `specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
 `PreservationList`):
@@ -327,11 +327,20 @@ memory. The theorem carries one **side condition**,
 reaches, no loop body changes a local's label (`localTy`) — the
 relation is label-exact and the body is lowered once for every
 iteration — and, for rustc's `while`, the body past the exit site
-rebinds no local's stable register or label (on the exit path those
-registers were never written; a local first written there reads its
-zero-init in production, which the model does not yet give stable
-registers). A counter initialised from a constant and incremented by a
-constant satisfies both; the condition is decidable per kernel.
+leaves the stable-register map list-identical. The **seeded corollary**
+`framework_preservation_kernel_while2_seeded` discharges the register
+half outright: when the entry state binds every local the kernel
+writes (`LocalsSeeded` — production's function-entry pre-allocation)
+with unique keys (`KeysNodup`), every `local.set` upserts the register
+the map already holds and the map never moves
+(`KernelInstrsW2.stable_of_seeded`), so only the label-only face
+(`KernelInstrsW2.labelStable`) remains, and `body2` may rebind any
+number of locals past the exit site. A local FIRST written past the
+exit site is still outside (on the exit path its register was never
+written; production reads its function-entry zero-init, which the
+model does not yet give stable registers). A counter initialised from
+a constant and incremented by a constant satisfies the conditions;
+they are decidable per kernel.
 General nested `block` / `wif` / `br` — a second loop between an exit
 and its target, code between a loop's `end` and its block's, `wif`
 inside loop bodies — is **outside the theorem** (the structured arms are
