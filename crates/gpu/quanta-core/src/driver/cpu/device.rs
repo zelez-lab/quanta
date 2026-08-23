@@ -1950,9 +1950,11 @@ mod tests {
 
     #[test]
     fn value_conversions() {
+        // Register cells are 32-bit: crossing families reinterprets the
+        // bits, it does not convert the number (the wasm cell contract).
         assert_eq!(Value::U32(42).as_u32(), 42);
-        assert_eq!(Value::U32(42).as_f32(), 42.0);
-        assert_eq!(Value::F32(3.25).as_u32(), 3);
+        assert_eq!(Value::U32(42).as_f32(), f32::from_bits(42));
+        assert_eq!(Value::F32(3.25).as_u32(), 3.25f32.to_bits());
         assert!(Value::U32(1).as_bool());
         assert!(!Value::U32(0).as_bool());
         assert!(Value::Bool(true).as_bool());

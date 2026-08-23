@@ -123,6 +123,14 @@ jobs:
       - name: IR roundtrip tests
         run: cargo test -p quanta-ir
 
+      # quanta-core's own unit suite (Value cell semantics, descriptor
+      # plumbing, the CPU interpreter's eval tables). It had never run in
+      # CI — the first local run caught a test still asserting the
+      # pre-cell-contract numeric conversions. Driver-free feature set so
+      # the step is identical on every OS.
+      - name: Core unit tests
+        run: cargo test -p quanta-core --no-default-features --features "software,render,compute,jit"
+
       - name: Render DSL macro tests
         run: cargo test -p quanta-render-dsl
 
