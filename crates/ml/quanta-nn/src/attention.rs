@@ -34,7 +34,9 @@ fn bad(msg: &'static str) -> AutogradError {
 /// `num_heads`; the head width is `embed_dim / num_heads`.
 #[derive(Debug, Clone, Copy)]
 pub struct MultiheadAttention {
+    /// Model width — the size of the residual stream in and out.
     pub embed_dim: usize,
+    /// Number of attention heads, each `embed_dim / num_heads` wide.
     pub num_heads: usize,
     /// Bias on all four projections.
     pub bias: bool,
@@ -155,9 +157,13 @@ impl MultiheadAttention {
 #[derive(ParamTree)]
 #[param_tree(crate = crate)]
 pub struct MhaParams<T: DiffScalar> {
+    /// Query projection.
     pub wq: LinearParams<T>,
+    /// Key projection.
     pub wk: LinearParams<T>,
+    /// Value projection.
     pub wv: LinearParams<T>,
+    /// Output projection, applied to the concatenated heads.
     pub wo: LinearParams<T>,
 }
 

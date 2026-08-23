@@ -21,12 +21,19 @@ fn bad(msg: &'static str) -> AutogradError {
 /// the [`LinearParams`] tree (`w` + optional `b` — same names, same
 /// optimizer surface). Kaiming-uniform init over `fan_in = Cin·kh·kw`.
 pub struct Conv2d {
+    /// Input channels `Cin`.
     pub cin: usize,
+    /// Output channels `Cout`.
     pub cout: usize,
+    /// Kernel height.
     pub kh: usize,
+    /// Kernel width.
     pub kw: usize,
+    /// Stride, the same in both spatial dimensions.
     pub stride: usize,
+    /// Zero padding, the same on every side.
     pub pad: usize,
+    /// Per-output-channel bias.
     pub bias: bool,
 }
 
@@ -77,9 +84,13 @@ impl<T: DiffScalar + ToF64> Layer<T> for Conv2d {
 /// Max pooling `[N,C,H,W] → [N,C,OH,OW]` — a zero-param layer over
 /// [`Var::maxpool2d`] (winner-takes-the-gradient backward).
 pub struct MaxPool2d {
+    /// Kernel height.
     pub kh: usize,
+    /// Kernel width.
     pub kw: usize,
+    /// Stride, the same in both spatial dimensions.
     pub stride: usize,
+    /// Zero padding, the same on every side.
     pub pad: usize,
 }
 
@@ -103,9 +114,13 @@ impl<T: DiffScalar + ToF64> Layer<T> for MaxPool2d {
 /// Average pooling `[N,C,H,W] → [N,C,OH,OW]` — a zero-param layer over
 /// [`Var::avgpool2d`] (uniform-spread backward).
 pub struct AvgPool2d {
+    /// Kernel height.
     pub kh: usize,
+    /// Kernel width.
     pub kw: usize,
+    /// Stride, the same in both spatial dimensions.
     pub stride: usize,
+    /// Zero padding, the same on every side.
     pub pad: usize,
 }
 

@@ -236,14 +236,23 @@ fn same_shape<T: DiffScalar>(
 /// `Sgd { lr: sched.lr(t), ..opt }`.
 #[derive(Debug, Clone, Copy)]
 pub struct Sgd {
+    /// Learning rate — the step size applied to the (velocity-shaped)
+    /// gradient.
     pub lr: f32,
+    /// Momentum coefficient μ; `0.0` is plain SGD (and skips the
+    /// velocity state entirely).
     pub momentum: f32,
+    /// Coupled L2 decay, folded into the gradient before the momentum
+    /// update (`g + wd·p`).
     pub weight_decay: f32,
+    /// Nesterov lookahead: step along `g + μ·v` instead of `v`.
     pub nesterov: bool,
 }
 
 /// SGD state: one velocity leaf per parameter leaf, `flatten` order.
 pub struct SgdState<T: DiffScalar> {
+    /// One velocity buffer per parameter leaf, in `flatten` order,
+    /// device-resident like the parameters.
     pub velocity: Vec<Array<T>>,
 }
 
@@ -334,19 +343,29 @@ impl Sgd {
 /// `false` folds it into the gradient as coupled L2.
 #[derive(Debug, Clone, Copy)]
 pub struct Adam {
+    /// Learning rate — the step size after bias correction.
     pub lr: f32,
+    /// First-moment (mean) decay β₁.
     pub beta1: f32,
+    /// Second-moment (uncentered variance) decay β₂.
     pub beta2: f32,
+    /// Denominator floor ε, added to `√v̂` before the divide.
     pub eps: f32,
+    /// Weight decay; its meaning switches on [`Adam::decoupled`].
     pub weight_decay: f32,
+    /// `true` = AdamW (decay shrinks the parameter directly, outside
+    /// the moments); `false` = coupled L2 folded into the gradient.
     pub decoupled: bool,
 }
 
 /// Adam state: first/second moment leaves (`flatten` order) plus the step
 /// counter driving the exact bias correction (T9220).
 pub struct AdamState<T: DiffScalar> {
+    /// First-moment buffers, one per parameter leaf in `flatten` order.
     pub m: Vec<Array<T>>,
+    /// Second-moment buffers, same order.
     pub v: Vec<Array<T>>,
+    /// Completed steps — drives the exact `1 - βᵗ` bias correction.
     pub t: u64,
 }
 
@@ -475,17 +494,36 @@ impl Adam {
 #[derive(Debug, Clone, Copy)]
 pub enum Schedule {
     /// `lr` forever.
-    Constant { lr: f32 },
+    Constant {
+        /// The constant rate.
+        lr: f32,
+    },
     /// `lr · gammaᵏ` on the `k`-th interval of `every` steps.
-    Step { lr: f32, gamma: f32, every: u64 },
+    Step {
+        /// The starting rate.
+        lr: f32,
+        /// Per-interval multiplier (< 1 decays).
+        gamma: f32,
+        /// Interval length in steps.
+        every: u64,
+    },
     /// Linear ramp `lr·(t+1)/warmup` for `t < warmup`, then `lr`.
-    LinearWarmup { lr: f32, warmup: u64 },
+    LinearWarmup {
+        /// The rate reached at the end of the ramp.
+        lr: f32,
+        /// Ramp length in steps.
+        warmup: u64,
+    },
     /// Linear warmup to `base`, then cosine decay to `min_lr` at `total`
     /// (clamped at `min_lr` beyond).
     Cosine {
+        /// The peak rate, reached at the end of the warmup.
         base: f32,
+        /// The floor the cosine decays to (and holds beyond `total`).
         min_lr: f32,
+        /// Warmup length in steps.
         warmup: u64,
+        /// Step at which the decay reaches `min_lr`.
         total: u64,
     },
 }
@@ -644,7 +682,10 @@ impl Default for LossScale {
 /// The scaler's state: the live scale and the finite-step streak.
 #[derive(Debug, Clone, Copy)]
 pub struct ScaleState {
+    /// The live loss scale.
     pub scale: f32,
+    /// Consecutive finite steps since the last overflow — growth
+    /// triggers when it reaches the configured interval.
     pub good_steps: u32,
 }
 

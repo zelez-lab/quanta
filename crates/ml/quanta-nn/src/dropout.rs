@@ -20,7 +20,7 @@
 //! Determinism is the point: same key, same shape → same mask, on every
 //! backend (Philox is counter-based and bit-exact across CPU/GPU — the
 //! quanta-rand contract). No global RNG exists anywhere in this path; the
-//! [`Key`](crate::layer::Key) is the whole effect (decision D4).
+//! [`Key`] is the whole effect (decision D4).
 
 use quanta_array::autograd::{AutogradError, DiffScalar, Tape, Var};
 use quanta_array::{Array, ArrayError, ToF64};
@@ -204,6 +204,8 @@ pub fn dropout_var<T: DiffScalar + ToF64>(
 /// incoming key, masks with one half, and passes the other on down the
 /// stack (D2's state-passing style).
 pub struct Dropout {
+    /// Drop probability in `[0, 1)`; kept activations are rescaled by
+    /// `1/(1-rate)` so the expectation is unchanged.
     pub rate: f32,
 }
 

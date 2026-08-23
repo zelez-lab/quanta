@@ -47,6 +47,7 @@ pub struct Key {
 }
 
 impl Key {
+    /// The root key of a run: everything else splits off it.
     pub fn new(seed: u64) -> Self {
         Key { seed, stream: 0 }
     }
@@ -255,6 +256,7 @@ impl<T: DiffScalar> ParamTree<T> for Array<T> {
 /// ([`ParamTree`]); `apply` is pure given them. Dimension contracts are
 /// declared (`in_dim`/`out_dim`) and checked at composition/`init` time.
 pub trait Layer<T: DiffScalar + ToF64> {
+    /// The layer's parameter tree; `()` for parameter-free layers.
     type Params: ParamTree<T>;
 
     /// Expected input width (last-dim) — `None` = any.
@@ -298,19 +300,27 @@ pub trait Layer<T: DiffScalar + ToF64> {
 /// Dense affine layer `[N, in] → [N, out]`: `y = x·Wᵀ… ` stored as
 /// `w: [in, out]` so `y = x @ w + b`. Kaiming-uniform init.
 pub struct Linear {
+    /// Input width (the last dimension coming in).
     pub in_dim: usize,
+    /// Output width.
     pub out_dim: usize,
+    /// Additive per-output bias.
     pub bias: bool,
 }
 
 /// Linear's parameter tree.
 pub struct LinearParams<T: DiffScalar> {
+    /// The weight, stored `[in, out]` so `y = x @ w (+ b)`.
     pub w: Array<T>,
+    /// The bias, `[out]`, when the layer has one.
     pub b: Option<Array<T>>,
 }
 
+/// [`LinearParams`] bound onto a tape.
 pub struct LinearVars<T: DiffScalar> {
+    /// The bound weight.
     pub w: Var<T>,
+    /// The bound bias, when present.
     pub b: Option<Var<T>>,
 }
 
@@ -405,17 +415,26 @@ impl<T: DiffScalar + ToF64> Layer<T> for Linear {
 
 /// LayerNorm as a layer (fused kernels underneath — T9210's backward).
 pub struct LayerNorm {
+    /// Normalized width — the last dimension's size.
     pub dim: usize,
+    /// Variance floor added before the rsqrt.
     pub eps: f32,
 }
 
+/// The affine tree LayerNorm, RMSNorm and GroupNorm share: a scale and
+/// an optional shift.
 pub struct NormParams<T: DiffScalar> {
+    /// Per-feature scale γ, `[dim]`.
     pub gamma: Array<T>,
+    /// Per-feature shift β, `[dim]`; `None` for RMSNorm.
     pub beta: Option<Array<T>>,
 }
 
+/// [`NormParams`] bound onto a tape.
 pub struct NormVars<T: DiffScalar> {
+    /// The bound scale.
     pub gamma: Var<T>,
+    /// The bound shift, when present.
     pub beta: Option<Var<T>>,
 }
 
@@ -503,7 +522,9 @@ impl<T: DiffScalar + ToF64> Layer<T> for LayerNorm {
 
 /// RMSNorm as a layer (T9211's backward; no shift).
 pub struct RmsNorm {
+    /// Normalized width — the last dimension's size.
     pub dim: usize,
+    /// Floor added to the mean square before the rsqrt.
     pub eps: f32,
 }
 
@@ -528,8 +549,11 @@ impl<T: DiffScalar + ToF64> Layer<T> for RmsNorm {
 /// (the proven LayerNorm core over the `[N·G, C/G]` view), then the
 /// per-channel affine. `C % groups == 0` is checked in the op.
 pub struct GroupNorm {
+    /// Channel count `C`.
     pub dim: usize,
+    /// Number of groups `G`; each normalizes `C/G` channels together.
     pub groups: usize,
+    /// Variance floor added before the rsqrt.
     pub eps: f32,
 }
 

@@ -150,7 +150,9 @@ fn granularity_from_grid(rows: usize, cols: usize, gr: usize, gc: usize) -> Opti
 /// trees are the norm — norms and biases stay f32 beside quantized
 /// weights.
 pub enum QuantLeaf {
+    /// A plain f32 leaf, loaded as is.
     F32(Array<f32>),
+    /// A quantized weight matrix, device-resident in its coded form.
     Quantized(QuantizedMatrix),
 }
 
@@ -664,7 +666,9 @@ fn gate_resident_int8(supports: bool, backend: &str, leaf: &str) -> Result<(), A
 /// (quantized ones device-resident as [`QuantizedMatrix`]) and the user
 /// metadata.
 pub struct LoadedQuant {
+    /// The named leaves, in checkpoint order.
     pub leaves: Vec<(String, QuantLeaf)>,
+    /// The checkpoint's user metadata, verbatim.
     pub metadata: HashMap<String, String>,
 }
 

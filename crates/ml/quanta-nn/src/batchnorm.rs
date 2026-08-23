@@ -42,13 +42,17 @@ fn bad(msg: &'static str) -> AutogradError {
 #[derive(crate::layer::ParamTree)]
 #[param_tree(crate = crate)]
 pub struct BnStats<T: DiffScalar> {
+    /// Running per-channel mean, `[C]`.
     pub mean: Array<T>,
+    /// Running per-channel (biased) variance, `[C]`.
     pub var: Array<T>,
 }
 
 /// Batch normalization over `[N, C]` with per-channel scale/shift.
 pub struct BatchNorm {
+    /// Channel count `C` — the normalized axis's width.
     pub dim: usize,
+    /// Variance floor added before the rsqrt.
     pub eps: f32,
     /// EMA factor for the running statistics: `new = (1−m)·old + m·batch`.
     pub momentum: f32,

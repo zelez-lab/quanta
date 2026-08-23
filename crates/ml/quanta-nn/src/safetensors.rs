@@ -32,7 +32,9 @@ fn bad(msg: String) -> AutogradError {
 /// Everything a safetensors byte string holds: the tensors (as `f32`
 /// arrays, in header order) and the optional `__metadata__` map.
 pub struct LoadedSafetensors {
+    /// The named tensors, in header order, upcast to f32 on load.
     pub tensors: Vec<(String, Array<f32>)>,
+    /// The optional `__metadata__` map, verbatim.
     pub metadata: HashMap<String, String>,
 }
 

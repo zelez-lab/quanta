@@ -32,7 +32,10 @@ use crate::norm::layer_norm_var;
 /// (the first projection widens to `2H` for the gate).
 #[derive(Debug, Clone, Copy)]
 pub struct TransformerEncoderLayer {
+    /// The attention sub-block's configuration; its `embed_dim` is the
+    /// block's residual width.
     pub attn: MultiheadAttention,
+    /// SwiGLU output width `H` (the first projection widens to `2H`).
     pub ffn_hidden: usize,
     /// Dropout rate after the attention and feed-forward sub-blocks
     /// (training only; eval never rescales — inverted dropout).
@@ -143,10 +146,15 @@ fn beta_missing() -> AutogradError {
 #[derive(crate::layer::ParamTree)]
 #[param_tree(crate = crate)]
 pub struct EncoderLayerParams<T: DiffScalar> {
+    /// Pre-attention LayerNorm.
     pub norm1: NormParams<T>,
+    /// The attention projections.
     pub attn: MhaParams<T>,
+    /// Pre-feed-forward LayerNorm.
     pub norm2: NormParams<T>,
+    /// Feed-forward in-projection, `dim → 2H` (SwiGLU gate included).
     pub ffn1: LinearParams<T>,
+    /// Feed-forward out-projection, `H → dim`.
     pub ffn2: LinearParams<T>,
 }
 

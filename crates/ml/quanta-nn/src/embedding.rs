@@ -32,7 +32,10 @@ fn bad(msg: &'static str) -> AutogradError {
 /// Params = the table itself (an [`Array`] — the `ParamTree` leaf), so it
 /// binds/flattens/optimizes like every other tree.
 pub struct Embedding {
+    /// Table height — the number of ids; a lookup at or past it is a
+    /// checked error.
     pub vocab: usize,
+    /// Table width — the embedding size each id maps to.
     pub dim: usize,
 }
 

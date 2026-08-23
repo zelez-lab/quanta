@@ -28,6 +28,7 @@
 //!
 //! The tape and array types are part of this crate's public vocabulary:
 
+#![deny(missing_docs)]
 pub mod activation;
 pub mod attention;
 pub mod batchnorm;

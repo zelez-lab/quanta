@@ -81,7 +81,9 @@ fn bad(msg: &'static str) -> AutogradError {
 /// How a loss collapses to its scalar: averaged over elements or summed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reduction {
+    /// Average over every element.
     Mean,
+    /// Plain sum — scale-sensitive, what a scaled-loss loop wants.
     Sum,
 }
 

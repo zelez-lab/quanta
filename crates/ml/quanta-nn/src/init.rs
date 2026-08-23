@@ -33,16 +33,22 @@ fn bad(msg: &'static str) -> AutogradError {
 /// exotic layouts.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Init {
+    /// All zeros.
     Zeros,
+    /// All ones.
     Ones,
     /// Uniform in `[lo, hi)`, unscaled.
     Uniform {
+        /// Inclusive lower bound.
         lo: f32,
+        /// Exclusive upper bound.
         hi: f32,
     },
     /// Gaussian via Box-Muller, unscaled.
     Normal {
+        /// Mean of the draw.
         mean: f32,
+        /// Standard deviation of the draw.
         std: f32,
     },
     /// Glorot/Xavier uniform: `±√(6 / (fan_in + fan_out))` — keeps
