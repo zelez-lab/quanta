@@ -435,4 +435,103 @@ theorem whileBody_localReg_of_seeded
   simp only
   rw [LowerState.commit_localReg h_commit, LowerState.popSym_localReg h_pop, h_lr]
 
+-- ════════════════════════════════════════════════════════════════════
+-- Function-entry seeding (the model of production's pre-allocation)
+-- ════════════════════════════════════════════════════════════════════
+
+/-- Function-entry seeding of declared locals (production lower.rs,
+    "Pre-allocate stable registers for every value-typed declared
+    local"): one fresh register and one default-zero `Const` per
+    declared local, in declaration order, bound as the local's stable
+    register. Pinned against production by
+    `crates/gpu/quanta-wasm-lowering/tests/lower_entry_seed.rs` — the
+    per-write frame-0 declarations production hoists to the function
+    head are NOT part of this stream (the model keeps them inline at
+    the write sites; each is overwritten before its first read). -/
+def seedLocals : List (Nat × Quanta.KOps.Scalar) → LowerState →
+    LowerState × List KernelOp
+  | [], s => (s, [])
+  | (i, ty) :: rest, s =>
+      let (r, s1) := s.alloc
+      let s2 := s1.setLocalReg i r ty
+      let (s3, ops) := seedLocals rest s2
+      (s3, .const r (LowerState.zeroConst ty) :: ops)
+
+/-- `KernelOp` is a nested inductive, so the pin compares through
+    `Repr` — same device as the `TranslatePending` pins. -/
+private def seedPinEq {α : Type} [Repr α] (a b : α) : Bool :=
+  toString (repr a) == toString (repr b)
+
+/-- The two-local witness's seed stream: from the params-bound entry
+    (`n` at register 0), locals 2 and 3 seed to registers 1 and 2 with
+    unsigned zeros — ops `[5]`/`[6]` of the production pin
+    (`lower_entry_seed.rs`). -/
+example :
+    seedPinEq
+      (seedLocals [(2, .u32), (3, .u32)]
+        { LowerState.empty with nextReg := 1,
+                                localReg := [(1, 0)], localTy := [(1, .u32)] })
+      ({ LowerState.empty with nextReg := 3,
+                               localReg := [(3, 2), (2, 1), (1, 0)],
+                               localTy := [(3, .u32), (2, .u32), (1, .u32)] },
+       [.const 1 (.u32 0), .const 2 (.u32 0)]) = true := by
+  native_decide
+
+/-- Seeding binds every declared local and keeps every prior binding. -/
+theorem seedLocals_binds :
+    ∀ (decls : List (Nat × Quanta.KOps.Scalar)) (s : LowerState) (j : Nat),
+    ((∃ ty, (j, ty) ∈ decls) ∨ (s.lookupLocal j).isSome) →
+    (((seedLocals decls s).1).lookupLocal j).isSome := by
+  intro decls
+  induction decls with
+  | nil =>
+      intro s j h
+      rcases h with ⟨ty, h⟩ | h
+      · cases h
+      · exact h
+  | cons d rest ih =>
+      intro s j h
+      obtain ⟨i, ty⟩ := d
+      show (((seedLocals rest ((s.alloc).2.setLocalReg i (s.alloc).1 ty)).1).lookupLocal j).isSome
+      apply ih
+      by_cases hji : j = i
+      · subst hji
+        right
+        rw [lookupLocal_find?]
+        show ((LowerState.upsertAssoc _ j _).find? (fun p => p.fst = j)).map Prod.snd |>.isSome
+        rw [LowerState.find?_upsertAssoc_self]
+        rfl
+      · rcases h with ⟨ty', h_mem⟩ | h_bound
+        · rcases List.mem_cons.mp h_mem with h_hd | h_tl
+          · exact absurd (congrArg Prod.fst h_hd) hji
+          · exact Or.inl ⟨ty', h_tl⟩
+        · right
+          rw [lookupLocal_find?]
+          show ((LowerState.upsertAssoc _ i _).find? (fun p => p.fst = j)).map Prod.snd |>.isSome
+          rw [LowerState.find?_upsertAssoc_ne _ i j _ hji]
+          rw [lookupLocal_find?] at h_bound
+          exact h_bound
+
+/-- Seeding preserves key uniqueness. -/
+theorem seedLocals_keysNodup :
+    ∀ (decls : List (Nat × Quanta.KOps.Scalar)) (s : LowerState),
+    KeysNodup s.localReg → KeysNodup (((seedLocals decls s).1).localReg) := by
+  intro decls
+  induction decls with
+  | nil => intro s h; exact h
+  | cons d rest ih =>
+      intro s h
+      obtain ⟨i, ty⟩ := d
+      exact ih _ (h.upsertAssoc)
+
+/-- A kernel whose written locals are all declared is seeded after the
+    entry stream (locals already bound at entry — the params — count). -/
+theorem seedLocals_seeded
+    (decls : List (Nat × Quanta.KOps.Scalar)) (s : LowerState)
+    (instrs : List WasmInstr)
+    (h : ∀ j ∈ writtenLocals instrs,
+        (∃ ty, (j, ty) ∈ decls) ∨ (s.lookupLocal j).isSome) :
+    LocalsSeeded ((seedLocals decls s).1) instrs :=
+  fun j hj => seedLocals_binds decls s j (h j hj)
+
 end Quanta.Wasm
