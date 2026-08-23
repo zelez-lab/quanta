@@ -17,7 +17,7 @@
 //!
 //! All three files share the same parsed AST, so a spec drift that
 //! escapes one view (e.g. Rust says `format::RGBA8UNORM = 0` but TS
-//! table[0] says `"rgba8unorm-srgb"`) becomes impossible by
+//! `table[0]` says `"rgba8unorm-srgb"`) becomes impossible by
 //! construction.
 //!
 //! Why a separate crate (vs. inlined in `quanta-cli`):
@@ -32,6 +32,7 @@
 //! Public surface: one `generate(idl_path, project_root)` entry that
 //! does end-to-end parse + emit + write. Used by
 //! `quanta-cli`'s `codegen` subcommand.
+#![deny(missing_docs)]
 
 mod emit_lean;
 mod emit_rust;
@@ -40,6 +41,8 @@ mod parse;
 
 use std::path::{Path, PathBuf};
 
+/// Result of a codegen step — IDL parse failures and output-file I/O
+/// errors both surface as a boxed error.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// Top-level entry: parse the IDL at `idl_path`, generate both
