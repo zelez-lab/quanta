@@ -428,6 +428,36 @@ Quanta is at v0.1 — pre-1.0, no backward-compatibility promise; see the [stabi
 - Apple Silicon (M-series) via Metal
 - Raspberry Pi 5 (Broadcom V3D) via Vulkan + lavapipe
 
+### Conformance
+
+`quanta-conform` is the frame-level parity runner: a corpus of draws written against the public API only, executed on every backend — each in its own child process, so no driver's state reaches another's frames — and compared pixel-by-pixel. Comparison is per channel with a per-case tolerance plus a divergent-pixel budget for rasterizer edge disagreement, and both terms print in the matrix, so a pass never hides its terms.
+
+Reference policy: **goldens are blessed from Metal** on an Apple machine and **cross-checked against lavapipe** in CI, which uploads the matrix as a build artifact. There is no CPU rasterizer to be the oracle — the CPU device refuses render passes — so a divergence is always a divergence between two real rasterizers, and the goldens record which one blessed them.
+
+```bash
+just conform-bless    # re-bless the goldens from Metal
+just conform          # check Metal against the committed goldens
+```
+
+Metal against its own goldens, on an M1 Pro:
+
+| case | terms | metal vs goldens (metal) |
+|---|---|---|
+| `clear_only` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `uv_gradient_quad` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `triangle_flat` | Δ≤1, budget 5‰ | ✅ Δ≤0 |
+| `orientation_bands` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `bands_nested_if` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `indexed_quad` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `instanced_triangles` | Δ≤1, budget 5‰ | ✅ Δ≤0 |
+| `depth_two_triangles` | Δ≤1, budget 5‰ | ✅ Δ≤0 |
+| `alpha_blend_quad` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `viewport_scissor` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `texture_sample_quad` | Δ≤1, budget 0‰ | ✅ Δ≤0 |
+| `msaa4_resolve` | Δ≤2, budget 10‰ | ✅ Δ≤0 |
+
+The runner, the tolerance model, and how to add a case are in [Render Conformance](docs/internals/conformance.md).
+
 **Capability queries** — unsupported features return `QuantaErrorKind::NotSupported` rather than panicking. Check before use:
 
 ```rust

@@ -978,3 +978,47 @@ jobs:
             echo "::error::the validation layers reported VUIDs — see vvl-sweep.log output above"
             exit 1
           fi
+
+      # Multi-backend render parity (quanta-conform): the same corpus of
+      # draws every backend runs, compared frame-by-frame against the
+      # goldens blessed from Metal. This is the only lane where a second
+      # rasterizer ever sees them. Uses the compiler built above — the
+      # corpus is DSL shaders.
+      - name: Build quanta-conform (vulkan lane)
+        env:
+          QUANTA_COMPILER: ${{ github.workspace }}/target/debug/quanta-compiler
+          LD_LIBRARY_PATH: /usr/lib/llvm-22/lib
+        run: cargo build -p quanta-conform --features vulkan
+
+      # ADVISORY until first contact with lavapipe comes back green. The
+      # goldens have only ever been compared against the backend that
+      # blessed them, so the first cross-backend run is a measurement,
+      # not a gate: it prints the matrix, warns, and leaves the job
+      # green. Once a run is clean, drop `continue-on-error` and this
+      # step becomes the parity gate.
+      - name: Render conformance matrix (lavapipe vs the Metal goldens)
+        continue-on-error: true
+        run: |
+          set +e
+          ./target/debug/quanta-conform \
+            --backends vulkan \
+            --golden-dir crates/tools/quanta-conform/goldens \
+            --out conform-matrix.md
+          status=$?
+          set -e
+          {
+            echo "### Render conformance — lavapipe vs the Metal goldens"
+            echo
+            cat conform-matrix.md
+          } >> $GITHUB_STEP_SUMMARY
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::render conformance diverged on lavapipe — see the conform-matrix artifact and the job summary for the per-case numbers. Advisory until first contact is green."
+          fi
+          exit $status
+
+      - name: Upload conformance matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conform-matrix
+          path: conform-matrix.md
