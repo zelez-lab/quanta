@@ -32,7 +32,9 @@ pub struct RopeCache<T: DiffScalar> {
     pub sin: Array<T>,
     /// The rotate-half matrix, shape `[d, d]`: `rotate_half(x) = x · R`.
     pub rot: Array<T>,
+    /// Number of positions the `cos`/`sin` caches cover.
     pub t: usize,
+    /// Head dimension the rotation runs over; always even.
     pub d: usize,
 }
 

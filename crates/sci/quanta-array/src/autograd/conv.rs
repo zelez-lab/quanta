@@ -23,16 +23,27 @@ use crate::autograd::tape::{Op, Var};
 /// reshape/fold gradients without re-deriving the shapes.
 #[derive(Clone)]
 pub struct ConvParams {
+    /// Batch size.
     pub n: usize,
+    /// Input channel count.
     pub cin: usize,
+    /// Input height.
     pub h: usize,
+    /// Input width.
     pub w: usize,
+    /// Output channel count.
     pub cout: usize,
+    /// Kernel height.
     pub kh: usize,
+    /// Kernel width.
     pub kw: usize,
+    /// Window step, the same on both spatial axes.
     pub stride: usize,
+    /// Zero-padding added to each side of both spatial axes.
     pub pad: usize,
+    /// Output height.
     pub oh: usize,
+    /// Output width.
     pub ow: usize,
 }
 

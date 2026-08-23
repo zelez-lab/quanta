@@ -85,31 +85,72 @@ pub fn header(bytes: &[u8]) -> Result<NpyHeader, ArrayError> {
 pub enum NpyError {
     /// Not an npy file, or truncated before the version bytes. Carries
     /// the first bytes of the input for display.
-    Magic { first: Vec<u8> },
+    Magic {
+        /// The leading bytes of the input; the message shows up to eight.
+        first: Vec<u8>,
+    },
     /// An unrecognized format version pair.
-    Version { major: u8, minor: u8 },
+    Version {
+        /// Major version byte read from the file.
+        major: u8,
+        /// Minor version byte read from the file.
+        minor: u8,
+    },
     /// A header fault: dict-grammar violation, a header length
     /// overrunning the buffer, unknown / missing / duplicate keys. `at`
     /// is a file-absolute byte offset.
-    Header { at: usize, what: String },
+    Header {
+        /// File-absolute byte offset the fault was found at.
+        at: usize,
+        /// What the header grammar expected, or what it found instead.
+        what: String,
+    },
     /// A descr outside the supported table (§4 of the scope doc).
-    Dtype { descr: String },
+    Dtype {
+        /// The descr string the file carries.
+        descr: String,
+    },
     /// A malformed `=` byte-order mark (`>` files byteswap-load instead).
-    ByteOrder { descr: String },
+    ByteOrder {
+        /// The malformed descr string, `=` mark included.
+        descr: String,
+    },
     /// A `|b1` data byte outside {0, 1}.
-    BoolValue { at: usize },
+    BoolValue {
+        /// File-absolute byte offset of the out-of-range data byte.
+        at: usize,
+    },
     /// A typed `load::<T>` against a different (but supported) descr.
-    DtypeMismatch { file: String, requested: String },
+    DtypeMismatch {
+        /// The element type the file actually holds.
+        file: String,
+        /// The element type the typed `load` asked for.
+        requested: String,
+    },
     /// A shape with a zero extent (excluded by the shape model).
-    EmptyShape { shape: Vec<usize> },
+    EmptyShape {
+        /// The rejected shape, zero extent included.
+        shape: Vec<usize>,
+    },
     /// Data section length disagreeing with element-count × width.
-    DataLength { expected: usize, got: usize },
+    DataLength {
+        /// Data-section byte count the header's shape and descr require.
+        expected: usize,
+        /// Byte count the data section actually holds.
+        got: usize,
+    },
     /// A container fault: bad EOCD / central directory, CRC mismatch,
     /// local/CD disagreement, duplicate or non-`.npy` names, ZIP64
     /// markers, corrupt deflate streams — or an entry whose npy payload
     /// fails to decode (the inner fault's message follows the entry
     /// name). `entry` is present wherever a name exists.
-    Zip { entry: Option<String>, what: String },
+    Zip {
+        /// The offending entry's archive name; absent for faults in the
+        /// container itself.
+        entry: Option<String>,
+        /// What went wrong — a nested npy fault's own message included.
+        what: String,
+    },
 }
 
 /// The descrs the typed loaders accept, for the `Dtype` message.
@@ -298,15 +339,25 @@ fn f16_to_f32(h: u16) -> f32 {
 /// files land in `U8` after 0/1 validation. Building one is cheap
 /// (`Array` is Arc-backed): `NpyArray::from(array)` shares the buffer.
 pub enum NpyArray {
+    /// A `<f4` array — also where `<f2` files land, upconverted.
     F32(Array<f32>),
+    /// A `<f8` array.
     F64(Array<f64>),
+    /// A `<i4` array.
     I32(Array<i32>),
+    /// A `<u4` array.
     U32(Array<u32>),
+    /// A `<i8` array.
     I64(Array<i64>),
+    /// A `<u8` array.
     U64(Array<u64>),
+    /// A `|u1` array — also where `|b1` files land, after 0/1 validation.
     U8(Array<u8>),
+    /// A `|i1` array.
     I8(Array<i8>),
+    /// A `<u2` array.
     U16(Array<u16>),
+    /// A `<i2` array.
     I16(Array<i16>),
 }
 

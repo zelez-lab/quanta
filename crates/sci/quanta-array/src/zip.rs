@@ -209,7 +209,10 @@ pub fn write_stored(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, NpyError> {
 /// and the decompressed, CRC-verified bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
+    /// The entry's full archive name, `.npy` suffix included.
     pub name: String,
+    /// The entry's decompressed bytes, already checked against the record's
+    /// CRC.
     pub data: Vec<u8>,
 }
 

@@ -84,6 +84,7 @@ impl<T: FloatScalar + ReduceScalar + ToF64> Array<T> {
 
 /// Convert a float scalar to `f64` (for `mean`'s division).
 pub trait ToF64 {
+    /// Widen the element to `f64`, exactly for every implementing type.
     fn to_f64(self) -> f64;
 }
 impl ToF64 for f32 {

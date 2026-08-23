@@ -2,8 +2,8 @@
 //!
 //! A [`Tape`] records forward ops as they run (define-by-run). Each [`Var`] is
 //! a handle `(tape, node id)`; the node's forward value lives in the tape. The
-//! forward pass runs the real `quanta-array` kernels now and appends a [`Node`]
-//! describing how to backprop. [`Tape::backward`] seeds the output gradient and
+//! forward pass runs the real `quanta-array` kernels now and appends a `Node`
+//! describing how to backprop. [`Var::grad`] seeds the output gradient and
 //! walks the nodes in reverse, applying each op's VJP (see [`crate::autograd::vjp`]) and
 //! accumulating into input gradients.
 //!
@@ -141,7 +141,8 @@ pub(crate) struct TapeInner<T: DiffScalar> {
 }
 
 /// A reverse-mode autodiff tape. Build leaves with [`Tape::var`], run ops on the
-/// resulting [`Var`]s, then [`Tape::backward`] and read [`Var::grad`].
+/// resulting [`Var`]s, then ask for a gradient with [`Var::grad`], which runs the
+/// reverse sweep.
 pub struct Tape<T: DiffScalar> {
     inner: Rc<RefCell<TapeInner<T>>>,
 }

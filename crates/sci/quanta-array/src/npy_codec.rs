@@ -30,15 +30,25 @@ pub const DATA_ALIGN: usize = 64;
 /// the typed load/save layer consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NpyDtype {
+    /// `f4` — 32-bit float.
     F32,
+    /// `f8` — 64-bit float.
     F64,
+    /// `i4` — signed 32-bit integer.
     I32,
+    /// `u4` — unsigned 32-bit integer.
     U32,
+    /// `i8` — signed 64-bit integer.
     I64,
+    /// `u8` — unsigned 64-bit integer.
     U64,
+    /// `u1` — unsigned 8-bit integer.
     U8,
+    /// `i1` — signed 8-bit integer.
     I8,
+    /// `u2` — unsigned 16-bit integer.
     U16,
+    /// `i2` — signed 16-bit integer.
     I16,
     /// `f2` — loaded with exact upconversion to `f32`; never written.
     F16,
@@ -81,7 +91,10 @@ impl NpyDtype {
 /// bytes are big-endian (byteswap-on-load; never true at width 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Descr {
+    /// The element type the descr resolves to.
     pub dtype: NpyDtype,
+    /// Set when the file stores elements big-endian and the load path owes
+    /// them a byteswap; never set at width 1.
     pub big_endian: bool,
 }
 

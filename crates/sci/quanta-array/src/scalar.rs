@@ -21,7 +21,11 @@ use quanta_core::GpuType;
 /// Integer arithmetic is two's-complement wrapping (mod 2^w) at every
 /// store and cast, whatever the width.
 pub trait ArrayScalar: GpuType {
+    /// The additive identity — the fill for `zeros`, `eye`'s off-diagonal,
+    /// and what an empty array sums to.
     const ZERO: Self;
+    /// The multiplicative identity — the fill for `ones` and `eye`'s
+    /// diagonal.
     const ONE: Self;
     /// Convert from an `f64` index/step value. For integers this is Rust
     /// `as`: truncate toward zero, **saturating** at the type's range
@@ -49,31 +53,41 @@ pub trait FloatScalar: ArrayScalar {}
 /// stays on the device as a 1-element field (no readback, no deferred-lane
 /// flush), bit-equal to the host-returning forms.
 pub trait ReduceScalar: ArrayScalar {
+    /// Sum the first `n` elements of `data` and read the total back to the
+    /// host.
     fn reduce_add(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<Self, quanta_core::QuantaError>;
+    /// Smallest of the first `n` elements of `data`, read back to the host.
     fn reduce_min(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<Self, quanta_core::QuantaError>;
+    /// Largest of the first `n` elements of `data`, read back to the host.
     fn reduce_max(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<Self, quanta_core::QuantaError>;
+    /// As [`reduce_add`](Self::reduce_add), but the total stays on the device
+    /// as a 1-element field — no readback, no flush of the deferred lane.
     fn reduce_add_resident(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError>;
+    /// As [`reduce_min`](Self::reduce_min), leaving the result in a
+    /// 1-element device field.
     fn reduce_min_resident(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,
         n: usize,
     ) -> Result<quanta_core::Field<Self>, quanta_core::QuantaError>;
+    /// As [`reduce_max`](Self::reduce_max), leaving the result in a
+    /// 1-element device field.
     fn reduce_max_resident(
         gpu: &quanta_core::Gpu,
         data: &quanta_core::Field<Self>,

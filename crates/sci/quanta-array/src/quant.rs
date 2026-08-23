@@ -97,10 +97,18 @@ pub enum Granularity {
     PerTensor,
     /// One scale per row (`axis: 0`) or per column (`axis: 1` — Linear's
     /// per-out-channel, the accuracy default).
-    PerChannel { axis: usize },
+    PerChannel {
+        /// The axis the scale varies along: 0 for rows, 1 for columns.
+        axis: usize,
+    },
     /// One scale per `size`-long group along `axis` (`axis: 0, size: g` =
     /// g input rows per output column — the int4 grouped form).
-    Group { axis: usize, size: u32 },
+    Group {
+        /// The axis the groups run along: 0 for rows, 1 for columns.
+        axis: usize,
+        /// How many entries of `axis` share one scale.
+        size: u32,
+    },
 }
 
 impl Granularity {
@@ -210,24 +218,46 @@ fn check_dims(rows: usize, cols: usize) -> Result<(), ArrayError> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum QuantError {
     /// Quantize/load of a leaf that is not rank-2 with nonzero extents.
-    Rank { shape: Vec<usize> },
+    Rank {
+        /// The offending leaf's shape.
+        shape: Vec<usize>,
+    },
     /// Invalid granularity spelling: axis > 1, group size 0, or group size
     /// exceeding the axis extent.
-    Granularity { what: String },
+    Granularity {
+        /// The rejected spelling and the rule it broke.
+        what: String,
+    },
     /// Codes / scales / grid disagreement when assembling a
     /// [`QuantizedMatrix`] from parts (the reader seam).
-    Grid { what: String },
+    Grid {
+        /// Which parts disagree, and how.
+        what: String,
+    },
     /// Checkpoint-format violation (orphan metadata, missing tensor, name
     /// collision, shape/grid/metadata mismatch, bad scheme string, unknown
     /// format version). `leaf` names the offending checkpoint entry.
-    Format { leaf: String, what: String },
+    Format {
+        /// The offending checkpoint entry.
+        leaf: String,
+        /// The rule the checkpoint broke.
+        what: String,
+    },
     /// Resident int8 codes on a backend without narrow 8-bit storage.
-    NotSupported { leaf: String, backend: String },
+    NotSupported {
+        /// The leaf whose resident codes could not be stored.
+        leaf: String,
+        /// The backend that lacks narrow 8-bit storage.
+        backend: String,
+    },
     /// A non-finite or zero scale read from a checkpoint (corrupt or
     /// hostile file). `tile` is the flat index into the scales tensor.
     Scale {
+        /// The leaf whose scales tensor holds the bad entry.
         leaf: String,
+        /// Flat index into the scales tensor.
         tile: usize,
+        /// The offending scale, as read from the file.
         value: f32,
     },
 }
@@ -274,7 +304,9 @@ impl std::error::Error for QuantError {}
 /// zero-padded).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostCodes {
+    /// One `i8` code per element, row-major.
     Int8(Vec<i8>),
+    /// Int4 codes packed 8 per word, rows packed independently.
     Int4Packed(Vec<u32>),
 }
 
@@ -419,7 +451,9 @@ pub fn dequantize_host(
 /// `[R, ⌈C/8⌉]` (low nibble first; the logical column count lives on the
 /// owning [`QuantizedMatrix`]).
 pub enum QuantCodes {
+    /// One `i8` code per element, at native 1-byte stride.
     Int8(Array<i8>),
+    /// Int4 codes packed 8 per `u32` word, one word row per matrix row.
     Int4Packed(Array<u32>),
 }
 

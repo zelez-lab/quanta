@@ -1,5 +1,5 @@
 //! Differentiable forward ops on [`Var`]. Each runs the real `quanta-array`
-//! kernel now (define-by-run) and records a [`Op`] node so the backward pass
+//! kernel now (define-by-run) and records an `Op` node so the backward pass
 //! can apply the matching VJP. Binary ops require both operands to be on the
 //! same tape.
 

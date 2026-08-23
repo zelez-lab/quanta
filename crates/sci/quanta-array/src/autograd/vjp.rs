@@ -114,7 +114,7 @@ pub fn sqrt<T: FloatScalar + ReduceScalar>(g: &Array<T>, y: &Array<T>) -> R<T> {
     g.div(&two_y)
 }
 
-/// `relu`: y = max(x, 0) ⇒ ∂L/∂x = g · [x > 0] (the positive-step mask). The
+/// `relu`: y = max(x, 0) ⇒ ∂L/∂x = g · `[x > 0]` (the positive-step mask). The
 /// subgradient at 0 is taken as 0.
 pub fn relu<T: FloatScalar + ReduceScalar>(g: &Array<T>, x: &Array<T>) -> R<T> {
     g.mul(&x.step_positive()?)
@@ -194,11 +194,11 @@ fn reduce_to_shape<T: crate::autograd::scalar::DiffScalar>(
     cur.contiguous()?.reshape(target)
 }
 
-/// `conv2d`: Y = conv(X, W) via cols·wm. With G = ∂L/∂Y at [N,Cout,OH,OW]:
-/// reshape G to Gm[N·OH·OW, Cout], then this is exactly a matmul backward over
+/// `conv2d`: Y = conv(X, W) via cols·wm. With G = ∂L/∂Y at `[N,Cout,OH,OW]`:
+/// reshape G to `Gm[N·OH·OW, Cout]`, then this is exactly a matmul backward over
 /// (cols, wm):
-///   ∂cols = Gm·wmᵀ   → col2im → ∂X[N,Cin,H,W]
-///   ∂wm   = colsᵀ·Gm → reshape → ∂W[Cout,Cin,kh,kw]
+///   ∂cols = Gm·wmᵀ   → col2im → `∂X[N,Cin,H,W]`
+///   ∂wm   = colsᵀ·Gm → reshape → `∂W[Cout,Cin,kh,kw]`
 /// reusing the proven matmul VJP and the im2col/col2im adjoint pair.
 pub fn conv2d<T: crate::autograd::scalar::DiffScalar>(
     g: &Array<T>,

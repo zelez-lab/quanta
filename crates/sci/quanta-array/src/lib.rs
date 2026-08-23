@@ -57,6 +57,8 @@
 //! i64/u64 or the narrow ints — the exact-sum spelling is an explicit widen,
 //! `a.astype::<u32>()?.sum()`, so the accumulator is the caller's choice.
 
+#![deny(missing_docs)]
+
 mod array;
 mod astype;
 mod broadcast;

@@ -14,11 +14,17 @@ use crate::autograd::tape::{Op, Var};
 /// fold the gradient (input `H`/`W` aren't recoverable from the pooled output).
 #[derive(Clone)]
 pub struct PoolParams {
+    /// Input height.
     pub h: usize,
+    /// Input width.
     pub w: usize,
+    /// Window height.
     pub kh: usize,
+    /// Window width.
     pub kw: usize,
+    /// Window step, the same on both spatial axes.
     pub stride: usize,
+    /// Zero-padding added to each side of both spatial axes.
     pub pad: usize,
 }
 

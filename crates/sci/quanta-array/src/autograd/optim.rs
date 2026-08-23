@@ -20,10 +20,12 @@ fn scalar(a: &Array<f32>, v: f32) -> Result<Array<f32>, ArrayError> {
 
 /// Plain SGD: `p ← p − lr·g`.
 pub struct Sgd {
+    /// Learning rate — how far along the negated gradient each step moves.
     pub lr: f32,
 }
 
 impl Sgd {
+    /// An optimizer taking steps of size `lr`.
     pub fn new(lr: f32) -> Self {
         Sgd { lr }
     }
@@ -39,9 +41,14 @@ impl Sgd {
 /// `p ← p − lr · m̂ / (√v̂ + ε)`. Register each parameter's slot once (in a fixed
 /// order), then call [`step`](Self::step) with the same order each iteration.
 pub struct Adam {
+    /// Learning rate — the step scale on the bias-corrected update.
     pub lr: f32,
+    /// First-moment decay rate: how long the momentum term remembers.
     pub beta1: f32,
+    /// Second-moment decay rate: how long the per-parameter scale remembers.
     pub beta2: f32,
+    /// Added to `√v̂` before dividing, so a near-zero second moment cannot
+    /// blow the step up.
     pub eps: f32,
     /// Decoupled weight decay (AdamW). `0.0` = plain Adam. Applied as
     /// `p ← p·(1 − lr·wd)` *before* the adaptive update, so it never enters the

@@ -10,7 +10,12 @@ pub enum ArrayError {
     /// A shape was invalid (zero extent, etc.).
     Shape(quanta_tensor::ShapeError),
     /// The data length didn't match the shape's element count.
-    LengthMismatch { expected: usize, got: usize },
+    LengthMismatch {
+        /// Element count the requested shape calls for.
+        expected: usize,
+        /// Element count the supplied data actually held.
+        got: usize,
+    },
     /// A GPU operation (alloc / dispatch / read) failed.
     Gpu(quanta_core::QuantaError),
     /// An operation requires a contiguous array; call `.contiguous()` first.
