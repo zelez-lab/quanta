@@ -123,6 +123,9 @@ jobs:
       - name: IR roundtrip tests
         run: cargo test -p quanta-ir
 
+      - name: Render DSL macro tests
+        run: cargo test -p quanta-render-dsl
+
       # The wasm→IR lowering crate's own suite: the production shapes
       # (loop-carried shl, backedge exit tails, the while exit flag, …)
       # the Lean model in specs/verify/lean/Quanta/Wasm pins against.

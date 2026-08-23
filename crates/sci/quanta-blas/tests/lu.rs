@@ -120,8 +120,8 @@ fn check_reconstruct(n: usize, seed: u32) {
 
     // P·A: replay the pivot swaps on the original A.
     let mut pa = a.clone();
-    for k in 0..n {
-        let r = piv[k] as usize;
+    for (k, &p) in piv.iter().enumerate().take(n) {
+        let r = p as usize;
         if r != k {
             for j in 0..n {
                 pa.swap(k * n + j, r * n + j);

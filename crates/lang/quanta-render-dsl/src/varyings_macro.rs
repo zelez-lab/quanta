@@ -421,6 +421,17 @@ mod tests {
 
     #[test]
     fn vertex_rejects_texture_params() {
+        // A sampled texture is a fragment-only parameter; `&Texture2D`
+        // (texel access) is rejected earlier still, as a compute spelling.
+        let pkg = quote! {
+            @varyings Surface { #[position] clip : Vec4 }
+            ()
+            fn vs(pos: Vec3, tex: &Sampled2D) -> Surface {
+                Surface { clip: Vec4::new(pos.x, pos.y, 0.0, 1.0) }
+            }
+        };
+        let err = expand2(pkg, Stage::Vertex).unwrap_err().to_string();
+        assert!(err.contains("only supported in fragment"), "err: {err}");
         let pkg = quote! {
             @varyings Surface { #[position] clip : Vec4 }
             ()
@@ -429,7 +440,7 @@ mod tests {
             }
         };
         let err = expand2(pkg, Stage::Vertex).unwrap_err().to_string();
-        assert!(err.contains("only supported in fragment"), "err: {err}");
+        assert!(err.contains("texel access"), "err: {err}");
     }
 
     #[test]
