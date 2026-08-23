@@ -40,7 +40,9 @@ pub const MAX_PATCH_SIZE: u32 = 32;
 /// they are vanishingly rare in modern pipelines.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TessTopology {
+    /// Triangular patches — 3 outer factors, 1 inner.
     Triangle,
+    /// Quad patches — 4 outer factors, 2 inner.
     Quad,
 }
 

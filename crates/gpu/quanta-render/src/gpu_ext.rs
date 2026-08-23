@@ -49,7 +49,7 @@ mod sealed {
 /// Render extension methods on [`Gpu`](quanta_core::Gpu).
 ///
 /// Implemented only for `quanta_core::Gpu` (sealed). See the
-/// [module docs](self).
+/// [crate docs](crate).
 pub trait RenderGpu: sealed::Sealed {
     /// Create a render pipeline from a descriptor.
     fn pipeline(&self, desc: &PipelineDesc) -> Result<Pipeline, QuantaError>;

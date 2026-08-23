@@ -45,6 +45,7 @@
 //! vertex data, textures, sync — all reachable as `quanta_render::…`).
 
 #![no_std]
+#![deny(missing_docs)]
 
 extern crate alloc;
 

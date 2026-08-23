@@ -74,7 +74,8 @@ use quanta_core::{GpuDevice, QuantaError, QuantaErrorKind, SurfaceConfig, Textur
 
 /// A swapchain over a platform presentation target. Created with
 /// [`RenderGpu::create_surface`](crate::RenderGpu::create_surface);
-/// Quanta owns present. See the [module docs](self) for the frame loop.
+/// Quanta owns present. See [`render_frame`](Surface::render_frame)
+/// for the frame loop.
 ///
 /// Dropping the `Surface` releases the swapchain (and, for
 /// [`SurfaceTarget::Headless`](quanta_core::SurfaceTarget::Headless), the backend-created target).

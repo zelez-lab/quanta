@@ -39,6 +39,7 @@ pub enum AsKind {
 ///
 /// Refines `Quanta.RayTracing.AccelerationStructure`.
 pub struct AccelerationStructure {
+    /// Underlying device handle.
     pub handle: u64,
     pub(crate) kind: AsKind,
     pub(crate) geom_count: u32,
