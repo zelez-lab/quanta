@@ -59,6 +59,7 @@ import Quanta.Wasm.PreservationInduction
 import Quanta.Wasm.WellFormed
 import Quanta.Wasm.PreservationWhile
 import Quanta.Wasm.FlagSemantics
+import Quanta.Wasm.PreservationWhileExit
 
 -- Indirect Command Buffers (steps 032 + 033)
 import Quanta.Icb
