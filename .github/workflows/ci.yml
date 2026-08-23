@@ -998,14 +998,11 @@ jobs:
           LD_LIBRARY_PATH: /usr/lib/llvm-22/lib
         run: cargo build -p quanta-conform --features vulkan
 
-      # ADVISORY until first contact with lavapipe comes back green. The
-      # goldens have only ever been compared against the backend that
-      # blessed them, so the first cross-backend run is a measurement,
-      # not a gate: it prints the matrix, warns, and leaves the job
-      # green. Once a run is clean, drop `continue-on-error` and this
-      # step becomes the parity gate.
+      # The goldens are blessed from Metal; first cross-backend contact ran
+      # clean (11/12 cases bit-exact on lavapipe, msaa4_resolve at half
+      # its budget), so this step is the parity gate: a divergence fails
+      # the lane, with the per-case numbers in the summary and artifact.
       - name: Render conformance matrix (lavapipe vs the Metal goldens)
-        continue-on-error: true
         run: |
           set +e
           ./target/debug/quanta-conform \
@@ -1020,7 +1017,7 @@ jobs:
             cat conform-matrix.md
           } >> $GITHUB_STEP_SUMMARY
           if [ "$status" -ne 0 ]; then
-            echo "::warning::render conformance diverged on lavapipe — see the conform-matrix artifact and the job summary for the per-case numbers. Advisory until first contact is green."
+            echo "::error::render conformance diverged on lavapipe — see the conform-matrix artifact and the job summary for the per-case numbers."
           fi
           exit $status
 
