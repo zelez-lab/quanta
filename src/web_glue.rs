@@ -9,9 +9,10 @@
 //! (`web/dist/` is tracked; web-smoke CI rebuilds it from the TypeScript and
 //! fails on drift) and embedded here.
 //!
-//! The glue is a plain ES-module tree, not a single bundle: [`ENTRY`]
-//! (`quanta.js`) imports its sibling modules by relative path. To ship it,
-//! write every `(path, contents)` pair in [`FILES`] into one directory —
+//! The glue is a plain ES-module tree, not a single bundle:
+//! [`ENTRY`](crate::web_glue::ENTRY) (`quanta.js`) imports its sibling
+//! modules by relative path. To ship it, write every `(path, contents)`
+//! pair in [`FILES`](crate::web_glue::FILES) into one directory —
 //! preserving the `generated/` subdirectory — next to the `.wasm` binary,
 //! and load the entry from the page:
 //!

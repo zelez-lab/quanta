@@ -57,13 +57,24 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
+    /// Atomically add `val` into `*addr`, returning the value found there
+    /// before the operation. Every atomic here returns that previous value,
+    /// and every `order` is a `MemoryOrder` discriminant — see the `ORDER_*`
+    /// constants at the bottom of this module.
     pub fn atomic_add_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically subtract `val` from `*addr`, returning the previous value.
     pub fn atomic_sub_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically store `min(*addr, val)`, returning the previous value.
     pub fn atomic_min_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically store `max(*addr, val)`, returning the previous value.
     pub fn atomic_max_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically store `*addr & val`, returning the previous value.
     pub fn atomic_and_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically store `*addr | val`, returning the previous value.
     pub fn atomic_or_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically store `*addr ^ val`, returning the previous value.
     pub fn atomic_xor_u32(addr: *mut u32, val: u32, order: u32) -> u32;
+    /// Atomically overwrite `*addr` with `val`, returning the previous value.
     pub fn atomic_exchange_u32(addr: *mut u32, val: u32, order: u32) -> u32;
 
     /// Compare-and-swap. Returns the value found at `*addr` before
@@ -77,7 +88,11 @@ unsafe extern "C" {
         failure_order: u32,
     ) -> u32;
 
+    /// Signed twin of `atomic_add_u32`: atomically add `val` into `*addr`,
+    /// returning the previous value.
     pub fn atomic_add_i32(addr: *mut i32, val: i32, order: u32) -> i32;
+    /// Signed twin of `atomic_sub_u32`: atomically subtract `val` from
+    /// `*addr`, returning the previous value.
     pub fn atomic_sub_i32(addr: *mut i32, val: i32, order: u32) -> i32;
 }
 
@@ -85,21 +100,39 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
+    /// Square root of `x`.
     pub fn sqrt_f32(x: f32) -> f32;
+    /// Reciprocal square root, `1 / sqrt(x)`.
     pub fn rsqrt_f32(x: f32) -> f32;
+    /// Sine of `x`, in radians.
     pub fn sin_f32(x: f32) -> f32;
+    /// Cosine of `x`, in radians.
     pub fn cos_f32(x: f32) -> f32;
+    /// Tangent of `x`, in radians.
     pub fn tan_f32(x: f32) -> f32;
+    /// Base-e exponential, `e^x`.
     pub fn exp_f32(x: f32) -> f32;
+    /// Natural logarithm of `x`.
     pub fn log_f32(x: f32) -> f32;
+    /// `base` raised to the power `exp`.
     pub fn pow_f32(base: f32, exp: f32) -> f32;
+    /// Absolute value of `x`.
     pub fn abs_f32(x: f32) -> f32;
+    /// Largest integer not greater than `x`.
     pub fn floor_f32(x: f32) -> f32;
+    /// Smallest integer not less than `x`.
     pub fn ceil_f32(x: f32) -> f32;
+    /// `x` rounded to the nearest integer. The tie rule is the backend's
+    /// (MSL rounds halves away from zero, WGSL to even) — kernels that
+    /// care must not feed it exact halves.
     pub fn round_f32(x: f32) -> f32;
+    /// The smaller of `a` and `b`.
     pub fn min_f32(a: f32, b: f32) -> f32;
+    /// The larger of `a` and `b`.
     pub fn max_f32(a: f32, b: f32) -> f32;
+    /// `x` clamped to the closed range `[lo, hi]`.
     pub fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32;
+    /// Fused multiply-add, `a * b + c` with a single rounding.
     pub fn fma_f32(a: f32, b: f32, c: f32) -> f32;
 }
 
@@ -120,21 +153,39 @@ unsafe extern "C" {
 
 #[link(wasm_import_module = "quanta")]
 unsafe extern "C" {
+    /// Square root of `x`, in double precision.
     pub fn sqrt_f64(x: f64) -> f64;
+    /// Reciprocal square root, `1 / sqrt(x)`, in double precision.
     pub fn rsqrt_f64(x: f64) -> f64;
+    /// Sine of `x`, in radians, in double precision.
     pub fn sin_f64(x: f64) -> f64;
+    /// Cosine of `x`, in radians, in double precision.
     pub fn cos_f64(x: f64) -> f64;
+    /// Tangent of `x`, in radians, in double precision.
     pub fn tan_f64(x: f64) -> f64;
+    /// Base-e exponential, `e^x`, in double precision.
     pub fn exp_f64(x: f64) -> f64;
+    /// Natural logarithm of `x`, in double precision.
     pub fn log_f64(x: f64) -> f64;
+    /// `base` raised to the power `exp`, in double precision.
     pub fn pow_f64(base: f64, exp: f64) -> f64;
+    /// Absolute value of `x`, in double precision.
     pub fn abs_f64(x: f64) -> f64;
+    /// Largest integer not greater than `x`, in double precision.
     pub fn floor_f64(x: f64) -> f64;
+    /// Smallest integer not less than `x`, in double precision.
     pub fn ceil_f64(x: f64) -> f64;
+    /// `x` rounded to the nearest integer, in double precision. The tie
+    /// rule is the backend's, exactly as for `round_f32`.
     pub fn round_f64(x: f64) -> f64;
+    /// The smaller of `a` and `b`, in double precision.
     pub fn min_f64(a: f64, b: f64) -> f64;
+    /// The larger of `a` and `b`, in double precision.
     pub fn max_f64(a: f64, b: f64) -> f64;
+    /// `x` clamped to the closed range `[lo, hi]`, in double precision.
     pub fn clamp_f64(x: f64, lo: f64, hi: f64) -> f64;
+    /// Fused multiply-add, `a * b + c` with a single rounding, in double
+    /// precision.
     pub fn fma_f64(a: f64, b: f64, c: f64) -> f64;
 }
 
@@ -167,42 +218,69 @@ unsafe extern "C" {
     // Ballot / any / all take a predicate (any non-zero u32 == true);
     // a single u32 variant suffices regardless of the value type
     // being voted on.
+
+    /// Bitmask of the subgroup lanes whose `predicate` holds, low bit =
+    /// lane 0, truncated to 32 bits.
     pub fn ballot_u32(predicate: u32) -> u32;
+    /// `1` if `predicate` holds in at least one lane of the subgroup,
+    /// else `0`.
     pub fn any_u32(predicate: u32) -> u32;
+    /// `1` if `predicate` holds in every lane of the subgroup, else `0`.
     pub fn all_u32(predicate: u32) -> u32;
 
-    // Shuffle: read `value` from lane `self_lane ^ lane_delta`.
-    // The second argument is an XOR mask, not a source-lane
-    // index — `lane_delta = 1` swaps adjacent pairs, `2` swaps
-    // pairs of pairs, etc. (the standard butterfly pattern used
-    // by tree reductions). Mirrors Metal's `simd_shuffle_xor`
-    // and WGSL's `subgroupShuffleXor`.
+    // The second argument is an XOR mask, not a source-lane index —
+    // `lane_delta = 1` swaps adjacent pairs, `2` swaps pairs of pairs,
+    // etc. (the standard butterfly pattern used by tree reductions).
+    // Mirrors Metal's `simd_shuffle_xor` and WGSL's `subgroupShuffleXor`.
+
+    /// Butterfly exchange: this lane receives the `value` held by lane
+    /// `subgroup_id() ^ lane_delta`.
     pub fn shuffle_u32(value: u32, lane_delta: u32) -> u32;
+    /// Butterfly exchange of a signed value — see `shuffle_u32`.
     pub fn shuffle_i32(value: i32, lane_delta: u32) -> i32;
+    /// Butterfly exchange of a float value — see `shuffle_u32`.
     pub fn shuffle_f32(value: f32, lane_delta: u32) -> f32;
 
-    // Reduce: every lane gets the warp-wide reduction.
+    /// Sum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_add_u32(value: u32) -> u32;
+    /// Sum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_add_i32(value: i32) -> i32;
+    /// Sum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_add_f32(value: f32) -> f32;
+    /// Minimum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_min_u32(value: u32) -> u32;
+    /// Minimum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_min_i32(value: i32) -> i32;
+    /// Minimum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_min_f32(value: f32) -> f32;
+    /// Maximum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_max_u32(value: u32) -> u32;
+    /// Maximum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_max_i32(value: i32) -> i32;
+    /// Maximum of `value` across the subgroup, broadcast to every lane.
     pub fn reduce_max_f32(value: f32) -> f32;
 
-    // Inclusive prefix scan: every lane gets the running sum of
-    // lanes 0..=self.
+    /// Inclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..=self`.
     pub fn scan_add_u32(value: u32) -> u32;
+    /// Inclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..=self`.
     pub fn scan_add_i32(value: i32) -> i32;
+    /// Inclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..=self`.
     pub fn scan_add_f32(value: f32) -> f32;
 
-    // Exclusive prefix scan: every lane gets the running sum of
-    // lanes 0..self (lane 0 receives 0). Pairs with the
-    // inclusive form: `inclusive[k] = exclusive[k] + value[k]`.
+    // Pairs with the inclusive form above:
+    // `inclusive[k] = exclusive[k] + value[k]`.
+
+    /// Exclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..self`, so lane 0 receives 0.
     pub fn scan_add_exclusive_u32(value: u32) -> u32;
+    /// Exclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..self`, so lane 0 receives 0.
     pub fn scan_add_exclusive_i32(value: i32) -> i32;
+    /// Exclusive prefix sum: this lane receives the sum of `value` over
+    /// lanes `0..self`, so lane 0 receives 0.
     pub fn scan_add_exclusive_f32(value: f32) -> f32;
 }
 
@@ -212,12 +290,16 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// Load from workgroup-shared memory at `(slot, index)`.
     pub fn shared_load_f32(slot: u32, index: u32) -> f32;
+    /// Load from workgroup-shared memory at `(slot, index)`.
     pub fn shared_load_u32(slot: u32, index: u32) -> u32;
+    /// Load from workgroup-shared memory at `(slot, index)`.
     pub fn shared_load_i32(slot: u32, index: u32) -> i32;
 
     /// Store to workgroup-shared memory at `(slot, index)`.
     pub fn shared_store_f32(slot: u32, index: u32, val: f32);
+    /// Store to workgroup-shared memory at `(slot, index)`.
     pub fn shared_store_u32(slot: u32, index: u32, val: u32);
+    /// Store to workgroup-shared memory at `(slot, index)`.
     pub fn shared_store_i32(slot: u32, index: u32, val: i32);
 
     /// Atomic read-modify-write on workgroup-shared memory at
@@ -230,14 +312,30 @@ unsafe extern "C" {
     /// counters, etc., that would otherwise need a buffer-backed
     /// counter + a global-memory round-trip.
     pub fn atomic_add_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically subtract `val` from shared `(slot, index)`, returning
+    /// the previous value.
     pub fn atomic_sub_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically store the smaller of `val` and shared `(slot, index)`,
+    /// returning the previous value.
     pub fn atomic_min_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically store the larger of `val` and shared `(slot, index)`,
+    /// returning the previous value.
     pub fn atomic_max_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically AND `val` into shared `(slot, index)`, returning the
+    /// previous value.
     pub fn atomic_and_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically OR `val` into shared `(slot, index)`, returning the
+    /// previous value.
     pub fn atomic_or_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically XOR `val` into shared `(slot, index)`, returning the
+    /// previous value.
     pub fn atomic_xor_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Atomically overwrite shared `(slot, index)` with `val`, returning
+    /// the previous value.
     pub fn atomic_exchange_shared_u32(slot: u32, index: u32, val: u32, order: u32) -> u32;
+    /// Signed twin of `atomic_add_shared_u32`.
     pub fn atomic_add_shared_i32(slot: u32, index: u32, val: i32, order: u32) -> i32;
+    /// Signed twin of `atomic_sub_shared_u32`.
     pub fn atomic_sub_shared_i32(slot: u32, index: u32, val: i32, order: u32) -> i32;
 }
 
@@ -255,6 +353,8 @@ unsafe extern "C" {
     /// storage image directly; a sampled slot (`&Sampled2D`) reads via
     /// texelFetch — the texel-read path for textures without storage usage.
     pub fn texture_load_2d_f32(slot: u32, x: u32, y: u32) -> f32;
+    /// Unsampled texel read from a 3-D texture slot — the volumetric
+    /// twin of `texture_load_2d_f32`.
     pub fn texture_load_3d_f32(slot: u32, x: u32, y: u32, z: u32) -> f32;
 
     /// Packed-u32 texel read. Slot must be a `Texture2D<u32>` texel image
@@ -330,8 +430,18 @@ unsafe extern "C" {
 /// ```ignore
 /// atomic_add_u32(p, 1, ORDER_RELAXED);
 /// ```
+///
+/// `ORDER_RELAXED` asks for atomicity and nothing more: no ordering is
+/// imposed on the reads and writes around the operation.
 pub const ORDER_RELAXED: u32 = 0;
+/// Acquire: no read or write placed after this operation may be observed
+/// to happen before it.
 pub const ORDER_ACQUIRE: u32 = 1;
+/// Release: no read or write placed before this operation may be observed
+/// to happen after it.
 pub const ORDER_RELEASE: u32 = 2;
+/// Acquire and release together — both restrictions on one operation.
 pub const ORDER_ACQ_REL: u32 = 3;
+/// Sequential consistency: every `ORDER_SEQ_CST` operation in the
+/// dispatch is observed in one total order by every quark.
 pub const ORDER_SEQ_CST: u32 = 4;

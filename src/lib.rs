@@ -55,6 +55,7 @@
 //!   their dependency graph.
 
 #![no_std]
+#![deny(missing_docs)]
 
 extern crate alloc;
 
