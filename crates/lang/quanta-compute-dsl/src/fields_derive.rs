@@ -1,5 +1,5 @@
 //! Implementation of `#[derive(Fields)]` — generates GPU-side metadata for
-//! kernel data structs. Classifies each field as either a Field (Vec<T>) or
+//! kernel data structs. Classifies each field as either a Field (`Vec<T>`) or
 //! a push constant (scalar), producing slot metadata that the `#[quanta::kernel]`
 //! macro uses to generate upload/bind/dispatch code.
 
