@@ -8,39 +8,39 @@
 //!
 //! ## This release: Level-1 + GEMV + tiled/tensor-core GEMM (f32) + mixed-precision (bf16/f16/fp8/int8/int4)
 //!
-//! - [`scal`](level1::scal) — `x ← α·x` (in place)
-//! - [`axpy`](level1::axpy) — `y ← α·x + y` (in place)
-//! - [`dot`](level1::dot) — `Σ xᵢ·yᵢ` (device-resident reduction)
-//! - [`nrm2`](level1::nrm2) — `‖x‖₂ = √(Σ xᵢ²)`
-//! - [`gemv`](level2::gemv) — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
+//! - [`scal`] — `x ← α·x` (in place)
+//! - [`axpy`] — `y ← α·x + y` (in place)
+//! - [`dot`] — `Σ xᵢ·yᵢ` (device-resident reduction)
+//! - [`nrm2`] — `‖x‖₂ = √(Σ xᵢ²)`
+//! - [`gemv`] — `y ← α·A·x + β·y` (Level-2, via GEMM N=1)
 //! - [`gemm`](gemm::gemm) — `C ← α·A·B + β·C` (Level-3, tiled kernel; routes to
 //!   the tensor-core path when supported)
-//! - [`gemm_f32_tc`](mixed_tc::gemm_f32_tc) — `C ← A·B + C` via Metal
+//! - [`gemm_f32_tc`] — `C ← A·B + C` via Metal
 //!   `simdgroup_matrix` (cooperative-matrix / tensor cores)
-//! - [`gemm_mixed`](mixed::gemm_mixed) / [`gemv_mixed`](mixed::gemv_mixed) —
+//! - [`gemm_mixed`] / [`gemv_mixed`] —
 //!   narrow float inputs (bf16 / f16 via `gemm_mixed`; fp8 via `gemm_mixed8`),
 //!   f32 accumulate
-//! - [`gemm_quant`](mixed_quant::gemm_quant) /
-//!   [`gemm_quant4`](mixed_quant::gemm_quant4) (+ `gemv_*`) — int8 (Q8) and
+//! - [`gemm_quant`] /
+//!   [`gemm_quant4`] (+ `gemv_*`) — int8 (Q8) and
 //!   int4 (Q4) symmetric codes + per-tensor scales, f32 accumulate
-//! - [`trsv`](triangular::trsv) — solve `op(A)·x = b`, A triangular
+//! - [`trsv`] — solve `op(A)·x = b`, A triangular
 //!   (Level-2, in place on x; all uplo/trans/diag variants)
-//! - [`trsm`](triangular::trsm) — solve `op(A)·X = α·B` / `X·op(A) = α·B`,
+//! - [`trsm`] — solve `op(A)·X = α·B` / `X·op(A) = α·B`,
 //!   A triangular (Level-3, in place on B; all side/uplo/trans/diag variants)
 //! - [`syrk`](syrk::syrk) — `C ← α·op(A)·op(A)ᵀ + β·C`, C symmetric,
 //!   only the selected triangle updated (Level-3, both NoTrans/Trans forms)
 //! - [`cholesky`](cholesky::cholesky) — `A = L·Lᵀ` / `Uᵀ·U`, in-place SPD
 //!   factorisation (the first factorisation; both uplo forms)
-//! - [`chol_solve`](cholesky::chol_solve) — solve `A·X = B` for SPD `A` via
+//! - [`chol_solve`] — solve `A·X = B` for SPD `A` via
 //!   the factorisation + two triangular solves
 //! - [`lu`](lu::lu) — `P·A = L·U`, in-place LU factorisation with partial
 //!   pivoting (the general non-symmetric factorisation)
-//! - [`lu_solve`](lu::lu_solve) — solve `A·X = B` for general `A` via LU +
+//! - [`lu_solve`] — solve `A·X = B` for general `A` via LU +
 //!   pivot permutation + two triangular solves
-//! - [`lu_inv`](lu::lu_inv) — `A⁻¹` for general `A` via LU + solve against `I`
+//! - [`lu_inv`] — `A⁻¹` for general `A` via LU + solve against `I`
 //! - [`qr`](qr::qr) — `A = Q·R` Householder factorisation of an `m×n`
 //!   (`m ≥ n`) matrix, in-place (`R` upper, reflector tails lower, `tau` out)
-//! - [`lstsq`](qr::lstsq) — least-squares `min‖A·X − B‖` via QR (`Qᵀ` applied
+//! - [`lstsq`] — least-squares `min‖A·X − B‖` via QR (`Qᵀ` applied
 //!   to `B`, then a back-substitution with `R`)
 //! - [`symm`](symm::symm) — `C ← α·A·B + β·C` (or `B·A`), `A` symmetric
 //!   (only its `uplo` triangle read); Level-3, both side forms
@@ -64,7 +64,7 @@
 //! perf gap is a later increment.
 //!
 //! Off by default, the crate is a pure-Rust reference library (the
-//! differential-test oracle in [`reference`]). Enable `gpu` (plus a backend
+//! differential-test oracle in [`mod@reference`]). Enable `gpu` (plus a backend
 //! feature like `gpu-metal`) for the JIT ops in [`level1`].
 //!
 //! ## Scope (what's complete, what's deferred)
@@ -97,6 +97,7 @@
 //! per-backend paths land.
 
 #![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+#![deny(missing_docs)]
 
 pub mod params;
 pub mod reference;

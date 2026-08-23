@@ -19,7 +19,7 @@
 //! Every `side`/`uplo`/`transA` combination is a forward or a backward
 //! substitution over an effective matrix `M[i,p] = a[i·rs + p·cs]` — the
 //! strides encode the transpose/side, computed host-side by
-//! [`crate::params::trsm_plan`]. `diag` is a scalar flag (unit diagonal
+//! `params::trsm_plan`. `diag` is a scalar flag (unit diagonal
 //! skips the divide). So: `trsm_fwd_f32` + `trsm_bwd_f32`, and **all**
 //! BLAS variants are supported — nothing is `NotSupported`.
 //!

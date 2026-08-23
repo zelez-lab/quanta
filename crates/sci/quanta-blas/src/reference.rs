@@ -786,7 +786,7 @@ pub fn trmm(
 /// eigenvalues (ascending) in `w` and the orthonormal eigenvectors as the
 /// columns of the returned `n×n` row-major matrix (column `j` ↔ `w[j]`).
 ///
-/// The differential-test ground truth for [`crate::eigh`]. Iterative: it
+/// The differential-test ground truth for [`crate::eigh()`]. Iterative: it
 /// runs cyclic sweeps until the off-diagonal norm falls below `tol` or a
 /// sweep cap is hit — the same algorithm the GPU path uses, in f64.
 pub fn syev(uplo: Uplo, n: usize, a: &[f32], w: &mut [f32]) -> Vec<f32> {
@@ -898,7 +898,7 @@ pub fn syev(uplo: Uplo, n: usize, a: &[f32], w: &mut [f32]) -> Vec<f32> {
 /// values and the normalised columns are `U`. Returns `(U, s, V)`:
 /// `U` is `m×n` (orthonormal columns), `s` the `n` singular values
 /// (descending), `V` the `n×n` right-singular matrix (orthonormal). The
-/// differential-test ground truth for [`crate::svd`]. Iterative: cyclic
+/// differential-test ground truth for [`crate::svd()`]. Iterative: cyclic
 /// sweeps until every column pair is orthogonal to tolerance.
 pub fn gesvd(m: usize, n: usize, a: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     assert_eq!(a.len(), m * n, "gesvd: A must be m×n");
