@@ -4762,11 +4762,10 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         by_cases hki : k = i
         · subst hki
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((k, stable) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg k stable)
                  = some (k, r) at hfind
           change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
-          rw [List.find?_cons] at hfind
-          simp only [show decide ((k, stable).fst = k) = true from by simp] at hfind
+          rw [LowerState.find?_upsertAssoc_self] at hfind
           injection hfind with h_pair
           have hr_eq : stable = r := (Prod.ext_iff.mp h_pair).2
           subst hr_eq
@@ -4782,15 +4781,15 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           -- threads the committed type), so the encoding tag is
           -- `commitTy sva` and `stable` holds `tagVal n_w (commitTy sva)`.
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((i, stable) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg i stable)
                  = some (k, r) at hfind
-          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          rw [LowerState.find?_upsertAssoc_ne _ i k _ hki] at hfind
           have hv_old : ws.locals.get? k = some v := by
             rw [List.get?_eq_getElem?] at hv ⊢
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
@@ -4801,12 +4800,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           -- Local `k ≠ i` keeps its recorded type: the set only writes
           -- the `i` entry, so `localTyOf` at `k` is unchanged from s2.
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hr_lt : r < s2.nextReg := by
             have hpair : (k, r) ∈ s2.localReg :=
@@ -4832,6 +4830,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt h)
         · intro ir hir
           simp at hir
+          rw [LowerState.mem_upsertAssoc_iff] at hir
           rcases hir with h_eq | ⟨h_in, _⟩
           · subst h_eq; exact Nat.lt_succ_self _
           · have hin_s2 : ir ∈ s2.localReg := by rw [h_s2_lr]; exact h_in
@@ -4841,6 +4840,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         intro ir hir sv hsv
         have hsv_in_s2 : sv ∈ s2.stack := hsv
         simp at hir
+        rw [LowerState.mem_upsertAssoc_iff] at hir
         rcases hir with h_eq | ⟨h_in, _⟩
         · subst h_eq
           intro hcontra
@@ -4855,6 +4855,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- InjectiveLocals.
         intro p q hp hq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hp hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; left; rfl
@@ -4896,9 +4897,9 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'
         · -- Other indices fall back to filter — but s2.currentReg = s.currentReg.
@@ -4913,12 +4914,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           -- R1.currentReg gives encodes against kst1.rf.
           -- Need encodes against kst'.rf = regWrite (regWrite kst1.rf fresh _) stable _.
@@ -4957,6 +4957,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- CurrentLocalDisjoint on s'.currentReg = (i, fresh) :: ..., s'.localReg = (i, stable) :: ...
         intro p q hp hq hpq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hq
         -- p ∈ currentReg ⇒ p = (i, fresh) ∨ (p ∈ filter ... s2.currentReg ∧ p.fst ≠ i).
         -- q ∈ localReg   ⇒ q = (i, stable) ∨ (q ∈ filter ... s.localReg ∧ q.fst ≠ i).
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
@@ -5076,11 +5077,10 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         by_cases hki : k = i
         · subst hki
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((k, stable_old) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg k stable_old)
                  = some (k, r) at hfind
           change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
-          rw [List.find?_cons] at hfind
-          simp only [show decide ((k, stable_old).fst = k) = true from by simp] at hfind
+          rw [LowerState.find?_upsertAssoc_self] at hfind
           injection hfind with h_pair
           have hr_eq : stable_old = r := (Prod.ext_iff.mp h_pair).2
           subst hr_eq
@@ -5093,15 +5093,15 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'A
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((i, stable_old) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg i stable_old)
                  = some (k, r) at hfind
-          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          rw [LowerState.find?_upsertAssoc_ne _ i k _ hki] at hfind
           have hv_old : ws.locals.get? k = some v := by
             rw [List.get?_eq_getElem?] at hv ⊢
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
@@ -5110,12 +5110,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hkr_in_s2 : (k, r) ∈ s2.localReg :=
             List.mem_of_find?_eq_some hfind_s2
@@ -5140,6 +5139,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
           exact Nat.lt_succ_of_lt (R1.fresh.left sv hsv_in_s2 r hr)
         · intro ir hir
           simp at hir
+          rw [LowerState.mem_upsertAssoc_iff] at hir
           rcases hir with h_eq | ⟨h_in, _⟩
           · subst h_eq
             -- (i, stable_old).snd = stable_old < s2.nextReg < s2.nextReg + 1.
@@ -5150,6 +5150,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         intro ir hir sv hsv
         have hsv_in_s2 : sv ∈ s2.stack := hsv
         simp at hir
+        rw [LowerState.mem_upsertAssoc_iff] at hir
         rcases hir with h_eq | ⟨h_in, _⟩
         · subst h_eq
           exact R1.aliasFree entry hentry_in_s2 sv hsv_in_s2
@@ -5158,6 +5159,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- InjectiveLocals. Head (i, stable_old) — distinct from filtered entries by injLocals.
         intro p q hp hq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hp hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; left; rfl
@@ -5205,9 +5207,9 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             show regLookup (regWrite kst1.rf fresh (tagVal n_w (LowerState.commitTy sva))) fresh = _
             rw [regLookup_regWrite_self]
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_A_kst'
         · -- Off-i: s2.currentReg = s.currentReg, fall back via R1.currentReg.
@@ -5221,12 +5223,11 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
@@ -5274,6 +5275,7 @@ theorem preservation_localSet (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- CurrentLocalDisjoint on s'.currentReg = (i, fresh) :: ..., s'.localReg = (i, stable_old) :: ...
         intro p q hp hq hpq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; exact absurd rfl hpq
@@ -5561,11 +5563,10 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         by_cases hki : k = i
         · subst hki
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((k, stable) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg k stable)
                  = some (k, r) at hfind
           change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
-          rw [List.find?_cons] at hfind
-          simp only [show decide ((k, stable).fst = k) = true from by simp] at hfind
+          rw [LowerState.find?_upsertAssoc_self] at hfind
           injection hfind with h_pair
           have hr_eq : stable = r := (Prod.ext_iff.mp h_pair).2
           subst hr_eq
@@ -5578,15 +5579,15 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((i, stable) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg i stable)
                  = some (k, r) at hfind
-          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          rw [LowerState.find?_upsertAssoc_ne _ i k _ hki] at hfind
           have hv_old : ws.locals.get? k = some v := by
             rw [List.get?_eq_getElem?] at hv ⊢
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
@@ -5595,12 +5596,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hr_lt : r < s2.nextReg := by
             have hpair : (k, r) ∈ s2.localReg :=
@@ -5637,6 +5637,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt h))
         · intro ir hir
           simp at hir
+          rw [LowerState.mem_upsertAssoc_iff] at hir
           rcases hir with h_eq | ⟨h_in, _⟩
           · subst h_eq
             -- (i, stable).snd = stable = s2.nextReg + 1 < s2.nextReg + 1 + 1 + 1.
@@ -5647,6 +5648,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- AliasFree: localReg = (i, stable) :: filter(≠i) s.localReg.
         intro ir hir sv hsv
         simp at hir hsv
+        rw [LowerState.mem_upsertAssoc_iff] at hir
         rcases hir with hir_eq | ⟨hir_in, _⟩ <;>
         rcases hsv with hsv_eq | hsv_in
         · subst hir_eq; subst hsv_eq
@@ -5673,6 +5675,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- InjectiveLocals.
         intro p q hp hq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hp hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; left; rfl
@@ -5713,9 +5716,9 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'
         · -- Off-i: lift R1.currentReg past 3 writes.
@@ -5729,12 +5732,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
@@ -5775,6 +5777,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         -- s'.localReg = (i, stable) :: ….
         intro p q hp hq hpq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; exact absurd rfl hpq
@@ -5958,11 +5961,10 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
         by_cases hki : k = i
         · subst hki
           change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((k, stable_old) :: List.filter (fun p => !decide (p.fst = k)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg k stable_old)
                  = some (k, r) at hfind
           change (ws.locals.set k (WasmValue.wI32 n_w)).get? k = some v at hv
-          rw [List.find?_cons] at hfind
-          simp only [show decide ((k, stable_old).fst = k) = true from by simp] at hfind
+          rw [LowerState.find?_upsertAssoc_self] at hfind
           injection hfind with h_pair
           have hr_eq : stable_old = r := (Prod.ext_iff.mp h_pair).2
           subst hr_eq
@@ -5975,15 +5977,15 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_stable_kst'_A
         · change List.find? (fun p : Nat × Reg => decide (p.fst = k))
-                   ((i, stable_old) :: List.filter (fun p => !decide (p.fst = i)) s.localReg)
+                   (LowerState.upsertAssoc s.localReg i stable_old)
                  = some (k, r) at hfind
-          rw [find?_setLocalReg_ne _ i k _ hki] at hfind
+          rw [LowerState.find?_upsertAssoc_ne _ i k _ hki] at hfind
           have hv_old : ws.locals.get? k = some v := by
             rw [List.get?_eq_getElem?] at hv ⊢
             rw [List.getElem?_set_ne (Ne.symm hki)] at hv
@@ -5992,12 +5994,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             rw [h_s2_lr]; exact hfind
           have henc := R1.locs k r hfind_s2 v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hkr_in_s2 : (k, r) ∈ s2.localReg :=
             List.mem_of_find?_eq_some hfind_s2
@@ -6037,6 +6038,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt h)
         · intro ir hir
           simp at hir
+          rw [LowerState.mem_upsertAssoc_iff] at hir
           rcases hir with h_eq | ⟨h_in, _⟩
           · subst h_eq
             -- (i, stable_old).snd = stable_old < s2.nextReg < s2.nextReg + 1 + 1.
@@ -6047,6 +6049,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- AliasFree. localReg = (i, stable_old) :: filter(≠i) s.localReg.
         intro ir hir sv hsv
         simp at hir hsv
+        rw [LowerState.mem_upsertAssoc_iff] at hir
         rcases hir with hir_eq | ⟨hir_in, _⟩ <;>
         rcases hsv with hsv_eq | hsv_in
         · subst hir_eq; subst hsv_eq
@@ -6069,6 +6072,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- InjectiveLocals.
         intro p q hp hq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hp hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; left; rfl
@@ -6111,9 +6115,9 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact ((Option.some.injEq _ _).mp hv).symm
           subst hv_eq
           have hty_k : localTyOf
-              ((k, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = k)) s.localTy) k
-                = LowerState.commitTy sva := by simp [localTyOf]
+              (LowerState.upsertAssoc s.localTy k (LowerState.commitTy sva)) k
+                = LowerState.commitTy sva := by
+            simp [localTyOf, LowerState.find?_upsertAssoc_self]
           rw [show (_ : Quanta.KOps.Scalar) = LowerState.commitTy sva from hty_k]
           exact encodes_wI32_reg_of_tagVal h_cty_val h_lookup_fresh_kst'_A
         · -- Off-i: lift R1.currentReg via curLocDisj (for stable_old) + freshness (fresh, post_fresh_A).
@@ -6127,12 +6131,11 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
             exact hv
           have henc := R1.currentReg k r_cur hfind v hv_old
           have hty_keq : localTyOf
-              ((i, LowerState.commitTy sva) :: List.filter
-                (fun p => !decide (p.fst = i)) s.localTy) k
+              (LowerState.upsertAssoc s.localTy i (LowerState.commitTy sva)) k
                 = localTyOf s2.localTy k := by
             rw [h_s2_lt]
             unfold localTyOf
-            rw [find?_setLocalReg_ne s.localTy i k (LowerState.commitTy sva) hki]
+            rw [LowerState.find?_upsertAssoc_ne s.localTy i k (LowerState.commitTy sva) hki]
           rw [hty_keq]
           have hpair_cur : (k, r_cur) ∈ s2.currentReg :=
             List.mem_of_find?_eq_some hfind
@@ -6171,6 +6174,7 @@ theorem preservation_localTee (ws : WasmState) (s : LowerState) (kst : Quanta.KO
       · -- CurrentLocalDisjoint on (i, fresh) :: ..., (i, stable_old) :: ...
         intro p q hp hq hpq
         simp at hp hq
+        rw [LowerState.mem_upsertAssoc_iff] at hq
         rcases hp with hp_eq | ⟨hp_in, hp_ne⟩ <;>
         rcases hq with hq_eq | ⟨hq_in, hq_ne⟩
         · subst hp_eq; subst hq_eq; exact absurd rfl hpq

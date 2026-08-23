@@ -178,10 +178,133 @@ def lookupLocalTy (s : LowerState) (i : Nat) : Option Scalar :=
 def lookupBufferSlot (s : LowerState) (i : Nat) : Option Nat :=
   s.bufferSlots.find? (fun p => p.fst = i) |>.map Prod.snd
 
+/-- Order-preserving upsert on an assoc list: update the value in
+    place when the key is present, cons a new entry when absent.
+    Production's `stable_reg` is a `Vec` slot updated in place — a
+    rebind must NOT reorder the map, so that a body that only rebinds
+    already-seeded locals leaves `localReg` list-identical (the L14
+    seeded-entry apex depends on exactly this). -/
+def upsertAssoc {α : Type} (xs : List (Nat × α)) (i : Nat) (v : α) :
+    List (Nat × α) :=
+  match xs.find? (fun p => p.fst = i) with
+  | some _ => xs.map (fun p => if p.fst = i then (i, v) else p)
+  | none   => (i, v) :: xs
+
 def setLocalReg (s : LowerState) (i : Nat) (r : Reg) (ty : Scalar) : LowerState :=
-  let regs' := (i, r) :: s.localReg.filter (fun p => p.fst ≠ i)
-  let tys'  := (i, ty) :: s.localTy.filter (fun p => p.fst ≠ i)
-  { s with localReg := regs', localTy := tys' }
+  { s with localReg := upsertAssoc s.localReg i r,
+           localTy  := upsertAssoc s.localTy i ty }
+
+/-- The upsert's cons branch, keyed by absence. -/
+theorem upsertAssoc_of_find?_none {α : Type} {xs : List (Nat × α)} {i : Nat}
+    (v : α) (h : xs.find? (fun p => p.fst = i) = none) :
+    upsertAssoc xs i v = (i, v) :: xs := by
+  unfold upsertAssoc
+  rw [h]
+
+/-- The upsert's in-place branch, keyed by presence. -/
+theorem upsertAssoc_of_find?_some {α : Type} {xs : List (Nat × α)} {i : Nat}
+    {e : Nat × α} (v : α) (h : xs.find? (fun p => p.fst = i) = some e) :
+    upsertAssoc xs i v = xs.map (fun p => if p.fst = i then (i, v) else p) := by
+  unfold upsertAssoc
+  rw [h]
+
+/-- Lookup at the upserted key: the entry is `(i, v)`. -/
+theorem find?_upsertAssoc_self {α : Type} (xs : List (Nat × α)) (i : Nat)
+    (v : α) :
+    (upsertAssoc xs i v).find? (fun p => p.fst = i) = some (i, v) := by
+  unfold upsertAssoc
+  cases hf : xs.find? (fun p => p.fst = i) with
+  | none =>
+      rw [List.find?_cons]
+      simp
+  | some e =>
+      have he_mem := List.mem_of_find?_eq_some hf
+      have he_i : e.fst = i := by
+        have := List.find?_some hf
+        simpa using this
+      clear hf
+      induction xs with
+      | nil => cases he_mem
+      | cons hd tl ih =>
+          rw [List.map_cons, List.find?_cons]
+          by_cases hhd : hd.fst = i
+          · rw [if_pos hhd]
+            simp
+          · rw [if_neg hhd]
+            have hpred : decide (hd.fst = i) = false := by
+              simpa using hhd
+            rw [hpred]
+            rcases List.mem_cons.mp he_mem with he_hd | he_tl
+            · exact absurd (he_hd ▸ he_i) hhd
+            · exact ih he_tl
+
+/-- Lookup at any other key is untouched by the upsert. -/
+theorem find?_upsertAssoc_ne {α : Type} (xs : List (Nat × α)) (i k : Nat)
+    (v : α) (hki : k ≠ i) :
+    (upsertAssoc xs i v).find? (fun p => p.fst = k) =
+    xs.find? (fun p => p.fst = k) := by
+  unfold upsertAssoc
+  cases hf : xs.find? (fun p => p.fst = i) with
+  | none =>
+      rw [List.find?_cons]
+      have h1 : decide ((i, v).fst = k) = false := by
+        simpa using fun h => hki h.symm
+      rw [h1]
+  | some e =>
+      clear hf
+      induction xs with
+      | nil => rfl
+      | cons hd tl ih =>
+          rw [List.map_cons, List.find?_cons, List.find?_cons]
+          by_cases hhd : hd.fst = i
+          · rw [if_pos hhd]
+            have h1 : decide ((i, v).fst = k) = false := by
+              simpa using fun h => hki h.symm
+            have h2 : decide (hd.fst = k) = false := by
+              simp only [decide_eq_false_iff_not]
+              rw [hhd]; exact fun h => hki h.symm
+            rw [h1, h2]
+            exact ih
+          · rw [if_neg hhd]
+            cases hpk : decide (hd.fst = k)
+            · simpa using ih
+            · rfl
+
+/-- Membership after the upsert — the same disjunction the old
+    cons+filter shape produced, valid in both branches. -/
+theorem mem_upsertAssoc_iff {α : Type} {xs : List (Nat × α)} {i : Nat}
+    {v : α} {e : Nat × α} :
+    e ∈ upsertAssoc xs i v ↔ e = (i, v) ∨ (e ∈ xs ∧ e.fst ≠ i) := by
+  unfold upsertAssoc
+  cases hf : xs.find? (fun p => p.fst = i) with
+  | none =>
+      rw [List.mem_cons]
+      constructor
+      · rintro (he | he_mem)
+        · exact Or.inl he
+        · refine Or.inr ⟨he_mem, ?_⟩
+          intro hei
+          have := List.find?_eq_none.mp hf e he_mem
+          simp [hei] at this
+      · rintro (he | ⟨he_mem, _⟩)
+        · exact Or.inl he
+        · exact Or.inr he_mem
+  | some w =>
+      have hw_mem := List.mem_of_find?_eq_some hf
+      have hw_i : w.fst = i := by
+        have := List.find?_some hf
+        simpa using this
+      rw [List.mem_map]
+      constructor
+      · rintro ⟨p, hp_mem, hp_img⟩
+        by_cases hpi : p.fst = i
+        · rw [if_pos hpi] at hp_img
+          exact Or.inl hp_img.symm
+        · rw [if_neg hpi] at hp_img
+          exact Or.inr ⟨hp_img ▸ hp_mem, hp_img ▸ hpi⟩
+      · rintro (he | ⟨he_mem, he_ne⟩)
+        · exact ⟨w, hw_mem, by rw [if_pos hw_i]; exact he.symm⟩
+        · exact ⟨e, he_mem, by rw [if_neg he_ne]⟩
 
 /-- Lookup the per-frame current-binding register for local `i`.
     `none` means the local hasn't been written in the current frame;

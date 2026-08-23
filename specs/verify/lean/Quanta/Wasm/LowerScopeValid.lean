@@ -441,14 +441,14 @@ theorem LowerState.setLocalReg_preserves_wellScoped {s : LowerState}
   refine ⟨hstk, ?_, hcur⟩
   intro p hp
   show p.snd < s.nextReg
-  -- (s.setLocalReg i r ty).localReg = (i, r) :: s.localReg.filter (·.fst ≠ i)
-  -- so p is either (i, r) or comes from the filtered tail (membership in original).
-  have hp' : p = (i, r) ∨ p ∈ s.localReg.filter (fun q => q.fst ≠ i) := by
-    have : p ∈ (i, r) :: s.localReg.filter (fun q => q.fst ≠ i) := hp
-    exact List.mem_cons.mp this
-  rcases hp' with rfl | hp'
+  -- (s.setLocalReg i r ty).localReg is the upsert of s.localReg at i:
+  -- p is either the upserted (i, r) or an untouched original entry.
+  have hp' : p = (i, r) ∨ (p ∈ s.localReg ∧ p.fst ≠ i) := by
+    have : p ∈ LowerState.upsertAssoc s.localReg i r := hp
+    exact LowerState.mem_upsertAssoc_iff.mp this
+  rcases hp' with rfl | ⟨hp', _⟩
   · exact hr
-  · exact hloc p (List.mem_filter.mp hp').1
+  · exact hloc p hp'
 
 /-- `setCurrentReg i r` preserves wellScoped iff `r < nextReg`. -/
 theorem LowerState.setCurrentReg_preserves_wellScoped {s : LowerState}
@@ -2515,14 +2515,13 @@ theorem lowerInstr_localSet_preserves_wellScoped
     · intro p hp
       show p.snd < s2.nextReg + 1 + 1
       have hp' : p = (i, s2.nextReg + 1) ∨
-                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
-        have : p ∈ (i, s2.nextReg + 1) ::
-                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
-        exact List.mem_cons.mp this
-      rcases hp' with rfl | hp'
+                  (p ∈ s2.localReg ∧ p.fst ≠ i) := by
+        have : p ∈ LowerState.upsertAssoc s2.localReg i (s2.nextReg + 1) := hp
+        exact LowerState.mem_upsertAssoc_iff.mp this
+      rcases hp' with rfl | ⟨hp', _⟩
       · exact Nat.lt_succ_self _
       · have hpsnd_s2 : p.snd < s2.nextReg :=
-          hloc p (List.mem_filter.mp hp').1
+          hloc p hp'
         exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2)
     · intro p hp
       show p.snd < s2.nextReg + 1 + 1
@@ -2555,13 +2554,12 @@ theorem lowerInstr_localSet_preserves_wellScoped
     · intro p hp
       show p.snd < s2.nextReg + 1
       have hp' : p = (i, stable) ∨
-                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
-        have : p ∈ (i, stable) ::
-                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
-        exact List.mem_cons.mp this
-      rcases hp' with rfl | hp'
+                  (p ∈ s2.localReg ∧ p.fst ≠ i) := by
+        have : p ∈ LowerState.upsertAssoc s2.localReg i (stable) := hp
+        exact LowerState.mem_upsertAssoc_iff.mp this
+      rcases hp' with rfl | ⟨hp', _⟩
       · exact Nat.lt_succ_of_lt hstable_lt_s2
-      · exact Nat.lt_succ_of_lt (hloc p (List.mem_filter.mp hp').1)
+      · exact Nat.lt_succ_of_lt (hloc p hp')
     · intro p hp
       show p.snd < s2.nextReg + 1
       have hp' : p = (i, s2.nextReg) ∨
@@ -2612,15 +2610,14 @@ theorem lowerInstr_localTee_preserves_wellScoped
     · intro p hp
       show p.snd < s2.nextReg + 1 + 1 + 1
       have hp' : p = (i, s2.nextReg + 1) ∨
-                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
-        have : p ∈ (i, s2.nextReg + 1) ::
-                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
-        exact List.mem_cons.mp this
-      rcases hp' with rfl | hp'
+                  (p ∈ s2.localReg ∧ p.fst ≠ i) := by
+        have : p ∈ LowerState.upsertAssoc s2.localReg i (s2.nextReg + 1) := hp
+        exact LowerState.mem_upsertAssoc_iff.mp this
+      rcases hp' with rfl | ⟨hp', _⟩
       · show s2.nextReg + 1 < s2.nextReg + 1 + 1 + 1
         exact Nat.lt_succ_of_lt (Nat.lt_succ_self _)
       · have hpsnd_s2 : p.snd < s2.nextReg :=
-          hloc p (List.mem_filter.mp hp').1
+          hloc p hp'
         exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hpsnd_s2))
     · intro p hp
       show p.snd < s2.nextReg + 1 + 1 + 1
@@ -2661,14 +2658,13 @@ theorem lowerInstr_localTee_preserves_wellScoped
       show p.snd < s2.nextReg + 1 + 1
       -- p ∈ (i, stable) :: filter ... s2.localReg
       have hp' : p = (i, stable) ∨
-                  p ∈ s2.localReg.filter (fun q => !decide (q.fst = i)) := by
-        have : p ∈ (i, stable) ::
-                    s2.localReg.filter (fun q => !decide (q.fst = i)) := hp
-        exact List.mem_cons.mp this
-      rcases hp' with rfl | hp'
+                  (p ∈ s2.localReg ∧ p.fst ≠ i) := by
+        have : p ∈ LowerState.upsertAssoc s2.localReg i (stable) := hp
+        exact LowerState.mem_upsertAssoc_iff.mp this
+      rcases hp' with rfl | ⟨hp', _⟩
       · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt hstable_lt_s2)
       · exact Nat.lt_succ_of_lt (Nat.lt_succ_of_lt
-          (hloc p (List.mem_filter.mp hp').1))
+          (hloc p hp'))
     · intro p hp
       show p.snd < s2.nextReg + 1 + 1
       have hp' : p = (i, s2.nextReg) ∨

@@ -831,19 +831,17 @@ theorem find?_filter_ne (l : List (Nat × Quanta.KOps.Reg)) {i j : Nat} (hj : j 
         · rw [List.find?_cons_of_neg _ (by simpa using hqj),
               List.find?_cons_of_neg _ (by simpa using hqj), IH]
 
-/-- `setLocalReg`'s list shape extends the bindings when the rebound
+/-- `setLocalReg`'s upsert extends the bindings when the rebound
     local keeps its register (or had none). -/
-theorem LocalsExtendL.cons_filter (l : List (Nat × Quanta.KOps.Reg)) (i : Nat)
+theorem LocalsExtendL.upsert (l : List (Nat × Quanta.KOps.Reg)) (i : Nat)
     (r : Quanta.KOps.Reg)
     (h : ∀ r', l.find? (fun p => p.fst = i) = some (i, r') → r' = r) :
-    LocalsExtendL l ((i, r) :: l.filter (fun p => p.fst ≠ i)) := by
+    LocalsExtendL l (LowerState.upsertAssoc l i r) := by
   intro j r' hf
   by_cases hj : j = i
   · subst hj
-    rw [h r' hf]
-    simp
-  · rw [List.find?_cons_of_neg _ (by simpa using Ne.symm hj)]
-    rw [find?_filter_ne l hj]
+    rw [LowerState.find?_upsertAssoc_self, h r' hf]
+  · rw [LowerState.find?_upsertAssoc_ne _ i j _ hj]
     exact hf
 
 /-- The lookup after `commit` + `alloc` is the lookup on `s`. -/
@@ -861,8 +859,8 @@ theorem lowerInstr_localWrite_frame {s s' : LowerState} {i : WasmInstr} {ops : L
   have h_ext : ∀ (s2 : LowerState) (idx : Nat) (r : Quanta.KOps.Reg)
       (h_ok : ∀ r', s2.localReg.find? (fun p => p.fst = idx) = some (idx, r') → r' = r),
       LocalsExtendL s2.localReg
-        ((idx, r) :: s2.localReg.filter (fun p => p.fst ≠ idx)) :=
-    fun s2 idx r h_ok => LocalsExtendL.cons_filter s2.localReg idx r h_ok
+        (LowerState.upsertAssoc s2.localReg idx r) :=
+    fun s2 idx r h_ok => LocalsExtendL.upsert s2.localReg idx r h_ok
   have h_none' : ∀ (s2 : LowerState) (idx : Nat) (n : Nat) (r : Quanta.KOps.Reg),
       ({ s2 with nextReg := n } : LowerState).lookupLocal idx = none →
       ∀ r', s2.localReg.find? (fun p => p.fst = idx) = some (idx, r') → r' = r := by
