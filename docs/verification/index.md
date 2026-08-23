@@ -10,7 +10,7 @@ and the verifier output.
 
 |                            |  Count |
 |---------------------------:|-------:|
-| **Lean theorems + lemmas** | 1103 — 599 across the core / companion chains + 504 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
+| **Lean theorems + lemmas** | 1104 — 599 across the core / companion chains + 505 in the wasm-route arm (step 059); `grep -c '^theorem'` over `specs/verify/lean/Quanta/`, all under the one `lake build` |
 | **Lean sorrys**            |   0    |
 | **Lean TCB axioms** (narrow) | 15 (11 FFI + 2 WGSL spec + 1 opaque float + 1 step-level `stmt_heap_step_helper`) |
 | **Verus theorems**         |  87 / 87 |
@@ -112,7 +112,7 @@ is named as an axiom; nothing is silently trusted.
                                 `stmt_heap_step_helper` axiom on
                                 single-stmt heap projection.)
                                (Lowering preservation, wasm route,
-                                step 059 — Lean `Quanta/Wasm/*`: 504
+                                step 059 — Lean `Quanta/Wasm/*`: 505
                                 theorems, 0 sorries.
                                 `framework_preservation_kernel_while2`
                                 over `KernelInstrsW2` = straight-line
@@ -273,7 +273,7 @@ subset lowers to KernelOps; this corpus proves the *shipping* route —
 `crates/gpu/quanta-wasm-lowering` translates that wasm to KernelOps.
 Different input language, different translator, different proof.
 
-Lean, `specs/verify/lean/Quanta/Wasm/` — **504 theorems, 0 sorries**
+Lean, `specs/verify/lean/Quanta/Wasm/` — **505 theorems, 0 sorries**
 (`grep -c '^theorem'`), every file imported from
 `specs/verify/lean/Quanta.lean` (`PreservationFuel` transitively, via
 `PreservationList`):
@@ -342,9 +342,16 @@ pre-allocation (one default-zero `Const` per declared local, pinned by
 extends the refinement (WASM's own zero-init of locals meets the
 register zeros), and `framework_preservation_kernel_fn` states the
 whole function — seed stream then kernel — with every hypothesis
-checkable at the function boundary. A counter initialised from a
-constant and incremented by a constant satisfies the conditions; they
-are decidable per kernel.
+checkable at the function boundary. The label condition is
+computed, not assumed: `KernelInstrsW2.labelStableCheck` runs the
+lowerings the condition quantifies over and compares the labels, and
+`labelStable_of_check` makes it sound — so on a concrete kernel every
+syntactic hypothesis of `framework_preservation_kernel_fn` is
+discharged by `native_decide`. The two-local witness (`sumKernel`:
+`i = 0; acc = 0; while i < n { acc += i; i += 1 }`) is instantiated
+end to end that way in `PreservationKernelWhile.lean`; what remains
+abstract there is the semantic setting only — a refined entry with
+zeroed locals, the buffer bundles, and the two evaluations.
 General nested `block` / `wif` / `br` — a second loop between an exit
 and its target, code between a loop's `end` and its block's, `wif`
 inside loop bodies — is **outside the theorem** (the structured arms are

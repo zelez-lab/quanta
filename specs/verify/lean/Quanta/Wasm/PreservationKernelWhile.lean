@@ -801,6 +801,160 @@ theorem framework_preservation_kernel_fn
   rw [evalOps_append (h_seed_eval F) h_b_seed]
   exact h_eval
 
+-- ════════════════════════════════════════════════════════════════════
+-- A computable discharge of the label condition
+-- ════════════════════════════════════════════════════════════════════
+
+/-- `labelStable`, computed: run the very lowerings the condition
+    quantifies over and compare the labels. A lowering that fails makes
+    the condition vacuous, so the check says `true` there. -/
+def KernelInstrsW2.labelStableCheck : ∀ {instrs : List WasmInstr},
+    KernelInstrsW2 instrs → Nat → List FrameKind → LowerState → Bool
+  | _, .empty, _, _, _ => true
+  | _, @sl_cons i _ _ rest_wf, fuel, frames, s =>
+      match lowerInstr s i with
+      | none => true
+      | some (s1, _) => rest_wf.labelStableCheck fuel frames s1
+  | _, @while_cons _ body _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => true
+      | f + 1 =>
+          match lowerInstrs f (.loopK :: frames) { s with currentReg := [] } body with
+          | none => true
+          | some (s1, _) =>
+              decide (s1.localTy = s.localTy) &&
+              post_wf.labelStableCheck f frames { s1 with currentReg := [] }
+  | _, @block_while_cons pref body2 _ _ _ _ _ post_wf, fuel, frames, s =>
+      match fuel with
+      | 0 => true
+      | 1 => true
+      | f + 2 =>
+          match lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                  (pref ++ [.brIf 1]),
+                lowerInstrsP f (.loopK :: .block :: frames) ⟨{ s with currentReg := [] }, []⟩
+                  (pref ++ [.brIf 1] ++ body2 ++ [.br 0]) with
+          | some (⟨s_site, _⟩, _), some (⟨s1, _⟩, _) =>
+              decide (s1.localTy = s.localTy) && decide (s1.localTy = s_site.localTy) &&
+              post_wf.labelStableCheck (f + 1) frames { s1 with currentReg := [] }
+          | _, _ => true
+
+/-- The check is sound: the lowering is a function, so the state the
+    condition quantifies over is the one the check computed. -/
+theorem KernelInstrsW2.labelStable_of_check :
+    ∀ {instrs : List WasmInstr} (wf : KernelInstrsW2 instrs)
+      (fuel : Nat) (frames : List FrameKind) (s : LowerState),
+    wf.labelStableCheck fuel frames s = true → wf.labelStable fuel frames s := by
+  intro instrs wf
+  induction wf with
+  | empty => intro _ _ _ _; trivial
+  | @sl_cons i rest h_i rest_wf IH =>
+      intro fuel frames s h
+      intro s1 ops hl
+      simp only [KernelInstrsW2.labelStableCheck, hl] at h
+      exact IH fuel frames s1 h
+  | @while_cons rest body post h_split h_body post_wf IH =>
+      intro fuel frames s h
+      cases fuel with
+      | zero => trivial
+      | succ f =>
+          intro s1 bodyOps hl
+          simp only [KernelInstrsW2.labelStableCheck, hl, Bool.and_eq_true,
+                     decide_eq_true_eq] at h
+          exact ⟨h.1, IH f frames _ h.2⟩
+  | @block_while_cons pref body2 post h_pref h_body2 h_ht_pref h_ht_body2 post_wf IH =>
+      intro fuel frames s h
+      cases fuel with
+      | zero => trivial
+      | succ f0 =>
+      cases f0 with
+      | zero => trivial
+      | succ f =>
+          intro s_site p1 ops1 hl_site s1 p2 bodyOps h_lb
+          simp only [KernelInstrsW2.labelStableCheck, hl_site, h_lb, Bool.and_eq_true,
+                     decide_eq_true_eq] at h
+          exact ⟨h.1.1, h.1.2, IH (f + 1) frames _ h.2⟩
+
+-- ════════════════════════════════════════════════════════════════════
+-- End to end on a concrete kernel
+-- ════════════════════════════════════════════════════════════════════
+
+/-- The two-local witness as data. -/
+def sumKernel : List WasmInstr :=
+  [.i32Const 0, .localSet 2, .i32Const 0, .localSet 3,
+   .block 0, .wloop 0,
+     .localGet 2, .localGet 1, .i32GeU, .brIf 1,
+     .localGet 3, .localGet 2, .i32Add, .localSet 3,
+     .localGet 2, .i32Const 1, .i32Add, .localSet 2,
+     .br 0,
+   .wend, .wend]
+
+def sumKernelWf : KernelInstrsW2 sumKernel :=
+  .sl_cons trivial (.sl_cons trivial (.sl_cons trivial (.sl_cons trivial
+    (.block_while_cons (pref := [.localGet 2, .localGet 1, .i32GeU])
+      (body2 := [.localGet 3, .localGet 2, .i32Add, .localSet 3,
+                 .localGet 2, .i32Const 1, .i32Add, .localSet 2]) (post := [])
+      (by simp [StraightLineInstrs, StraightLineInstr])
+      (by simp [StraightLineInstrs, StraightLineInstr])
+      rfl rfl .empty))))
+
+/-- Its function entry: the scalar param `n` at register 0; locals 2
+    and 3 are the declared ones. -/
+def sumEntry : LowerState :=
+  { LowerState.empty with nextReg := 1, localReg := [(1, 0)], localTy := [(1, .u32)] }
+
+def sumDecls : List (Nat × Quanta.KOps.Scalar) := [(2, .u32), (3, .u32)]
+
+/-- The label condition of the witness holds — by running the
+    lowerings. -/
+example : sumKernelWf.labelStableCheck 4 [] (seedLocals sumDecls sumEntry).1 = true := by
+  native_decide
+
+/-- The function-level apex INSTANTIATES on the witness: every
+    syntactic hypothesis is discharged by computation (the label
+    check, the declared-local coverage, the entry shape); what remains
+    is the semantic setting — a refined entry with zeroed locals, the
+    buffer bundles, and the two evaluations. -/
+example
+    (ws : WasmState) (kst : Quanta.KOps.State) (layout : BufferLayout)
+    (R : Refines ws sumEntry kst layout)
+    (h_no_branch : ws.branchTarget = none)
+    (h_no_halt : ws.halted = false)
+    (h_kst_no_broke : kst.broke = false)
+    (h_buf_locals : ∀ (ws_x : WasmState) (s_x : LowerState),
+        BufferLocalsWellFormed layout ws_x s_x)
+    (h_no_buf_stack : ∀ (s_x : LowerState), NoBufferPatternStack s_x)
+    (h_load_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        LoadAddressesInBounds layout s_x kst_x)
+    (h_store_bounds : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreAddressInBounds layout s_x kst_x)
+    (h_store_layout : ∀ (s_x : LowerState) (kst_x : Quanta.KOps.State),
+        StoreLayoutNoOverlap layout s_x kst_x)
+    (h_zero2 : ws.locals.get? 2 = some (.wI32 0))
+    (h_zero3 : ws.locals.get? 3 = some (.wI32 0))
+    (ws' : WasmState) (s' : LowerState) (ops : List KernelOp)
+    (hw : evalInstrs 4 ws sumKernel = some ws')
+    (hl : lowerInstrsP 4 [] ⟨(seedLocals sumDecls sumEntry).1, []⟩ sumKernel
+        = some (⟨s', []⟩, ops)) :
+    ∃ (kst' : Quanta.KOps.State) (F : Nat),
+      evalOps F kst ((seedLocals sumDecls sumEntry).2 ++ ops) = some kst' ∧
+      Refines ws' s' kst' layout ∧
+      BridgeClauses ws' kst' :=
+  framework_preservation_kernel_fn 3 [] ws sumEntry kst layout R h_no_branch h_no_halt
+    h_kst_no_broke h_buf_locals h_no_buf_stack h_load_bounds h_store_bounds h_store_layout
+    sumDecls
+    (by intro p hp; simp [sumDecls] at hp; rcases hp with rfl | rfl <;> rfl)
+    (by intro p hp; simp [sumDecls] at hp; rcases hp with rfl | rfl
+        · exact h_zero2
+        · exact h_zero3)
+    rfl rfl (by show ((sumEntry.localReg).map Prod.fst).Nodup; simp [sumEntry])
+    sumKernel sumKernelWf (by decide)
+    (KernelInstrsW2.labelStable_of_check _ _ _ _ (by native_decide))
+    (by intro j hj
+        have h_all : ∀ j ∈ writtenLocals sumKernel,
+            (j, Quanta.KOps.Scalar.u32) ∈ sumDecls := by native_decide
+        exact Or.inl ⟨.u32, h_all j hj⟩)
+    ws' s' ops hw hl
+
 /-- rustc's `i = 0; while i < n { i += 1 }` — the kernel of
     `crates/gpu/quanta-wasm-lowering/tests/lower_while_exit_flag.rs` and
     of the `while_exit_flag` pins — typechecks as a `KernelInstrsW2`. -/
