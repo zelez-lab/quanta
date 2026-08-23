@@ -252,7 +252,9 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     let storage_texture_kinds = storage_texture_kinds(&kernel_def);
     let write_mask = quanta_ir::field_write_mask(&kernel_def);
 
+    let wave_docs = forwarded_docs(&func, "Wave constructor");
     let wave_fn = quote! {
+        #[doc(hidden)]
         pub static #binary_name: #krate::KernelBinary = #krate::KernelBinary {
             spirv: #spirv_expr,
             metallib: #metallib_expr,
@@ -264,8 +266,10 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         // Embedded KernelDef IR — the JIT path when the driver's
         // artifact slot is empty (the software device always; any GPU
         // driver whose build-time artifact was not produced).
+        #[doc(hidden)]
         pub static #ir_static_name: &[u8] = #ir_lit;
 
+        #(#wave_docs)*
         pub fn #wave_fn_name #generics (device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
             let mut wave = match #binary_name.for_artifact(device.artifact_kind()) {
                 Some(binary) => device.wave(binary)?,
@@ -386,6 +390,26 @@ fn scalar_type_to_name(ty: quanta_ir::ScalarType) -> String {
     .to_string()
 }
 
+/// The kernel function's own `///` lines, to carry onto the items the
+/// macro emits in its place (the wave constructor, the dispatch
+/// wrapper): a crate with `#![deny(missing_docs)]` sees the author's
+/// docs, not an undocumented generated item. A kernel written without
+/// any gets one sentence naming it.
+pub(crate) fn forwarded_docs(func: &ItemFn, what: &str) -> Vec<proc_macro2::TokenStream> {
+    let docs: Vec<proc_macro2::TokenStream> = func
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .map(|a| quote! { #a })
+        .collect();
+    if docs.is_empty() {
+        let line = format!(" {what} for the `{}` kernel.", func.sig.ident);
+        vec![quote! { #[doc = #line] }]
+    } else {
+        docs
+    }
+}
+
 /// Emit JIT kernel: serialize KernelDef and embed it, generate runtime
 /// compilation function via `wave_jit`.
 fn emit_jit_kernel(
@@ -409,9 +433,12 @@ fn emit_jit_kernel(
     let write_mask = quanta_ir::field_write_mask(kernel_def);
     let krate = crate_path.types();
 
+    let wave_docs = forwarded_docs(func, "Wave constructor");
     let expanded = quote! {
+        #[doc(hidden)]
         pub static #def_name: &[u8] = #def_lit;
 
+        #(#wave_docs)*
         pub fn #func_name(device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
             let mut wave = device.wave_jit(#def_name)?;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];

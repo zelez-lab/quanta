@@ -194,6 +194,7 @@ pub(crate) fn emit_auto_dispatch(
     // Build the full generics for const generic forwarding
     let generics = &func.sig.generics;
 
+    let dispatch_docs = crate::kernel_macro::forwarded_docs(func, "Dispatch");
     let expanded = quote! {
         // Per-field type assertions — emitted at item scope so they
         // typecheck independently of the dispatch function body.
@@ -206,6 +207,7 @@ pub(crate) fn emit_auto_dispatch(
             #type_check_stmts
         )*
 
+        #(#dispatch_docs)*
         #[cfg(not(target_arch = "wasm32"))]
         pub fn #func_name #generics (
             device: &#krate::Gpu,

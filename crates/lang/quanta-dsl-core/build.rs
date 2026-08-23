@@ -118,6 +118,12 @@ fn stamp_build_rev() {
         let git_dir = native_path(&git_dir);
         exists_then_watch(git_dir.join("HEAD"));
         exists_then_watch(git_dir.join("FETCH_HEAD"));
+        // The index moves on every add / commit / checkout: it is what
+        // turns the `-dirty` flag on and off, and both ends of the
+        // handshake must re-stamp on the same events or a tree that
+        // just went dirty reads as a mismatch against a compiler
+        // stamped before the edit.
+        exists_then_watch(git_dir.join("index"));
     }
     if let Ok(common) = git(&["rev-parse", "--git-common-dir"]) {
         // git prints the common dir relative to the cwd (from this
