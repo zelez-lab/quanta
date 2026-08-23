@@ -43,7 +43,7 @@ fn err_text<T>(r: Result<T, AutogradError>) -> String {
 /// (the spec: 8-byte LE length, space-padded header, data).
 fn st_file(header: &str, data: &[u8]) -> Vec<u8> {
     let mut padded = header.as_bytes().to_vec();
-    while (padded.len() + 8) % 8 != 0 {
+    while !(padded.len() + 8).is_multiple_of(8) {
         padded.push(b' ');
     }
     let mut out = (padded.len() as u64).to_le_bytes().to_vec();

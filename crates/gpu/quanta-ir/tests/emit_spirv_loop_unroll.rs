@@ -56,8 +56,8 @@ fn find_loop_merge_control(spv: &[u8]) -> Option<u32> {
     // SPIR-V is little-endian 32-bit words. The first 5 words are the
     // module header; instructions follow.
     let mut words: Vec<u32> = Vec::with_capacity(spv.len() / 4);
-    for chunk in spv.chunks_exact(4) {
-        words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    for chunk in spv.as_chunks::<4>().0 {
+        words.push(u32::from_le_bytes(*chunk));
     }
     let mut i = 5;
     while i < words.len() {

@@ -268,8 +268,10 @@ fn texture_write_spirv_module_validates() {
 /// kernel really carries the Pack/UnpackUnorm4x8 boundary.
 fn spirv_has_ext_inst(spirv: &[u8], glsl_instr: u32) -> bool {
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     let mut i = 5;
     while i < words.len() {
@@ -363,8 +365,10 @@ fn r32f_bytes(vals: &[f32]) -> Vec<u8> {
 
 fn r32f_read(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| f32::from_le_bytes(c))
         .collect()
 }
 
@@ -456,8 +460,10 @@ fn host_pack(r: f32, g: f32, b: f32, a: f32) -> u32 {
 /// Read an RGBA8 texture's raw bytes back as [R,G,B,A] tuples per texel.
 fn rgba8_unpack(bytes: &[u8]) -> Vec<(u8, u8, u8, u8)> {
     bytes
-        .chunks_exact(4)
-        .map(|c| (c[0], c[1], c[2], c[3]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&[r, g, b, a]| (r, g, b, a))
         .collect()
 }
 
@@ -827,7 +833,7 @@ fn pack_unpack_roundtrip_byte_sweep() {
         inputs.push(r | (g << 8) | (b << 16) | (a << 24));
     }
     // Pad up to a multiple of 64 with zeros so the dispatch is clean.
-    while inputs.len() % 64 != 0 {
+    while !inputs.len().is_multiple_of(64) {
         inputs.push(0);
     }
     let n = inputs.len();

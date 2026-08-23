@@ -420,8 +420,10 @@ mod tests {
             };
             let spirv = quanta_ir::emit_spirv::emit(&def).expect("emit");
             let words: alloc::vec::Vec<u32> = spirv
-                .chunks_exact(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&c| u32::from_le_bytes(c))
                 .collect();
             assert_eq!(local_size(&words), Some(wg), "workgroup {:?}", wg);
         }
@@ -490,8 +492,10 @@ mod tests {
         };
         let spirv = quanta_ir::emit_spirv::emit(&def).expect("emit");
         let words: alloc::vec::Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let kinds = binding_kinds(&words);
         assert_eq!(
@@ -551,8 +555,10 @@ mod tests {
         };
         let spirv = quanta_ir::emit_spirv::emit(&def).expect("emit");
         let words: alloc::vec::Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let kinds = binding_kinds(&words);
         assert_eq!(
@@ -601,7 +607,7 @@ mod tests {
 
         // OpEntryPoint <model> %entry "main" <iface…>.
         // "main" packs into two words: 'm','a','i','n', then 0 terminator.
-        let name_w0 = u32::from_le_bytes([b'm', b'a', b'i', b'n']);
+        let name_w0 = u32::from_le_bytes(*b"main");
         let name_w1 = 0u32;
         let model = if wrong_model {
             EXECUTION_MODEL_VERTEX

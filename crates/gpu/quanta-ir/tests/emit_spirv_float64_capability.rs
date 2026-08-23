@@ -83,8 +83,10 @@ fn add_kernel(ty: ScalarType) -> KernelDef {
 fn words(spirv: &[u8]) -> Vec<u32> {
     assert_eq!(spirv.len() % 4, 0, "SPIR-V is not word-aligned");
     spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect()
 }
 

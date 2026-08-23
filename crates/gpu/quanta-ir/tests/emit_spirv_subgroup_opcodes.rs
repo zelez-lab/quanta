@@ -74,8 +74,10 @@ fn reduce_kernel(ty: ScalarType, max: bool) -> KernelDef {
 
 fn opcodes(spirv: &[u8]) -> Vec<u16> {
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     let mut ops = Vec::new();
     let mut i = 5;

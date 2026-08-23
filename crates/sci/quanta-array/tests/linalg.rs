@@ -398,10 +398,10 @@ fn host_batched(
             acc *= own[i];
         }
         let mut out = vec![0usize; rank];
-        for i in 0..rank {
+        for (i, o) in out.iter_mut().enumerate() {
             if i >= off {
                 let j = i - off;
-                out[i] = if own[j] == 1 { 0 } else { s[j] };
+                *o = if own[j] == 1 { 0 } else { s[j] };
             }
         }
         out

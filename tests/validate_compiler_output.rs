@@ -409,8 +409,10 @@ fn wire_compile_spirv(kernel: &quanta_ir::KernelDef) -> Vec<u8> {
 
 fn spirv_words(spirv: &[u8]) -> Vec<u32> {
     spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect()
 }
 

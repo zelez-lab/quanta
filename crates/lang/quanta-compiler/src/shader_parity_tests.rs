@@ -285,8 +285,10 @@ fn emit_wgsl(d: &ShaderDef) -> Result<String, String> {
 /// decoder in `emit_spirv/swizzle_tests.rs`.
 fn opcodes(spirv: &[u8]) -> Vec<u16> {
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     let mut ops = Vec::new();
     let mut i = 5;
@@ -2956,8 +2958,10 @@ fn frag_coord_spirv_builtin_wiring() {
     let d = def(&f);
     let spirv = emit_spirv(&d).expect("frag_coord fixture must emit");
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
 
     // One instruction-walk collecting the three facts.
@@ -3028,8 +3032,10 @@ fn u32_flat_wiring_spirv() {
     /// Decode a module into (opcode, operands) instructions.
     fn instrs(spirv: &[u8]) -> Vec<(u16, Vec<u32>)> {
         let words: Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let mut out = Vec::new();
         let mut i = 5;
@@ -3206,8 +3212,10 @@ fn varyings_interface_wiring_spirv() {
     /// Decode a module into (opcode, operands) instructions.
     fn instrs(spirv: &[u8]) -> Vec<(u16, Vec<u32>)> {
         let words: Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let mut out = Vec::new();
         let mut i = 5;
@@ -3405,8 +3413,10 @@ fn vertex_index_spirv_builtin_wiring() {
     let d = def(&f);
     let spirv = emit_spirv(&d).expect("vertex_index fixture must emit");
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
 
     // One instruction-walk collecting the facts.
@@ -3499,8 +3509,10 @@ fn for_loop_spirv_structured_wiring() {
     /// Decode a module into (opcode, operands) instructions.
     fn instrs(spirv: &[u8]) -> Vec<Inst> {
         let words: Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let mut out = Vec::new();
         let mut i = 5;

@@ -156,7 +156,7 @@ fn n_less_than_m_allowed_by_reflection() {
     // Minimal SPIR-V (v1.3) fragment module with two Location-decorated
     // Output variables in the entry interface: ids %10 (Location 0) and
     // %11 (Location 1).
-    let name_main = u32::from_le_bytes([b'm', b'a', b'i', b'n']);
+    let name_main = u32::from_le_bytes(*b"main");
     #[rustfmt::skip]
     let words: Vec<u32> = vec![
         0x0723_0203, 0x0001_0300, 0, 100, 0,   // header

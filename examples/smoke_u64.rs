@@ -39,8 +39,8 @@ fn main() {
     gpu.dispatch(&wave, count as u32).unwrap().wait().unwrap();
 
     let out = fo.read().unwrap();
-    println!("Input:  {:?}", &input);
-    println!("Output: {:?}", &out);
+    println!("Input:  {:?}", input);
+    println!("Output: {:?}", out);
 
     // Verify bit-exact: result[i] = (i * 3 + 7) as u32.
     for (i, &v) in out.iter().enumerate() {

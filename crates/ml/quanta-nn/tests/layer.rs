@@ -107,14 +107,13 @@ fn stack_trains_on_toy_regression() {
         .map(|i| ((i * 37 % 17) as f32 / 8.5) - 1.0)
         .collect();
     let ys: Vec<f32> = (0..n)
-        .map(|r| {
+        .flat_map(|r| {
             let x = &xs[r * 4..r * 4 + 4];
             [
                 0.5 * x[0] - 1.2 * x[1] + 0.3 * x[2],
                 0.8 * x[3] + 0.1 * x[0],
             ]
         })
-        .flatten()
         .collect();
 
     let lr = 0.002f32; // sum-loss over 32 outputs: keep the effective step sane

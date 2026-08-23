@@ -67,7 +67,8 @@ fn pos_uv_layout() -> Vec<quanta::VertexLayout> {
     }]
 }
 
-/// Render one textured-quad pass with the given sampler descriptor.
+/// Render one textured-quad pass with the given sampler descriptor. The
+/// viewport is the target's own extent, so it cannot drift from it.
 fn draw_textured(
     gpu: &quanta::Gpu,
     pipeline: &quanta::Pipeline,
@@ -75,8 +76,6 @@ fn draw_textured(
     tex: &quanta::Texture,
     target: &quanta::Texture,
     sampler: SamplerDesc,
-    w: u32,
-    h: u32,
 ) {
     let mut pulse = gpu
         .render(target)
@@ -86,7 +85,7 @@ fn draw_textured(
                 .with_load_op(LoadOp::Clear(Color::rgba(0.0, 0.0, 0.0, 1.0)))
                 .with_store_op(StoreOp::Store),
         ])
-        .viewport(0.0, 0.0, w as f32, h as f32)
+        .viewport(0.0, 0.0, target.width() as f32, target.height() as f32)
         .pipeline(pipeline)
         .vertices(0, vb)
         .texture(0, tex)
@@ -163,7 +162,7 @@ fn sampler_cache_dedups_across_draws_and_frames() {
     // SAME descriptor. Pre-cache leak: 200 live samplers. With the cache:
     // exactly one.
     for _ in 0..200 {
-        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_a, w, h);
+        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_a);
     }
 
     let after_same = gpu.debug_registry_counts().render_samplers;
@@ -183,7 +182,7 @@ fn sampler_cache_dedups_across_draws_and_frames() {
     // A DISTINCT descriptor (nearest filters) must add exactly one more.
     let desc_b = SamplerDesc::default().with_filters(Filter::Nearest, Filter::Nearest);
     for _ in 0..50 {
-        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_b, w, h);
+        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_b);
     }
     let after_two = gpu.debug_registry_counts().render_samplers;
     assert_eq!(
@@ -194,7 +193,7 @@ fn sampler_cache_dedups_across_draws_and_frames() {
 
     // Re-drawing with the first descriptor must NOT grow the cache.
     for _ in 0..50 {
-        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_a, w, h);
+        draw_textured(&gpu, &pipeline, &vb, &tex, &target, desc_a);
     }
     let after_reuse = gpu.debug_registry_counts().render_samplers;
     assert_eq!(

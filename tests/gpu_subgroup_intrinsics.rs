@@ -120,7 +120,7 @@ fn subgroup_id_is_the_lane_not_the_local_id() {
     let lanes = lanes.read().unwrap();
     let sizes = sizes.read().unwrap();
     let size = sizes[0] as usize;
-    assert!(size >= 1 && size <= N, "subgroup_size = {size}");
+    assert!((1..=N).contains(&size), "subgroup_size = {size}");
     for (i, &lane) in lanes.iter().enumerate() {
         assert!(
             (lane as usize) < size,
@@ -254,8 +254,10 @@ const CAP_GROUP_NON_UNIFORM_BALLOT: u32 = 64;
 
 fn spirv_words(spirv: &[u8]) -> Vec<u32> {
     spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect()
 }
 

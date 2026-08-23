@@ -9,8 +9,10 @@
 #![cfg(feature = "gpu")]
 
 use quanta::ScalarType;
+#[cfg(feature = "gpu-metal")]
 use quanta_blas::reference;
 
+#[cfg(feature = "gpu-metal")]
 fn mat(rows: usize, cols: usize, seed: u32) -> Vec<f32> {
     (0..rows * cols)
         .map(|i| (((i as u32).wrapping_mul(2654435761) ^ seed) % 13) as f32 - 6.0)

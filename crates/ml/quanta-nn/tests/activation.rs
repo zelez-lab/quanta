@@ -41,6 +41,10 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
         .fold(0.0, f32::max)
 }
 
+/// Agreement bound between a fused kernel and its composed oracle: the
+/// two paths differ only by reassociation of the same f32 arithmetic.
+const TOL: f32 = 1e-5;
+
 /// Run `fused(x)` and the composed oracle through weighted-sum losses and
 /// compare forward values and input gradients.
 fn compare_paths(
@@ -50,7 +54,6 @@ fn compare_paths(
     shape: &[usize],
     fused: impl Fn(&Tape<f32>, &quanta_array::autograd::Var<f32>) -> quanta_array::autograd::Var<f32>,
     composed: impl Fn(&Tape<f32>, &quanta_array::autograd::Var<f32>) -> quanta_array::autograd::Var<f32>,
-    tol: f32,
     label: &str,
 ) {
     let tape: Tape<f32> = Tape::new();
@@ -70,12 +73,12 @@ fn compare_paths(
     let c_dx = loss2.grad(&xv2).unwrap().to_vec().unwrap();
 
     assert!(
-        max_abs_diff(&f_out, &c_out) < tol,
+        max_abs_diff(&f_out, &c_out) < TOL,
         "{label}: fwd fused vs composed ({})",
         max_abs_diff(&f_out, &c_out)
     );
     assert!(
-        max_abs_diff(&f_dx, &c_dx) < tol,
+        max_abs_diff(&f_dx, &c_dx) < TOL,
         "{label}: dx fused vs composed ({})",
         max_abs_diff(&f_dx, &c_dx)
     );
@@ -94,7 +97,6 @@ fn softmax_and_log_softmax_match_composed() {
             &[n, c],
             |t, v| softmax_var(t, v).unwrap(),
             |_t, v| v.softmax().unwrap(),
-            1e-5,
             "softmax",
         );
         compare_paths(
@@ -104,7 +106,6 @@ fn softmax_and_log_softmax_match_composed() {
             &[n, c],
             |t, v| log_softmax_var(t, v).unwrap(),
             |_t, v| v.log_softmax().unwrap(),
-            1e-5,
             "log_softmax",
         );
     }
@@ -157,7 +158,6 @@ fn gelu_matches_composed_and_saturates() {
         &[8, 8],
         |t, v| gelu_var(t, v).unwrap(),
         |_t, v| v.gelu().unwrap(),
-        1e-5,
         "gelu",
     );
 
@@ -210,7 +210,6 @@ fn swiglu_matches_composed_split_oracle() {
                 let b = xt.narrow(h, h).unwrap().transpose(0, 1).unwrap();
                 a.silu().unwrap().mul(&b).unwrap()
             },
-            1e-5,
             "swiglu",
         );
     }

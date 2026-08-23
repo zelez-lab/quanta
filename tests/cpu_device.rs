@@ -1032,7 +1032,7 @@ fn with_device_env<T>(backend: Option<&str>, device: Option<&str>, body: impl Fn
 #[test]
 fn quanta_device_index_selects_from_the_discovered_list() {
     let _guard = env_lock();
-    let gpu = with_device_env(Some("cpu"), Some("0"), || quanta::init())
+    let gpu = with_device_env(Some("cpu"), Some("0"), quanta::init)
         .expect("QUANTA_DEVICE=0 must select the first discovered device");
     assert_eq!(gpu.name(), "Quanta CPU (software)");
 }
@@ -1041,7 +1041,7 @@ fn quanta_device_index_selects_from_the_discovered_list() {
 #[test]
 fn quanta_device_name_substring_selects_case_insensitively() {
     let _guard = env_lock();
-    let gpu = with_device_env(Some("cpu"), Some("SOFTWARE"), || quanta::init())
+    let gpu = with_device_env(Some("cpu"), Some("SOFTWARE"), quanta::init)
         .expect("QUANTA_DEVICE=SOFTWARE must match `Quanta CPU (software)`");
     assert_eq!(gpu.name(), "Quanta CPU (software)");
 }
@@ -1052,7 +1052,7 @@ fn quanta_device_name_substring_selects_case_insensitively() {
 fn quanta_device_no_match_is_a_named_error_listing_devices() {
     let _guard = env_lock();
     for bad in ["no-such-gpu", "7"] {
-        let err = match with_device_env(Some("cpu"), Some(bad), || quanta::init()) {
+        let err = match with_device_env(Some("cpu"), Some(bad), quanta::init) {
             Ok(g) => panic!("QUANTA_DEVICE={bad} must not select `{}`", g.name()),
             Err(e) => e,
         };
@@ -1073,7 +1073,7 @@ fn quanta_device_no_match_is_a_named_error_listing_devices() {
 #[test]
 fn quanta_device_blank_is_unset() {
     let _guard = env_lock();
-    let gpu = with_device_env(Some("cpu"), Some("  "), || quanta::init()).expect("blank = unset");
+    let gpu = with_device_env(Some("cpu"), Some("  "), quanta::init).expect("blank = unset");
     assert_eq!(gpu.name(), "Quanta CPU (software)");
 }
 
@@ -1094,7 +1094,7 @@ fn quanta_backend_cpu_yields_only_the_cpu_device() {
         "QUANTA_BACKEND=cpu must yield exactly the CPU device"
     );
     // init() takes the first (only) device.
-    let gpu = with_discovery_env(Some("cpu"), None, || quanta::init())
+    let gpu = with_discovery_env(Some("cpu"), None, quanta::init)
         .expect("QUANTA_BACKEND=cpu must initialize the CPU device");
     assert_eq!(gpu.name(), "Quanta CPU (software)");
 }
@@ -1117,7 +1117,7 @@ fn quanta_backend_is_case_insensitive() {
 #[test]
 fn quanta_backend_bogus_is_a_named_error() {
     let _guard = env_lock();
-    let err = match with_discovery_env(Some("bogus"), None, || quanta::init()) {
+    let err = match with_discovery_env(Some("bogus"), None, quanta::init) {
         Ok(_) => panic!("an unrecognized QUANTA_BACKEND must fail init()"),
         Err(e) => e,
     };

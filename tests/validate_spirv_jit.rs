@@ -125,8 +125,10 @@ fn jit_spirv_validates_loop_kernels() {
 fn subgroup_size_is_loaded_not_constant() {
     let bytes = emit("report_subgroup_size", REPORT_SUBGROUP_SIZE_DEF);
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     const OP_CAPABILITY: u32 = 17;
     const OP_DECORATE: u32 = 71;

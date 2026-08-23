@@ -245,8 +245,10 @@ mod tests {
     /// Decode the module into `(opcode, operands)` instructions.
     fn decode(spirv: &[u8]) -> Vec<(u16, Vec<u32>)> {
         let words: Vec<u32> = spirv
-            .chunks_exact(4)
-            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| u32::from_le_bytes(c))
             .collect();
         let mut out = Vec::new();
         let mut i = 5; // skip header

@@ -118,8 +118,10 @@ fn spirv_emits_and_validates() {
 
     // OpAtomicIAdd = 234. Scan the word stream for it.
     let words: Vec<u32> = spv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     let mut found_atomic = false;
     let mut i = 5; // skip header

@@ -22,7 +22,7 @@
 //!      with loop-carried live locals  (probe shape C — the miscompile)
 //!   6. a sentinel loop whose counter is ALSO read after the loop
 //!      (induction-fusion bait: sentinel counter must not entangle the
-//!       post-loop read)
+//!      post-loop read)
 //!   7. the tile-rasterizer fine-coverage shape: a per-pixel segment-range
 //!      loop whose winding-accumulation guard ladder lowers to inverted-
 //!      guard continuation-flag cascades, plus a count-down loop-crossing
@@ -450,7 +450,7 @@ fn nested_ptr_deposit_matches_host() {
         wave.set_value(2, n_seg);
         wave.set_value(3, 1u32);
         wave.set_value(4, TILES_X_4);
-        let quarks = ((n_seg + 63) / 64) * 64;
+        let quarks = n_seg.div_ceil(64) * 64;
         gpu.dispatch(&wave, quarks).unwrap().wait().unwrap();
         let got = counts.read().unwrap();
         let want = bin_counts_ref(&segs, TILES_X_4, 4);
@@ -479,7 +479,7 @@ fn double_sentinel_bin_matches_host() {
         wave.bind(2, &lists);
         wave.set_value(3, n_seg);
         wave.set_value(4, 1u32);
-        let quarks = ((n_seg + 63) / 64) * 64;
+        let quarks = n_seg.div_ceil(64) * 64;
         gpu.dispatch(&wave, quarks).unwrap().wait().unwrap();
         let got_counts = counts.read().unwrap();
         let got_lists = lists.read().unwrap();
@@ -796,7 +796,7 @@ fn k3_fine_coverage_matches_host() {
         wave.set_value(9, TILE);
         wave.set_value(10, TILES_X);
         wave.set_value(11, MAX_SEGS);
-        let quarks = ((total as u32 + 63) / 64) * 64;
+        let quarks = (total as u32).div_ceil(64) * 64;
         gpu.dispatch(&wave, quarks).unwrap().wait().unwrap();
         let got = cov_f.read().unwrap();
 

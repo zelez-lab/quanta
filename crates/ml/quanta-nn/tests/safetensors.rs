@@ -26,7 +26,7 @@ fn err_text<T>(r: Result<T, quanta_array::autograd::AutogradError>) -> String {
 fn reference_bytes() -> Vec<u8> {
     let header = br#"{"w":{"dtype":"F32","shape":[2,2],"data_offsets":[0,16]}}"#;
     let mut padded = header.to_vec();
-    while (padded.len() + 8) % 8 != 0 {
+    while !(padded.len() + 8).is_multiple_of(8) {
         padded.push(b' ');
     }
     let mut out = (padded.len() as u64).to_le_bytes().to_vec();
@@ -106,7 +106,7 @@ fn f16_and_bf16_upconvert() {
     let halves: [u16; 3] = [0x3C00, 0xC100, 0x0001];
     let header = br#"{"h":{"dtype":"F16","shape":[3],"data_offsets":[0,6]}}"#;
     let mut padded = header.to_vec();
-    while (padded.len() + 8) % 8 != 0 {
+    while !(padded.len() + 8).is_multiple_of(8) {
         padded.push(b' ');
     }
     let mut bytes = (padded.len() as u64).to_le_bytes().to_vec();
@@ -123,7 +123,7 @@ fn f16_and_bf16_upconvert() {
     // BF16 is the top half of f32: 3.140625 = 0x4049.
     let header = br#"{"b":{"dtype":"BF16","shape":[1],"data_offsets":[0,2]}}"#;
     let mut padded = header.to_vec();
-    while (padded.len() + 8) % 8 != 0 {
+    while !(padded.len() + 8).is_multiple_of(8) {
         padded.push(b' ');
     }
     let mut bytes = (padded.len() as u64).to_le_bytes().to_vec();
@@ -174,7 +174,7 @@ fn loud_errors_name_the_problem() {
     // An unsupported dtype names the tensor.
     let header = br#"{"q":{"dtype":"I64","shape":[1],"data_offsets":[0,8]}}"#;
     let mut padded = header.to_vec();
-    while (padded.len() + 8) % 8 != 0 {
+    while !(padded.len() + 8).is_multiple_of(8) {
         padded.push(b' ');
     }
     let mut bytes = (padded.len() as u64).to_le_bytes().to_vec();

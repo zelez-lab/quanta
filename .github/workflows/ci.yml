@@ -651,6 +651,15 @@ jobs:
       # CI diff. The cache key below is keyed on this, so a bump
       # rebuilds the binary once and reuses it after.
       SEMVER_CHECKS_VERSION: "0.50.0"
+      # Same hermetic stance as host-tests, for the same reason: linting
+      # the test and example targets expands the DSL macros, and this
+      # lane builds no compiler. Left to resolve one, the macros would
+      # download the version-keyed release binary — stamped with the
+      # release tag's rev, so a proven mismatch against any other commit
+      # and a hard error. Without a compiler they emit stubs, which is
+      # all a lint pass needs.
+      QUANTA_NO_DOWNLOAD: "1"
+      QUANTA_ACCEPT_STALE_COMPILER: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -669,8 +678,11 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # `--all-targets`: tests, examples and benches are code too — the
+      # lint-clean lib said nothing about them, and a toolchain bump lands
+      # its new lints there first.
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       # ─── Advisory only — never a gate ──────────────────────────────
       # Pre-1.0 there is no backward-compatibility promise (MAINTAINERS.md,

@@ -55,8 +55,10 @@ fn assert_spirv_val(spirv: &[u8]) {
 fn has_u32_constant(spirv: &[u8], value: u32) -> bool {
     const OP_CONSTANT: u32 = 43;
     let words: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     let mut i = 5; // skip header
     while i < words.len() {
