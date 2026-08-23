@@ -451,7 +451,7 @@ the up-front check fail explicitly rather than silently.
 
 | Feature | Vulkan | Metal | WebGPU | CPU |
 |---------|--------|-------|--------|-----|
-| Compute / draw / blit | ✅ native | ✅ native | ✅ native | ✅ software |
+| Compute / draw / blit | ✅ native | ✅ native | ✅ native | compute + blit ✅ software; draw `NotSupported` (no CPU rasterizer — render passes refuse) |
 | Async copy | `NotSupported` | `NotSupported` | `NotSupported` | ✅ memcpy on the host thread |
 | Multi-queue | ✅ per family | ✅ per family | single queue | software FIFO |
 | Tessellation | ✅ device-feature gated; software MVP, native render-pipeline pending | ✅ MTLBuffer-backed; native draw pending | `NotSupported` | ✅ full software |

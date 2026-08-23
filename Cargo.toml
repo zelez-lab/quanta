@@ -8,6 +8,7 @@ members = [
     "crates/lang/quanta-render-dsl",
     "crates/lang/quanta-compiler",
     "crates/tools/quanta-bench",
+    "crates/tools/quanta-conform",
     "crates/tools/quanta-cli",
     "crates/lang/quanta-codegen",
     "crates/gpu/quanta-wasm-lowering",

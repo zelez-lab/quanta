@@ -1,0 +1,20 @@
+[package]
+name = "quanta-conform"
+version = "0.1.0-alpha.13"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "quanta-conform"
+path = "src/bin/main.rs"
+
+[dependencies]
+quanta = { path = "../../..", default-features = false, features = ["software", "render", "compute", "jit"] }
+
+[features]
+# The native backends the runner can be built with; the software
+# reference is always in.
+metal = ["quanta/metal"]
+vulkan = ["quanta/vulkan"]
