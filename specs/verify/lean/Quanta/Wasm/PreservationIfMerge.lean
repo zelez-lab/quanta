@@ -26,6 +26,18 @@ namespace Quanta.Wasm
 open Quanta.KOps (KernelOp evalOps regLookup)
 open Quanta.Semantics.Cpu
 
+/-- `popSym` only pops the symbolic stack; both local maps ride. -/
+theorem popSym_locals {s s' : LowerState} {sv : SymVal}
+    (h : s.popSym = some (sv, s')) :
+    s'.localReg = s.localReg ∧ s'.localTy = s.localTy := by
+  unfold LowerState.popSym at h
+  rcases hs : s.stack with _ | ⟨sv', rs⟩
+  · rw [hs] at h; simp at h
+  · rw [hs] at h; simp at h
+    obtain ⟨_, hs_eq⟩ := h
+    rw [← hs_eq]
+    exact ⟨rfl, rfl⟩
+
 /-- `wif _ :: rest` preservation with the if-close merge — L16.
     The general composer: the arms may SET LOCALS and STORE TO
     BUFFERS. Where `…_fallthrough_noLocalSet` pinned the arms with
@@ -82,6 +94,7 @@ theorem preservation_evalInstrs_cons_wif_merge
         (_hl_b : lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps)),
       ws'_b.branchTarget = none ∧ ws'_b.halted = false)
     (then_lowering_frame : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        s_b.localReg = s.localReg → s_b.localTy = s.localTy →
         lowerInstrs bt (.wif :: frames) s_b thenBody = some (s'_b, bodyOps) →
         s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
         s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
@@ -110,6 +123,7 @@ theorem preservation_evalInstrs_cons_wif_merge
         (_hl_b : lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps)),
       ws'_b.branchTarget = none ∧ ws'_b.halted = false)
     (else_lowering_frame : ∀ {s_b s'_b : LowerState} {bodyOps : List KernelOp},
+        s_b.localReg = s.localReg → s_b.localTy = s.localTy →
         lowerInstrs bt (.wif :: frames) s_b elseBody = some (s'_b, bodyOps) →
         s'_b.localReg = s_b.localReg ∧ s'_b.localTy = s_b.localTy ∧
         s'_b.stack = s_b.stack ∧ s'_b.bufferSlots = s_b.bufferSlots ∧
@@ -159,8 +173,19 @@ theorem preservation_evalInstrs_cons_wif_merge
         -- on s2, the restore is idempotent on those fields (s2.localReg already
         -- equals s_cast.localReg). The restored state thus equals s2.
         -- Case on elseBody's lowering.
+        have h_s0_locals : s0.localReg = s.localReg ∧ s0.localTy = s.localTy :=
+          popSym_locals hpop
+        have h_s1_locals := commit_preserves_locals hcommit
+        have h_cast_lr :
+            ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg = s.localReg := by
+          show s1.localReg = s.localReg
+          rw [h_s1_locals.1, h_s0_locals.1]
+        have h_cast_lt :
+            ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy = s.localTy := by
+          show s1.localTy = s.localTy
+          rw [h_s1_locals.2, h_s0_locals.2]
         obtain ⟨h_s2_lr, h_s2_lt, h_s2_stack, h_s2_bs, h_s2_nr⟩ :=
-          then_lowering_frame hlt
+          then_lowering_frame h_cast_lr h_cast_lt hlt
         -- The restored state is NOT s2 in general (thenBody's per-set
         -- currentReg bindings die here; localReg/localTy reset to the
         -- entry snapshot). Keep the record and thread it.
@@ -176,8 +201,22 @@ theorem preservation_evalInstrs_cons_wif_merge
           rcases else_pair with ⟨s3, elseOps⟩
           simp [hle] at hl
           -- After elseBody, restore again to s_cast snapshot.
+          have h_s2R_lr :
+              ({ s2 with
+                  localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
+                  localTy := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy,
+                  currentReg :=
+                    ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg }
+                : LowerState).localReg = s.localReg := h_cast_lr
+          have h_s2R_lt :
+              ({ s2 with
+                  localReg := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localReg,
+                  localTy := ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).localTy,
+                  currentReg :=
+                    ({ s1 with nextReg := s1.nextReg + 1 } : LowerState).currentReg }
+                : LowerState).localTy = s.localTy := h_cast_lt
           obtain ⟨h_s3_lr, h_s3_lt, h_s3_stack, h_s3_bs, h_s3_nr⟩ :=
-            else_lowering_frame hle
+            else_lowering_frame h_s2R_lr h_s2R_lt hle
           cases hlp : lowerInstrs bt frames { s3 with currentReg := [] } post with
           | none => simp [hlp] at hl
           | some post_pair =>
