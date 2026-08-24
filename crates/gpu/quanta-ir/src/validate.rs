@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_print_rejected_on_gpu_backends_only() {
+    fn debug_print_rejected_on_wgsl_only() {
         let k = kernel_with_body(
             "dbg",
             vec![KernelOp::DebugPrint {
@@ -670,13 +670,14 @@ mod tests {
                 ty: ScalarType::U32,
             }],
         );
-        for caps in [&METAL, &VULKAN, &WEBGPU] {
-            let report = validate_for(caps, &k);
-            assert_eq!(report.issues.len(), 1, "{}", caps.backend.name());
-            assert!(report.issues[0].reason.contains("debug print"));
+        // WGSL has no record-buffer scheme yet — the one remaining refusal.
+        let report = validate_for(&WEBGPU, &k);
+        assert_eq!(report.issues.len(), 1, "{}", WEBGPU.backend.name());
+        assert!(report.issues[0].reason.contains("debug print"));
+        // CPU prints inline; Metal and Vulkan drain the record buffer.
+        for caps in [&CPU, &METAL, &VULKAN] {
+            assert!(validate_for(caps, &k).is_ok(), "{}", caps.backend.name());
         }
-        // The CPU executor prints; it is the one honest home for the op.
-        assert!(validate_for(&CPU, &k).is_ok());
     }
 
     #[test]
