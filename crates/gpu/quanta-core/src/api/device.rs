@@ -734,6 +734,12 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     // defaults return NotSupported so the typed wrapper surfaces a
     // clear error on platforms without a dedicated DMA engine.
 
+    /// Whether this backend runs async-copy queues (step 044).
+    /// Default false; backends override alongside the methods below.
+    fn supports_async_copy(&self) -> bool {
+        false
+    }
+
     /// Allocate a fresh async-copy queue. Default returns
     /// "not yet implemented".
     fn async_copy_create(&self) -> Result<u64, QuantaError> {

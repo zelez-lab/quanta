@@ -1016,6 +1016,66 @@ impl GpuDevice for MetalDevice {
         Ok(())
     }
 
+    // === Async memory copy (step 044) ===
+
+    fn supports_async_copy(&self) -> bool {
+        true
+    }
+
+    fn async_copy_create(&self) -> Result<u64, QuantaError> {
+        // A real, dedicated MTLCommandQueue: blits submitted on it can
+        // overlap the main queue's compute work — this is the
+        // copy-engine path, not a logical alias.
+        self.create_queue(QueueType::Transfer)
+    }
+
+    fn async_copy_submit(
+        &self,
+        queue: u64,
+        dst: u64,
+        src: u64,
+        size: usize,
+    ) -> Result<(), QuantaError> {
+        let q = *self
+            .queues
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .get(&queue)
+            .ok_or_else(|| QuantaError::not_found("async copy queue not found"))?;
+        let buffers = self
+            .buffers
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let src_buf = *buffers
+            .get(&src)
+            .ok_or_else(|| QuantaError::invalid_param("bad src handle"))?;
+        let dst_buf = *buffers
+            .get(&dst)
+            .ok_or_else(|| QuantaError::invalid_param("bad dst handle"))?;
+        drop(buffers);
+        unsafe {
+            let cmd = ffi::msg_id(q, b"commandBuffer\0");
+            let blit = ffi::msg_id(cmd, b"blitCommandEncoder\0");
+            ffi::msg_copy_buffer(blit, src_buf, 0, dst_buf, 0, size as u64);
+            ffi::msg_void(blit, b"endEncoding\0");
+            ffi::msg_void(cmd, b"commit\0");
+            // Synchronous completion: the wrapper's contract is that
+            // the data is visible on return (the CPU tier copies
+            // serially); overlapped submit returning a Pulse is the
+            // follow-up tier.
+            ffi::msg_void(cmd, b"waitUntilCompleted\0");
+        }
+        Ok(())
+    }
+
+    fn async_copy_destroy(&self, queue: u64) -> Result<(), QuantaError> {
+        self.queues
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&queue);
+        Ok(())
+    }
+
     // === Sparse textures (M5.1) ===
 
     fn sparse_texture_create(&self, desc: &TextureDesc) -> Result<u64, QuantaError> {

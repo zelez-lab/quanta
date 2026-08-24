@@ -452,7 +452,7 @@ the up-front check fail explicitly rather than silently.
 | Feature | Vulkan | Metal | WebGPU | CPU |
 |---------|--------|-------|--------|-----|
 | Compute / draw / blit | ✅ native | ✅ native | ✅ native | compute + blit ✅ software; draw `NotSupported` (no CPU rasterizer — render passes refuse) |
-| Async copy | `NotSupported` | `NotSupported` | `NotSupported` | ✅ memcpy on the host thread |
+| Async copy | ✅ real `vkCmdCopyBuffer` submission (same VkQueue today — one family at device creation; a dedicated transfer family is the follow-up DMA path) | ✅ dedicated `MTLCommandQueue` + blit encoder (can overlap main-queue compute) | `NotSupported` | ✅ recorded + serial memcpy |
 | Dynamic shared memory | ✅ via late binding (JIT-only: `wave_jit_shared` resolves `SharedDeclDyn` into a sized `SharedDecl` at wave creation — every backend runs its fixed-shared path; unresolved dyn refused at validation) | ✅ same | ✅ same (WGSL fixed-size workgroup array) | ✅ same |
 | Multi-queue | ✅ per family | ✅ per family | single queue | software FIFO |
 | Tessellation | ✅ device-feature gated; software MVP, native render-pipeline pending | ✅ MTLBuffer-backed; native draw pending | `NotSupported` | ✅ full software |

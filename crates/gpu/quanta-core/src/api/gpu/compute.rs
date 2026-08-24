@@ -262,6 +262,14 @@ impl Gpu {
     /// [`AsyncCopyQueue`](crate::AsyncCopyQueue) for off-graphics
     /// DMA copies. Step 044.
     ///
+    /// Whether this backend runs async-copy queues — Metal (a
+    /// dedicated blit queue), Vulkan and the CPU device say yes;
+    /// WebGPU not yet.
+    pub fn supports_async_copy(&self) -> bool {
+        self.ctx.device.supports_async_copy()
+    }
+
+    /// Allocate an async-copy queue for buffer-to-buffer transfers.
     /// Backends without a dedicated transfer engine return
     /// `NotSupported` here so user code can fall back to the main
     /// queue.

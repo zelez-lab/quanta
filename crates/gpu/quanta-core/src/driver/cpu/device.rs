@@ -1288,6 +1288,10 @@ impl GpuDevice for CpuDevice {
     // existing field_copy_bytes path; the recorded sequence
     // satisfies T7801 directly.
 
+    fn supports_async_copy(&self) -> bool {
+        true
+    }
+
     fn async_copy_create(&self) -> Result<u64, QuantaError> {
         let handle = self.alloc_handle();
         self.async_copy_queues.lock().unwrap().insert(

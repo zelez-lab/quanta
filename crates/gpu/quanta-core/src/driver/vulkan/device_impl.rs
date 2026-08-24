@@ -617,6 +617,48 @@ impl GpuDevice for VulkanDevice {
         Ok(handle)
     }
 
+    // === Async memory copy (step 044) ===
+    //
+    // The device is created with one queue family and one VkQueue, so
+    // the "async" queue is the same underlying queue today — the copy
+    // itself is a real vkCmdCopyBuffer submission. Requesting a
+    // dedicated transfer family at device creation is the follow-up
+    // that makes it a genuine DMA path.
+
+    fn supports_async_copy(&self) -> bool {
+        true
+    }
+
+    fn async_copy_create(&self) -> Result<u64, QuantaError> {
+        self.create_queue(QueueType::Transfer)
+    }
+
+    fn async_copy_submit(
+        &self,
+        queue: u64,
+        dst: u64,
+        src: u64,
+        size: usize,
+    ) -> Result<(), QuantaError> {
+        if !self
+            .queues
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .contains_key(&queue)
+        {
+            return Err(QuantaError::not_found("async copy queue not found"));
+        }
+        self.field_copy_bytes_impl(dst, src, size)
+    }
+
+    fn async_copy_destroy(&self, queue: u64) -> Result<(), QuantaError> {
+        self.queues
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&queue);
+        Ok(())
+    }
+
     fn queue_signal(&self, _queue: u64, _semaphore: u64) -> Result<(), QuantaError> {
         // Full implementation would use VkSemaphore for cross-queue sync.
         // Single-queue signal is implicit in Vulkan submit ordering.
