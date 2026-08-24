@@ -130,6 +130,9 @@ theorem preservation_evalInstrs_cons_wif_merge
         s_b.nextReg ≤ s'_b.nextReg)
     (post_preserves : ∀ {ws_p : WasmState} {s_p : LowerState}
         {kst_p : Quanta.KOps.State}
+        (_h_lr_p : s_p.localReg = s.localReg)
+        (_h_lt_p : s_p.localTy = s.localTy)
+        (_h_cr_p : s_p.currentReg = [])
         (_R_p : Refines ws_p s_p kst_p layout)
         (_h_nb_p : ws_p.branchTarget = none)
         (_h_nh_p : ws_p.halted = false)
@@ -217,6 +220,19 @@ theorem preservation_evalInstrs_cons_wif_merge
                 : LowerState).localTy = s.localTy := h_cast_lt
           obtain ⟨h_s3_lr, h_s3_lt, h_s3_stack, h_s3_bs, h_s3_nr⟩ :=
             else_lowering_frame h_s2R_lr h_s2R_lt hle
+          -- The loop-close entry is tied to the composer's own entry:
+          -- the stable layer came back through restore + else frame,
+          -- the type map likewise, the per-frame map is cleared.
+          have h_close_lr :
+              ({ s3 with currentReg := [] } : LowerState).localReg = s.localReg := by
+            show s3.localReg = s.localReg
+            rw [h_s3_lr]; exact h_cast_lr
+          have h_close_lt :
+              ({ s3 with currentReg := [] } : LowerState).localTy = s.localTy := by
+            show s3.localTy = s.localTy
+            rw [h_s3_lt]; exact h_cast_lt
+          have h_close_cr :
+              ({ s3 with currentReg := [] } : LowerState).currentReg = [] := rfl
           cases hlp : lowerInstrs bt frames { s3 with currentReg := [] } post with
           | none => simp [hlp] at hl
           | some post_pair =>
@@ -435,7 +451,8 @@ theorem preservation_evalInstrs_cons_wif_merge
                     -- hw: evalInstrs bt ws_ab post = some ws'.
                     have h_ab_broke : kst_ab.broke = false := h_bridge_b.right h_ab_nb
                     obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
-                      post_preserves R_b.clear_current h_ab_nb h_ab_nh h_ab_broke hw hlp
+                      post_preserves h_close_lr h_close_lt h_close_cr
+                        R_b.clear_current h_ab_nb h_ab_nh h_ab_broke hw hlp
                     -- IR composition.
                     let F : Nat := max (max F_b F_p) 1
                     refine ⟨kst', F, ?_, ?_, h_bridge_p⟩
@@ -552,7 +569,8 @@ theorem preservation_evalInstrs_cons_wif_merge
                         intro p q hp
                         simp at hp
                     obtain ⟨kst', F_p, h_ev_p, R_p, h_bridge_p⟩ :=
-                      post_preserves R_b_at_s3c h_ab_nb h_ab_nh h_ab_broke hw hlp
+                      post_preserves h_close_lr h_close_lt h_close_cr
+                        R_b_at_s3c h_ab_nb h_ab_nh h_ab_broke hw hlp
                     -- IR composition.
                     let F : Nat := max (max F_b F_p) 1
                     refine ⟨kst', F, ?_, ?_, h_bridge_p⟩
