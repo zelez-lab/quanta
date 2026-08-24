@@ -184,6 +184,7 @@ jobs:
       - name: Deferred-feature wrapper tests (software lane)
         run: |
           cargo test --test feature_support_queries --features software --no-default-features
+          cargo test --test gpu_dyn_shared --features software,compute,jit --no-default-features
           cargo test --test async_copy_basic --features software --no-default-features
           cargo test --test printf_basic --features software --no-default-features
 
@@ -276,7 +277,7 @@ jobs:
         run: cargo build
 
       - name: GPU compute tests
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_int_div_zero --test gpu_saturation --test gpu_f16 --test gpu_subgroup_intrinsics --test gpu_subgroup_intrinsics_typed -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_shared --test gpu_dyn_shared --test gpu_int_div_zero --test gpu_saturation --test gpu_f16 --test gpu_subgroup_intrinsics --test gpu_subgroup_intrinsics_typed -- --test-threads=1
 
       - name: GPU texture tests
         run: cargo test --test gpu_texture -- --test-threads=1

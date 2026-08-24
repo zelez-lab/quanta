@@ -453,6 +453,7 @@ the up-front check fail explicitly rather than silently.
 |---------|--------|-------|--------|-----|
 | Compute / draw / blit | ✅ native | ✅ native | ✅ native | compute + blit ✅ software; draw `NotSupported` (no CPU rasterizer — render passes refuse) |
 | Async copy | `NotSupported` | `NotSupported` | `NotSupported` | ✅ memcpy on the host thread |
+| Dynamic shared memory | ✅ via late binding (JIT-only: `wave_jit_shared` resolves `SharedDeclDyn` into a sized `SharedDecl` at wave creation — every backend runs its fixed-shared path; unresolved dyn refused at validation) | ✅ same | ✅ same (WGSL fixed-size workgroup array) | ✅ same |
 | Multi-queue | ✅ per family | ✅ per family | single queue | software FIFO |
 | Tessellation | ✅ device-feature gated; software MVP, native render-pipeline pending | ✅ MTLBuffer-backed; native draw pending | `NotSupported` | ✅ full software |
 | Mesh shaders | ✅ extension-gated; software MVP, native pipeline pending | ⚠️ pipeline object family-gated; dispatch `NotSupported` | `NotSupported` | ⚠️ software MVP lifecycle only (`mesh_pipeline_create` / `mesh_dispatch` record limits + dispatch order, no rasterization); a render `PipelineDesc` with a `mesh_shader` desc is rejected `NotSupported` ("CPU has no rasterizer"), and the `dispatch_mesh` render entry point returns `NotSupported` as well |

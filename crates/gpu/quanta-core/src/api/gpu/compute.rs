@@ -30,6 +30,28 @@ impl Gpu {
         }
     }
 
+    /// JIT-compile a kernel that declares `#[quanta::shared(dyn)]`,
+    /// binding `dynamic_shared_bytes` of workgroup memory to it.
+    ///
+    /// The size is fixed at wave creation (this is why dynamic shared
+    /// memory is JIT-only: the size late-binds into the kernel IR —
+    /// the dynamic declaration becomes an ordinary sized shared array
+    /// — and every backend runs it through its existing fixed-shared
+    /// path). Distinct sizes create distinct cached pipelines; reusing
+    /// a size hits the wave cache like any other kernel.
+    pub fn wave_jit_shared(
+        &self,
+        kernel_def_bytes: &[u8],
+        dynamic_shared_bytes: u32,
+    ) -> Result<Wave, QuantaError> {
+        let mut def = quanta_ir::deserialize_kernel(kernel_def_bytes)
+            .map_err(QuantaError::compilation_failed)?;
+        quanta_ir::dyn_shared::resolve_dynamic_shared(&mut def, dynamic_shared_bytes)
+            .map_err(QuantaError::invalid_param)?;
+        let patched = quanta_ir::serialize_kernel(&def);
+        self.wave_jit(&patched)
+    }
+
     /// JIT-compile a kernel from its serialized KernelDef at runtime.
     ///
     /// Used by `#[quanta::kernel(jit)]` — the kernel IR is embedded in the

@@ -584,6 +584,31 @@ let name: [T; SIZE];
 - Only valid inside `#[quanta::kernel]` bodies
 - Size is shared across all quarks in the workgroup
 
+#### Dynamic size: `#[quanta::shared(dyn)]`
+
+```rust
+#[quanta::kernel(jit)]
+fn reduce(input: &[f32], output: &mut [f32]) {
+    #[quanta::shared(dyn)]
+    let scratch: [f32];       // unsized — the block size binds later
+    // ...
+}
+
+// the generated constructor grows the size parameter:
+let wave = reduce(&gpu, 64 * 4)?;   // 64 f32 lanes
+```
+
+The size binds at **wave creation** and late-binds into the IR as an
+ordinary sized `SharedDecl` — every backend then runs its existing
+fixed-shared path, and distinct sizes are distinct cached pipelines.
+**JIT-only** (the macro enforces the `jit` flag): the AOT route ships
+pre-emitted artifacts with nowhere for a late size to act. Element
+type must be `f32` / `u32` / `i32` (the shared load/store surface);
+exactly one dynamic array per kernel; the manual entry point is
+`gpu.wave_jit_shared(NAME_DEF, bytes)`. A dyn-shared kernel created
+through plain `wave_jit` is refused at validation — never a silently
+mis-sized buffer.
+
 #### Example
 
 ```rust

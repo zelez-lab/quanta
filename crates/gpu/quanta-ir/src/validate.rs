@@ -198,7 +198,7 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
             report.issues.push(ValidationIssue {
                 location: format!("{}: {}", loc, op_name(op)),
                 ty: *ty,
-                reason: "dynamic shared memory: its size reaches no dispatch on any backend (no setThreadgroupMemoryLength / SPIR-V spec constant); declare a sized `#[shared]` array",
+                reason: "unresolved dynamic shared memory: create the wave with `wave_jit_shared(bytes, size)` so the size late-binds (a plain wave_jit gives the declaration no size)",
             });
         }
         // Cooperative matrices have native lowerings on Metal

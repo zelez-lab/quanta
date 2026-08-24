@@ -327,7 +327,10 @@ struct SharedDeclInfo {
     name: String,
     id: u32,
     ty: ScalarType,
-    count: u32,
+    /// `Some(n)` for a sized `[TY; N]` array; `None` for
+    /// `#[quanta::shared(dyn)] let NAME: [TY];` — the size late-binds
+    /// at `wave_jit_shared`.
+    count: Option<u32>,
 }
 
 /// Walk the function body, collect every `#[quanta::shared] let NAME:
@@ -346,7 +349,8 @@ fn harvest_and_rewrite_shared(func: &mut ItemFn) -> Result<Vec<SharedDeclInfo>, 
         if let Stmt::Local(local) = stmt
             && has_shared_attr(&local.attrs)
         {
-            match parse_shared_decl(local) {
+            let dynamic = shared_attr_is_dyn(&local.attrs);
+            match parse_shared_decl(local, dynamic) {
                 Ok((name, ty, count)) => {
                     let id = next_id;
                     next_id += 1;
@@ -398,8 +402,25 @@ fn has_shared_attr(attrs: &[Attribute]) -> bool {
     })
 }
 
-/// Parse a `let NAME: [TY; COUNT];` decl into its component pieces.
-fn parse_shared_decl(local: &Local) -> Result<(String, ScalarType, u32), String> {
+/// True when the shared attribute carries the `dyn` argument —
+/// `#[quanta::shared(dyn)]`, the dynamic-size spelling.
+fn shared_attr_is_dyn(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        let is_shared = a
+            .path()
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "shared");
+        is_shared && matches!(&a.meta, syn::Meta::List(l) if l.tokens.to_string() == "dyn")
+    })
+}
+
+/// Parse a `let NAME: [TY; COUNT];` (or, for the dynamic spelling, a
+/// `let NAME: [TY];`) decl into its component pieces.
+fn parse_shared_decl(
+    local: &Local,
+    dynamic: bool,
+) -> Result<(String, ScalarType, Option<u32>), String> {
     // Pattern: either `Pat::Ident` or `Pat::Type { pat: Ident, ty }`.
     let (name, ty_ref) = match &local.pat {
         Pat::Type(pat_type) => {
@@ -415,16 +436,25 @@ fn parse_shared_decl(local: &Local) -> Result<(String, ScalarType, u32), String>
             );
         }
     };
+    if dynamic {
+        let scalar = match ty_ref {
+            Type::Slice(sl) => parse_scalar_path(&sl.elem)?,
+            _ => {
+                return Err(
+                    "dynamic shared memory takes an unsized slice type: `let NAME: [TY];`".into(),
+                );
+            }
+        };
+        return Ok((name, scalar, None));
+    }
     let (scalar, count) = parse_array_type(ty_ref)?;
-    Ok((name, scalar, count))
+    Ok((name, scalar, Some(count)))
 }
 
-fn parse_array_type(ty: &Type) -> Result<(ScalarType, u32), String> {
-    let arr = match ty {
-        Type::Array(a) => a,
-        _ => return Err("expected an array type `[TY; N]`".into()),
-    };
-    let elem_ty = match arr.elem.as_ref() {
+/// Parse a primitive element type (`f32` / `u32` / …) out of a type
+/// position.
+fn parse_scalar_path(ty: &Type) -> Result<ScalarType, String> {
+    let elem_ty = match ty {
         Type::Path(p) => p
             .path
             .segments
@@ -432,10 +462,18 @@ fn parse_array_type(ty: &Type) -> Result<(ScalarType, u32), String> {
             .ok_or("empty type path")?
             .ident
             .to_string(),
-        _ => return Err("array element type must be a primitive name".into()),
+        _ => return Err("element type must be a primitive name".into()),
     };
-    let scalar = name_to_scalar_type(&elem_ty)
-        .ok_or_else(|| format!("unsupported shared-memory element type: {elem_ty}"))?;
+    name_to_scalar_type(&elem_ty)
+        .ok_or_else(|| format!("unsupported shared-memory element type: {elem_ty}"))
+}
+
+fn parse_array_type(ty: &Type) -> Result<(ScalarType, u32), String> {
+    let arr = match ty {
+        Type::Array(a) => a,
+        _ => return Err("expected an array type `[TY; N]`".into()),
+    };
+    let scalar = parse_scalar_path(&arr.elem)?;
     let count = match &arr.len {
         Expr::Lit(lit) => match &lit.lit {
             syn::Lit::Int(i) => i
@@ -543,10 +581,13 @@ fn prepend_shared_decls(def: &mut KernelDef, decls: &[SharedDeclInfo]) {
     }
     let mut prefix: Vec<KernelOp> = decls
         .iter()
-        .map(|d| KernelOp::SharedDecl {
-            id: d.id,
-            ty: d.ty,
-            count: d.count,
+        .map(|d| match d.count {
+            Some(count) => KernelOp::SharedDecl {
+                id: d.id,
+                ty: d.ty,
+                count,
+            },
+            None => KernelOp::SharedDeclDyn { id: d.id, ty: d.ty },
         })
         .collect();
     prefix.append(&mut def.body);

@@ -12,6 +12,7 @@ pub mod const_analysis;
 pub mod dispatch_fold;
 pub mod dtype;
 pub mod dtype_codegen;
+pub mod dyn_shared;
 pub mod output;
 pub mod quant;
 pub mod reg_mutability;

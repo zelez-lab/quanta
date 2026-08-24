@@ -146,6 +146,19 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
     // surface at the split crates.
     let krate = kernel_attrs.crate_path.types();
 
+    let has_dyn_shared = kernel_def
+        .body
+        .iter()
+        .any(|op| matches!(op, quanta_ir::KernelOp::SharedDeclDyn { .. }));
+    if has_dyn_shared && !is_jit {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "dynamic shared memory is JIT-only: the size late-binds at wave creation              (`wave_jit_shared`), which the AOT route's pre-emitted artifacts cannot do.              Add the flag: #[quanta::kernel(jit)]",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     if is_jit {
         return emit_jit_kernel(&func, &kernel_def, &kernel_attrs.crate_path);
     }
@@ -434,13 +447,30 @@ fn emit_jit_kernel(
     let krate = crate_path.types();
 
     let wave_docs = forwarded_docs(func, "Wave constructor");
+    // A kernel with `#[quanta::shared(dyn)]` takes the block size at
+    // wave creation; the constructor grows the parameter and routes
+    // through `wave_jit_shared` so the size late-binds into the IR.
+    let has_dyn_shared = kernel_def
+        .body
+        .iter()
+        .any(|op| matches!(op, quanta_ir::KernelOp::SharedDeclDyn { .. }));
+    let dyn_shared_param = if has_dyn_shared {
+        quote! { , dynamic_shared_bytes: u32 }
+    } else {
+        quote! {}
+    };
+    let wave_create = if has_dyn_shared {
+        quote! { device.wave_jit_shared(#def_name, dynamic_shared_bytes)? }
+    } else {
+        quote! { device.wave_jit(#def_name)? }
+    };
     let expanded = quote! {
         #[doc(hidden)]
         pub static #def_name: &[u8] = #def_lit;
 
         #(#wave_docs)*
-        pub fn #func_name(device: &#krate::Gpu) -> Result<#krate::Wave, #krate::QuantaError> {
-            let mut wave = device.wave_jit(#def_name)?;
+        pub fn #func_name(device: &#krate::Gpu #dyn_shared_param) -> Result<#krate::Wave, #krate::QuantaError> {
+            let mut wave = #wave_create;
             wave.workgroup_size = [#wg_x, #wg_y, #wg_z];
             wave.set_storage_texture_kinds(#kinds);
             wave.set_write_mask(#write_mask);
