@@ -2558,6 +2558,13 @@ impl<'a> LowerCtx<'a> {
                     Some("shared_store_u32") => self.shared_store(ScalarType::U32)?,
                     Some("shared_store_i32") => self.shared_store(ScalarType::I32)?,
 
+                    // In-kernel debug print (step 049): record the
+                    // value into the kernel's debug buffer; the host
+                    // drains it to stderr after the dispatch.
+                    Some("gpu_print_u32") => self.debug_print(ScalarType::U32)?,
+                    Some("gpu_print_i32") => self.debug_print(ScalarType::I32)?,
+                    Some("gpu_print_f32") => self.debug_print(ScalarType::F32)?,
+
                     // Atomic RMW family. Args: (addr: *mut T, val: T,
                     // order: u32). `addr` is the BufferAccess SymVal
                     // pushed by `&mut buf[i]` rewriting; we lift its
@@ -4765,6 +4772,15 @@ impl<'a> LowerCtx<'a> {
 
     /// Lower a `shared_store_<ty>(slot, index, val)` extern call into
     /// a `KernelOp::SharedStore`. Slot is compile-time-constant.
+    /// Lower a `gpu_print_<ty>(value)` extern call into a
+    /// `DebugPrint` op.
+    fn debug_print(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
+        let val_sv = self.pop()?;
+        let (val_reg, _) = self.commit(val_sv)?;
+        self.emit(KernelOp::DebugPrint { src: val_reg, ty });
+        Ok(())
+    }
+
     fn shared_store(&mut self, ty: ScalarType) -> Result<(), LoweringError> {
         let val_sv = self.pop()?;
         let index_sv = self.pop()?;

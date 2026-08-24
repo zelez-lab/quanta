@@ -447,6 +447,7 @@ With `jit`:
 | `group_id()` | `u32` | Workgroup index |
 | `group_size()` | `u32` | Workgroup size |
 | `barrier()` | `()` | Workgroup synchronization |
+| `gpu_print_u32(v)` / `gpu_print_i32(v)` / `gpu_print_f32(v)` | `()` | Record `v` for the host to print after the dispatch (**JIT-only** — see [In-kernel printing](#in-kernel-printing-gpu_print)) |
 | `atomic_add(dst, val)` | old value | Atomic add |
 | `atomic_sub(dst, val)` | old value | Atomic subtract |
 | `atomic_min(dst, val)` | old value | Atomic minimum |
@@ -608,6 +609,35 @@ exactly one dynamic array per kernel; the manual entry point is
 `gpu.wave_jit_shared(NAME_DEF, bytes)`. A dyn-shared kernel created
 through plain `wave_jit` is refused at validation — never a silently
 mis-sized buffer.
+
+#### In-kernel printing: `gpu_print`
+
+```rust
+#[quanta::kernel(jit)]
+fn probe(input: &[f32], output: &mut [f32]) {
+    let i = quark_id();
+    let v = input[i] * input[i];
+    if i < 2u32 {
+        gpu_print_f32(v);
+        gpu_print_u32(i);
+    }
+    output[i] = v;
+}
+```
+
+`gpu_print_u32` / `gpu_print_i32` / `gpu_print_f32` record their value
+into a driver-owned debug buffer; after the dispatch completes, the
+driver drains it to stderr as `[quanta gpu_print] quark=<thread> =
+<value>` — the same format the CPU executor prints inline. A printing
+dispatch completes **synchronously** (debug-tool semantics: the driver
+waits so it can drain before returning).
+
+**JIT-only** (the macro enforces the `jit` flag): the driver keys the
+buffer's allocation, per-dispatch binding and drain off the JIT kernel
+def, and an AOT artifact never reaches that machinery. Real on the CPU
+device, Metal and Vulkan; WebGPU is refused at validation (no WGSL
+scheme yet). The buffer holds ~5,400 records per drain — overflowing
+records are dropped, never corrupted.
 
 #### Example
 

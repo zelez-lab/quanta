@@ -243,18 +243,20 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
         // In-kernel debug print runs on the CPU executor (inline
         // stderr) and on Metal (the driver binds the debug buffer at
         // buffer(30) and drains it after completion — step 049).
-        // SPIR-V and WGSL still have no lowering; those backends
-        // refuse rather than silently drop the print.
+        // WGSL still has no lowering; that backend refuses rather
+        // than silently drop the print.
         DebugPrint { ty, .. }
             if !matches!(
                 caps.backend,
-                crate::caps::Backend::Cpu | crate::caps::Backend::Metal
+                crate::caps::Backend::Cpu
+                    | crate::caps::Backend::Metal
+                    | crate::caps::Backend::Vulkan
             ) =>
         {
             report.issues.push(ValidationIssue {
                 location: format!("{}: {}", loc, op_name(op)),
                 ty: *ty,
-                reason: "in-kernel debug print has no SPIR-V/WGSL lowering yet — runs on the CPU device and Metal",
+                reason: "in-kernel debug print has no WGSL lowering yet — runs on the CPU device, Metal and Vulkan",
             });
         }
         // GLSL.std.450 transcendentals (Sin/…/Exp/Log/Pow) have no f64 variant;

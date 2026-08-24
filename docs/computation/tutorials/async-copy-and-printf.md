@@ -35,23 +35,61 @@ async_copy.copy_buffer_raw(dst_handle, src_handle, byte_count)?;
 
 | Backend | Implementation                                     |
 |---------|----------------------------------------------------|
-| Vulkan  | `NotSupported` — no transfer-queue path yet        |
-| Metal   | `NotSupported` — no blit-encoder path yet          |
+| Vulkan  | Real `vkCmdCopyBuffer` submission — on the same `VkQueue` today (one family at device creation); a dedicated transfer family is the follow-up DMA path |
+| Metal   | Dedicated `MTLCommandQueue` + blit encoder — can overlap main-queue compute |
 | WebGPU  | `NotSupported`                                     |
 | CPU     | Serial `memcpy` on the host thread                 |
 
-Today the typed wrapper is real on the CPU device only; every GPU backend
-returns `NotSupported` from `gpu.async_copy_queue()`. The transfer-queue
-designs above (Vulkan `VK_QUEUE_TRANSFER_BIT` + `vkCmdCopyBuffer`, Metal
-`MTLBlitCommandEncoder`) are the intended lowerings, not shipped ones —
-see [Multi-queue](../../rendering/tutorials/multi-queue.md) for the queue
-model they will sit on.
+Check `gpu.supports_async_copy()` before creating the queue — WebGPU
+returns `NotSupported`. See
+[Multi-queue](../../rendering/tutorials/multi-queue.md) for the queue
+model these copies sit on.
 
 ## GPU printf
 
-`PrintfBuffer` is a capacity-bounded ring you record `u64` message IDs into
-from inside a kernel, then drain on the host. It's a debugging tool — not
-something you ship in a release build.
+Printing from inside a kernel is a two-part story: the `gpu_print_*`
+intrinsics (the real thing, JIT-only), and the host-side `PrintfBuffer`
+ring (a CPU-device transport). Both are debugging tools — not something
+you ship in a release build.
+
+### In-kernel printing: `gpu_print_*`
+
+```rust
+#[quanta::kernel(jit)]
+fn probe(input: &[f32], output: &mut [f32]) {
+    let i = quark_id();
+    let v = input[i] * input[i];
+    if i < 2u32 {
+        gpu_print_f32(v);
+        gpu_print_u32(i);
+    }
+    output[i] = v;
+}
+```
+
+Each call records its value into a driver-owned debug buffer; after the
+dispatch completes, the driver drains it to stderr:
+
+```text
+[quanta gpu_print] quark=0 = 1
+[quanta gpu_print] quark=1 = 4
+[quanta gpu_print] quark=0 = 0
+[quanta gpu_print] quark=1 = 1
+```
+
+`quark` is the printing thread's global index; records appear in
+completion order, not program order. A printing dispatch completes
+**synchronously** — the driver waits so it can drain before returning.
+The kernel must be `#[quanta::kernel(jit)]` (the macro rejects the
+AOT form: the driver keys the buffer machinery off the JIT kernel
+def). Guard prints behind a thread-index check as above — a full-grid
+print overflows the record buffer (~5,400 records per drain; overflow
+drops records, never corrupts them).
+
+### Host ring: `PrintfBuffer`
+
+`PrintfBuffer` is a capacity-bounded ring you record `u64` message IDs into,
+then drain on the host.
 
 ```rust
 let printf = gpu.printf_buffer(/*capacity=*/256)?;
@@ -78,19 +116,17 @@ side table. The kernel-side recording API is still under design — for now,
 
 ### Backend matrix
 
-| Backend | Implementation                                            |
-|---------|-----------------------------------------------------------|
-| Vulkan  | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
-| Metal   | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
-| WebGPU  | `NotSupported` (host ring) / kernel `gpu_print` refused at validation |
-| CPU     | Host ring buffer; in-kernel `DebugPrint` writes to stderr   |
+| Backend | In-kernel `gpu_print_*`                          | Host ring |
+|---------|--------------------------------------------------|-----------|
+| Vulkan  | ✅ record buffer at descriptor binding 30, drained after the fence | `NotSupported` |
+| Metal   | ✅ same scheme at `buffer(30)`, drained after the wait | `NotSupported` |
+| WebGPU  | Refused at validation (no WGSL scheme yet)       | `NotSupported` |
+| CPU     | Executor prints inline                            | ✅ |
 
-The host-side ring (`printf_buffer` / `record` / `drain`) exists on the CPU
-device only. The in-kernel `DebugPrint` op has no working GPU lowering
-(SPIR-V and WGSL emit nothing; the MSL debug buffer is never bound), so the
-validator refuses it for every GPU backend rather than let it run as a
-silent no-op. `VK_EXT_debug_printf` and an MSL/WGSL debug-buffer scheme are
-the intended lowerings.
+The host-side ring (`printf_buffer` / `record` / `drain`) exists on the
+CPU device only. In-kernel printing is real on the CPU device, Metal
+and Vulkan; WebGPU refuses at validation rather than run the print as
+a silent no-op.
 
 ## Next
 

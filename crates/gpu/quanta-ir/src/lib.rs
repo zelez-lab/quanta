@@ -54,7 +54,8 @@ pub use shader::{
     ShaderDef, ShaderOutput, ShaderParam, ShaderStage, ShaderType, ShaderVaryings, VaryingField,
 };
 pub use types::{
-    AtomicOp, BinOp, CmpOp, ConstValue, CoopFragUse, CoopMatrixUses, CoopMmaUse, DeviceFnDef,
-    KernelDef, KernelOp, KernelParam, MathFn, MatrixFrag, MemoryOrder, Reg, ScalarType, UnaryOp,
-    body_contains_debug_print, cooperative_matrix_uses, field_write_mask, is_f64_transcendental,
+    AtomicOp, BinOp, CmpOp, ConstValue, CoopFragUse, CoopMatrixUses, CoopMmaUse,
+    DEBUG_PRINT_BINDING, DEBUG_PRINT_CAP_WORDS, DeviceFnDef, KernelDef, KernelOp, KernelParam,
+    MathFn, MatrixFrag, MemoryOrder, Reg, ScalarType, UnaryOp, body_contains_debug_print,
+    cooperative_matrix_uses, field_write_mask, is_f64_transcendental,
 };

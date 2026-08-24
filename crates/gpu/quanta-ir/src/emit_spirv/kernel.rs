@@ -272,6 +272,12 @@ impl SpvEmitter {
         // 4. Set up storage buffers for each field parameter
         self.emit_kernel_params(&kernel.params)?;
 
+        // 4b. gpu_print record buffer, at its reserved binding. The
+        // same body scan gates the driver's allocation and drain.
+        if crate::types::body_contains_debug_print(&kernel.body) {
+            self.emit_debug_buffer();
+        }
+
         // 5. Scan body for SharedDecl and emit workgroup variables
         self.emit_shared_decls(&kernel.body)?;
 
@@ -349,6 +355,40 @@ impl SpvEmitter {
     /// VUID-StandaloneSpirv-OpEntryPoint-06674 and, worse, same-typed
     /// constants shared one cached struct type so only the first slot's
     /// Offset decoration ever landed.
+    /// Declare the gpu_print record buffer: a Block-wrapped
+    /// `RuntimeArray<u32>` at (set 0, `DEBUG_PRINT_BINDING`), the same
+    /// shape as a `FieldWrite` of u32 — reflection therefore sizes the
+    /// descriptor layout to cover it with no driver special case. Word
+    /// 0 is the atomic cursor; `emit_op_inner`'s DebugPrint arm
+    /// appends (quark, tag, bits) records from cursor+1.
+    fn emit_debug_buffer(&mut self) {
+        let elem_ty = self.ensure_type_u32();
+        let rt_arr = self.ensure_type_runtime_array(elem_ty);
+        if self.decorated_stride.insert(rt_arr) {
+            self.decorate(rt_arr, DECORATION_ARRAY_STRIDE, &[4]);
+        }
+        let struct_ty = self.ensure_type_struct(&[rt_arr]);
+        if self.decorated_block.insert(struct_ty) {
+            self.decorate(struct_ty, DECORATION_BLOCK, &[]);
+            self.member_decorate(struct_ty, 0, DECORATION_OFFSET, &[0]);
+        }
+        let ptr_struct = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, struct_ty);
+        let var_id = self.alloc_id();
+        Self::emit_op(
+            &mut self.sec_global_var,
+            OP_VARIABLE,
+            &[ptr_struct, var_id, STORAGE_CLASS_STORAGE_BUFFER],
+        );
+        self.emit_name(var_id, "_debug_buf");
+        self.decorate(var_id, DECORATION_DESCRIPTOR_SET, &[0]);
+        self.decorate(
+            var_id,
+            DECORATION_BINDING,
+            &[crate::types::DEBUG_PRINT_BINDING],
+        );
+        self.debug_var = Some(var_id);
+    }
+
     fn emit_kernel_params(&mut self, params: &[KernelParam]) -> Result<(), String> {
         let mut constants: Vec<(String, u32, ScalarType)> = Vec::new();
         for param in params {

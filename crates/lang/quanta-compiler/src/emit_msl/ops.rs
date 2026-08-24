@@ -987,23 +987,15 @@ pub(crate) fn emit_op(
                 ty.msl_name(),
             ));
         }
-        KernelOp::DebugPrint { src, ty } => {
-            // Debug buffer approach: atomic append (value, thread_id) to _debug_buf.
-            // _debug_buf[0] = current write offset (in uint units).
-            // _debug_buf[1..] = pairs of (thread_id, value_as_uint).
-            let val_expr = match ty {
-                ScalarType::F32 => format!("as_type<uint>(r{})", src.0),
-                ScalarType::U32 => format!("r{}", src.0),
-                ScalarType::I32 => format!("as_type<uint>(r{})", src.0),
-                _ => format!("uint(r{})", src.0),
-            };
+        KernelOp::DebugPrint { .. } => {
+            // gpu_print is JIT-only: the driver allocates, binds and
+            // drains the record buffer keyed off the JIT kernel def,
+            // and an AOT artifact never reaches that machinery — the
+            // append would target a buffer nothing binds. Refuse at
+            // the Metal compiler rather than ship the unbound access.
             out.push_str(&format!(
-                "{}{{ uint _dbg_off = atomic_fetch_add_explicit((device atomic_uint*)&_debug_buf[0], 2u, memory_order_relaxed); ",
+                "{}static_assert(false, \"gpu_print is JIT-only; AOT artifacts cannot carry it\");\n",
                 pad,
-            ));
-            out.push_str(&format!(
-                "if (_dbg_off + 2u < 16384u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {}; }} }}\n",
-                val_expr,
             ));
         }
         KernelOp::Dispatch { .. } => {

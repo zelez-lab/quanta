@@ -251,7 +251,8 @@ impl MetalDevice {
         // at buffer(30) on every dispatch and drained to stderr after
         // completion.
         if quanta_ir::body_contains_debug_print(&kernel.body) {
-            let dbg = unsafe { ffi::msg_new_buffer(self.device, 16384 * 4, 0) };
+            let cap_bytes = quanta_ir::DEBUG_PRINT_CAP_WORDS as u64 * 4;
+            let dbg = unsafe { ffi::msg_new_buffer(self.device, cap_bytes, 0) };
             if dbg.is_null() {
                 return Err(QuantaError::internal("failed to allocate debug buffer"));
             }
@@ -382,7 +383,13 @@ impl MetalDevice {
             .map_err(|_| QuantaError::internal("lock poisoned"))?;
         if let Some(dbg) = bufs.get(&wave.handle) {
             unsafe {
-                ffi::msg_set_buffer(encoder, b"setBuffer:offset:atIndex:\0", *dbg, 0, 30);
+                ffi::msg_set_buffer(
+                    encoder,
+                    b"setBuffer:offset:atIndex:\0",
+                    *dbg,
+                    0,
+                    quanta_ir::DEBUG_PRINT_BINDING as u64,
+                );
             }
             Ok(true)
         } else {
@@ -403,7 +410,7 @@ impl MetalDevice {
         };
         unsafe {
             let words = ffi::msg_ptr(*dbg, b"contents\0") as *mut u32;
-            let cursor = (*words).min(16383) as usize;
+            let cursor = (*words).min(quanta_ir::DEBUG_PRINT_CAP_WORDS - 1) as usize;
             let mut off = 0usize;
             while off + 3 <= cursor {
                 let quark = *words.add(off + 1);

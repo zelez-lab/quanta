@@ -604,7 +604,7 @@ impl SpvEmitter {
             }
             KernelOp::DebugPrint { src, .. } => {
                 return Err(format!(
-                    "DebugPrint(r{}) has no SPIR-V lowering; in-kernel print runs on the CPU device only",
+                    "DebugPrint(r{}) is JIT-only; AOT artifacts cannot carry gpu_print",
                     src.0
                 ));
             }

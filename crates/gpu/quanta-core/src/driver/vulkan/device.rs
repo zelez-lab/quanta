@@ -98,6 +98,12 @@ pub struct VulkanDevice {
     pub(super) buffers: RwLock<HashMap<u64, VkBuffer>>,
     pub(super) textures: RwLock<HashMap<u64, VkTexture>>,
     pub(super) compute_pipelines: RwLock<HashMap<u64, VkComputePipeline>>,
+    /// Wave handle → gpu_print record-buffer handle (an internal
+    /// TRANSFER field allocated by `wave_jit_impl`, bound at the
+    /// reserved binding by `prepare_wave_dispatch`, drained by the
+    /// dispatch paths, freed by `wave_destroy`).
+    #[cfg_attr(not(feature = "compute"), allow(dead_code))]
+    pub(super) debug_bufs: RwLock<HashMap<u64, u64>>,
     pub(super) render_pipelines: RwLock<HashMap<u64, VkRenderPipeline>>,
     pub(super) samplers: RwLock<HashMap<u64, ffi::VkSampler>>,
     /// Render-path sampler cache keyed by the FULL `SamplerDesc`.
@@ -773,13 +779,15 @@ impl VulkanDevice {
                 return Ok(pool);
             }
         }
-        // Sized for the worst case a single set can need: up to 16 storage
-        // buffers plus up to 16 storage/sampled images. A compute dispatch
-        // allocates one set from this pool, so over-provisioning is cheap.
+        // Sized for the worst case a single set can need: a gpu_print
+        // layout declares storage-buffer bindings up to the reserved
+        // debug slot (DEBUG_PRINT_BINDING, so 31 of them), plus up to
+        // 16 storage/sampled images. A compute dispatch allocates one
+        // set from this pool, so over-provisioning is cheap.
         let pool_sizes = [
             ffi::VkDescriptorPoolSize {
                 ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                descriptor_count: 16,
+                descriptor_count: 32,
             },
             ffi::VkDescriptorPoolSize {
                 ty: ffi::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -2023,6 +2031,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             buffers: RwLock::new(HashMap::new()),
             textures: RwLock::new(HashMap::new()),
             compute_pipelines: RwLock::new(HashMap::new()),
+            debug_bufs: RwLock::new(HashMap::new()),
             render_pipelines: RwLock::new(HashMap::new()),
             samplers: RwLock::new(HashMap::new()),
             #[cfg(feature = "render")]

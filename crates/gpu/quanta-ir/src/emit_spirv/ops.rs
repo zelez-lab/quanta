@@ -2115,11 +2115,87 @@ impl SpvEmitter {
                     id
                 ));
             }
-            KernelOp::DebugPrint { src, .. } => {
-                return Err(format!(
-                    "DebugPrint(r{}) has no SPIR-V lowering; in-kernel print runs on the CPU device only",
-                    src.0
-                ));
+            KernelOp::DebugPrint { src, ty } => {
+                // Mirrors the MSL scheme (emit_msl/ops.rs): bump the
+                // word-0 cursor by 3 (relaxed, Device scope), then
+                // write the (quark, tag, bits) record at off+1..off+3.
+                // Where MSL guards the store with a branch, this
+                // lowering is branchless: OpSelect redirects an
+                // overflowing record's base to a dead tail at the cap,
+                // which is why the driver allocates CAP + 4 words.
+                let var_id = self.debug_var.ok_or_else(|| {
+                    "DebugPrint reached the emitter without a declared debug buffer".to_string()
+                })?;
+                let uint_ty = self.ensure_type_u32();
+                let src_id = self.reg_value_id(*src)?;
+                let (tag, bits) = match ty {
+                    ScalarType::U32 => (0u32, src_id),
+                    ScalarType::I32 | ScalarType::F32 => {
+                        let cast = self.alloc_id();
+                        Self::emit_op(&mut self.sec_function, OP_BITCAST, &[uint_ty, cast, src_id]);
+                        (if matches!(ty, ScalarType::I32) { 1 } else { 2 }, cast)
+                    }
+                    other => {
+                        return Err(format!(
+                            "DebugPrint: unsupported type {:?} (gpu_print takes u32/i32/f32)",
+                            other
+                        ));
+                    }
+                };
+                let tag_id = self.emit_constant_u32(tag);
+                let row_span = crate::dispatch_fold::FOLD_ROW_GROUPS * self.wg_x;
+                let quark = self.load_builtin_linear(gid_var, row_span);
+
+                let zero = self.emit_constant_u32(0);
+                let three = self.emit_constant_u32(3);
+                let scope_device = self.emit_constant_u32(1);
+                let relaxed = self.emit_constant_u32(0);
+                let cap = self.emit_constant_u32(crate::types::DEBUG_PRINT_CAP_WORDS);
+                let ptr_elem = self.ensure_type_pointer(STORAGE_CLASS_STORAGE_BUFFER, uint_ty);
+
+                let cursor_ptr = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_ACCESS_CHAIN,
+                    &[ptr_elem, cursor_ptr, var_id, zero, zero],
+                );
+                let off = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_ATOMIC_IADD,
+                    &[uint_ty, off, cursor_ptr, scope_device, relaxed, three],
+                );
+                let off_end = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_IADD,
+                    &[uint_ty, off_end, off, three],
+                );
+                let bool_ty = self.ensure_type_bool();
+                let in_bounds = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_ULESS_THAN,
+                    &[bool_ty, in_bounds, off_end, cap],
+                );
+                let base = self.alloc_id();
+                Self::emit_op(
+                    &mut self.sec_function,
+                    OP_SELECT,
+                    &[uint_ty, base, in_bounds, off, cap],
+                );
+                for (k, val) in [(1u32, quark), (2, tag_id), (3, bits)] {
+                    let k_id = self.emit_constant_u32(k);
+                    let idx = self.alloc_id();
+                    Self::emit_op(&mut self.sec_function, OP_IADD, &[uint_ty, idx, base, k_id]);
+                    let slot_ptr = self.alloc_id();
+                    Self::emit_op(
+                        &mut self.sec_function,
+                        OP_ACCESS_CHAIN,
+                        &[ptr_elem, slot_ptr, var_id, zero, idx],
+                    );
+                    Self::emit_op(&mut self.sec_function, OP_STORE, &[slot_ptr, val]);
+                }
             }
 
             KernelOp::Dispatch { .. } => {

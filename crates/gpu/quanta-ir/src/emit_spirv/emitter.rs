@@ -80,6 +80,11 @@ pub(crate) struct SpvEmitter {
     // Field slot → (variable_id, element_type_id, is_writable)
     pub(crate) field_vars: HashMap<u32, (u32, u32, bool)>,
 
+    // gpu_print record buffer variable, declared at the reserved
+    // binding when the body contains a DebugPrint (see
+    // `emit_debug_buffer`).
+    pub(crate) debug_var: Option<u32>,
+
     // Texture slot → (variable_id, loaded_type_id). For sampled (`&Sampled2D`)
     // slots the type is OpTypeSampledImage; for texel (`&Texture2D` /
     // `&mut Texture2D`) slots it is the plain OpTypeImage.
@@ -166,6 +171,7 @@ impl SpvEmitter {
             reg_types: HashMap::new(),
             demoted_regs: HashMap::new(),
             field_vars: HashMap::new(),
+            debug_var: None,
             texture_samplers: HashMap::new(),
             texture_image_types: HashMap::new(),
             texture_storage_slots: std::collections::HashSet::new(),

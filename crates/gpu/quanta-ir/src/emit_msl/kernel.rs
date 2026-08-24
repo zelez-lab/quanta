@@ -127,7 +127,10 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
     // Check if kernel uses debug print — if so, add a debug buffer parameter
     let uses_debug_print = crate::types::body_contains_debug_print(&kernel.body);
     if uses_debug_print {
-        param_lines.push("    device uint* _debug_buf [[buffer(30)]]".to_string());
+        param_lines.push(format!(
+            "    device uint* _debug_buf [[buffer({})]]",
+            crate::types::DEBUG_PRINT_BINDING
+        ));
     }
 
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());

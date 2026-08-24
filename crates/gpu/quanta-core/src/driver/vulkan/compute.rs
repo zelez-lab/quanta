@@ -109,6 +109,22 @@ impl VulkanDevice {
         // (the [64,1,1] guess vs quanta-array's LocalSize-1 kernels ran only
         // ⌈n/64⌉ of n threads — zeros for the remaining 63/64 of the output).
         wave.workgroup_size = kernel.workgroup_size;
+
+        // gpu_print: allocate the record buffer, keyed by the wave.
+        // The JIT SPIR-V declared the reserved binding, so every
+        // dispatch of this wave must bind a buffer there. CAP + 4
+        // words: the branchless lowering parks an overflowing record
+        // in a dead tail at the cap instead of branching around the
+        // store.
+        if quanta_ir::body_contains_debug_print(&kernel.body) {
+            let bytes = (quanta_ir::DEBUG_PRINT_CAP_WORDS as usize + 4) * 4;
+            let dbg = self.field_alloc_impl(bytes, crate::FieldUsage::TRANSFER)?;
+            self.field_write_bytes_impl(dbg, &alloc::vec![0u8; bytes])?;
+            self.debug_bufs
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
+                .insert(wave.handle, dbg);
+        }
         Ok(wave)
     }
 
@@ -330,6 +346,50 @@ impl VulkanDevice {
         groups: [u32; 3],
     ) -> Result<Pulse, QuantaError> {
         self.wave_dispatch_records_impl(wave, &[([0, 0, 0], groups)])
+    }
+
+    /// Drain a wave's gpu_print records to stderr and reset the
+    /// cursor; a no-op for waves that don't print. Called after a
+    /// completed dispatch — the fence has signaled, so the records
+    /// are whole. Same format as the CPU executor and Metal.
+    pub(crate) fn drain_debug_buf(&self, wave_handle: u64) -> Result<(), QuantaError> {
+        let dbg = {
+            let bufs = self
+                .debug_bufs
+                .read()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            match bufs.get(&wave_handle) {
+                Some(&h) => h,
+                None => return Ok(()),
+            }
+        };
+        let cap = quanta_ir::DEBUG_PRINT_CAP_WORDS as usize;
+        let bytes = self.field_read_bytes_impl(dbg, cap * 4)?;
+        let word = |i: usize| {
+            u32::from_le_bytes([
+                bytes[i * 4],
+                bytes[i * 4 + 1],
+                bytes[i * 4 + 2],
+                bytes[i * 4 + 3],
+            ])
+        };
+        let cursor = (word(0) as usize).min(cap - 1);
+        let mut off = 0usize;
+        while off + 3 <= cursor {
+            let quark = word(off + 1);
+            let bits = word(off + 3);
+            match word(off + 2) {
+                2 => std::eprintln!(
+                    "[quanta gpu_print] quark={} = {}",
+                    quark,
+                    f32::from_bits(bits)
+                ),
+                1 => std::eprintln!("[quanta gpu_print] quark={} = {}", quark, bits as i32),
+                _ => std::eprintln!("[quanta gpu_print] quark={} = {}", quark, bits),
+            }
+            off += 3;
+        }
+        self.field_write_bytes_at_impl(dbg, 0, &0u32.to_le_bytes())
     }
 
     /// Dispatch by total thread count, folding oversized 1D dispatches
@@ -674,6 +734,9 @@ impl VulkanDevice {
         // Return descriptor pool to cache for reuse
         self.return_descriptor_pool(prep.pool);
 
+        // gpu_print: the dispatch completed above — surface its records.
+        self.drain_debug_buf(wave.handle)?;
+
         Ok(Pulse {
             handle: self.alloc_handle(),
             completed: true,
@@ -800,6 +863,40 @@ impl VulkanDevice {
                     0,
                     core::ptr::null(),
                 );
+            }
+        }
+
+        // gpu_print record buffer at its reserved binding. The shader
+        // statically uses it, so every path that builds a set for this
+        // pipeline must write it — prepare is that choke point.
+        let dbg = self
+            .debug_bufs
+            .read()
+            .map_err(|_| finish(QuantaError::internal("lock poisoned")))?
+            .get(&wave.handle)
+            .copied();
+        if let Some(dbg) = dbg
+            && let Some(buf) = buffers_guard.get(&dbg)
+        {
+            let dbg_info = ffi::VkDescriptorBufferInfo {
+                buffer: buf.buffer,
+                offset: 0,
+                range: ffi::VK_WHOLE_SIZE,
+            };
+            let dbg_write = ffi::VkWriteDescriptorSet {
+                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: core::ptr::null(),
+                dst_set: ds,
+                dst_binding: quanta_ir::DEBUG_PRINT_BINDING,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                p_image_info: core::ptr::null(),
+                p_buffer_info: &dbg_info,
+                p_texel_buffer_view: core::ptr::null(),
+            };
+            unsafe {
+                ffi::vkUpdateDescriptorSets(self.device, 1, &dbg_write, 0, core::ptr::null());
             }
         }
 
@@ -963,6 +1060,39 @@ impl VulkanDevice {
             }
         }
 
+        // gpu_print record buffer — same reserved-binding write as
+        // `prepare_wave_dispatch` (this path builds its set by hand).
+        let dbg = self
+            .debug_bufs
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .get(&wave.handle)
+            .copied();
+        if let Some(dbg) = dbg
+            && let Some(buf) = buffers_guard.get(&dbg)
+        {
+            let dbg_info = ffi::VkDescriptorBufferInfo {
+                buffer: buf.buffer,
+                offset: 0,
+                range: ffi::VK_WHOLE_SIZE,
+            };
+            let dbg_write = ffi::VkWriteDescriptorSet {
+                s_type: ffi::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: core::ptr::null(),
+                dst_set: ds,
+                dst_binding: quanta_ir::DEBUG_PRINT_BINDING,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: ffi::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                p_image_info: core::ptr::null(),
+                p_buffer_info: &dbg_info,
+                p_texel_buffer_view: core::ptr::null(),
+            };
+            unsafe {
+                ffi::vkUpdateDescriptorSets(self.device, 1, &dbg_write, 0, core::ptr::null());
+            }
+        }
+
         let indirect_buf = buffers_guard.get(&buffer).ok_or_else(|| {
             QuantaError::invalid_param("bad indirect buffer")
                 .with_context(&format!("wave_dispatch_indirect: buffer handle {buffer}"))
@@ -1005,6 +1135,9 @@ impl VulkanDevice {
 
         // Return descriptor pool to cache for reuse
         self.return_descriptor_pool(descriptor_pool);
+
+        // gpu_print: the dispatch completed above — surface its records.
+        self.drain_debug_buf(wave.handle)?;
 
         Ok(Pulse {
             handle: self.alloc_handle(),

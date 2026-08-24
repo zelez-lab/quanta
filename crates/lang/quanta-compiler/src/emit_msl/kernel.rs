@@ -127,15 +127,6 @@ pub fn emit(kernel: &KernelDef) -> Result<String, String> {
             }
         }
     }
-    // Check if kernel uses debug print — if so, add a debug buffer parameter
-    let uses_debug_print = kernel
-        .body
-        .iter()
-        .any(|op| matches!(op, KernelOp::DebugPrint { .. }));
-    if uses_debug_print {
-        param_lines.push("    device uint* _debug_buf [[buffer(30)]]".to_string());
-    }
-
     param_lines.push("    uint _quark_id [[thread_position_in_grid]]".to_string());
     param_lines.push("    uint _proton_id [[thread_position_in_threadgroup]]".to_string());
     param_lines.push("    uint _nucleus_id [[threadgroup_position_in_grid]]".to_string());

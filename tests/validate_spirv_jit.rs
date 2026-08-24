@@ -72,6 +72,22 @@ fn report_subgroup_size(out: &mut [u32]) {
     out[i as usize] = unsafe { subgroup_size() };
 }
 
+// gpu_print lowers to an atomic cursor bump on the reserved-binding
+// record buffer plus three OpSelect-guarded stores — a shape no other
+// kernel exercises (storage-buffer atomics against an
+// emitter-declared, non-param variable). Prints nested under a
+// branch, the case the flat scans used to miss.
+#[quanta::kernel(jit)]
+fn print_probe(input: &[f32], output: &mut [f32]) {
+    let i = quark_id();
+    let v = input[i] * input[i];
+    if i < 2u32 {
+        gpu_print_f32(v);
+        gpu_print_u32(i);
+    }
+    output[i] = v;
+}
+
 fn spirv_val(label: &str, words: &[u8]) {
     if !std::path::Path::new(SPIRV_VAL).exists() {
         eprintln!("skipping [{label}]: {SPIRV_VAL} not installed");
@@ -111,6 +127,7 @@ fn jit_spirv_validates_loop_kernels() {
         ("add_one", ADD_ONE_DEF),
         ("mandelbrot", MANDELBROT_DEF),
         ("report_subgroup_size", REPORT_SUBGROUP_SIZE_DEF),
+        ("print_probe", PRINT_PROBE_DEF),
     ] {
         let words = emit(label, def);
         spirv_val(label, &words);

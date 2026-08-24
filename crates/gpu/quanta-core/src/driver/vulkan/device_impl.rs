@@ -501,6 +501,17 @@ impl GpuDevice for VulkanDevice {
                 },
             );
         }
+        // gpu_print record buffer rides the same lifecycle — the last
+        // owner's destroy frees it (field_free defers behind any
+        // outstanding submission like every buffer).
+        if let Some(dbg) = self
+            .debug_bufs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle)
+        {
+            self.field_free_impl(dbg);
+        }
         Ok(())
     }
 

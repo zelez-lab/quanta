@@ -52,17 +52,40 @@ async_copy.copy_buffer(&next_frame_dst, &next_frame_src, count)?;
 
 | Backend | Path |
 |---|---|
-| Vulkan / Metal / WebGPU | `NotSupported` from `gpu.async_copy_queue()` — no GPU lowering shipped yet |
+| Vulkan | Real `vkCmdCopyBuffer` submission (same `VkQueue` today; a dedicated transfer family is the follow-up DMA path) |
+| Metal | Dedicated `MTLCommandQueue` + blit encoder — overlaps main-queue compute |
+| WebGPU | `NotSupported` from `gpu.async_copy_queue()` |
 | CPU | `memcpy` on the host thread |
 
-The transfer-queue lowerings (Vulkan `vkCmdCopyBuffer` on a
-`VK_QUEUE_TRANSFER_BIT` queue, Metal `MTLBlitCommandEncoder`) are the
-design, not the shipped state.
+Check `gpu.supports_async_copy()` first when the backend is not known
+at build time.
 
 ## GPU printf
 
+To print a value from inside a kernel, call `gpu_print_u32` /
+`gpu_print_i32` / `gpu_print_f32` in a `#[quanta::kernel(jit)]` body:
+
+```rust
+#[quanta::kernel(jit)]
+fn probe(data: &[f32], out: &mut [f32]) {
+    let i = quark_id();
+    if i == 0u32 {
+        gpu_print_f32(data[i]);
+    }
+    out[i] = data[i];
+}
+```
+
+After the dispatch completes the driver drains the records to stderr
+as `[quanta gpu_print] quark=<thread> = <value>` — identical output on
+the CPU device, Metal and Vulkan (WebGPU refuses at validation). A
+printing dispatch completes synchronously. Guard prints behind a
+thread-index check: the record buffer holds ~5,400 prints per drain.
+
+### Host ring: `PrintfBuffer`
+
 `PrintfBuffer` is a capacity-bounded ring you record `u64` message IDs
-into from inside a kernel, then drain on the host. It's a debugging
+into, then drain on the host (CPU device only). It's a debugging
 tool — not something you ship in a release build.
 
 ```rust
@@ -90,10 +113,11 @@ IDs up in a side table.
 
 ### Backend notes
 
-| Backend | Path |
-|---|---|
-| Vulkan / Metal / WebGPU | Host ring `NotSupported`; an in-kernel `DebugPrint` is refused at validation (no working GPU lowering) |
-| CPU | Host ring buffer; in-kernel `DebugPrint` writes `[quanta gpu_print] quark=… = value` to stderr |
+| Backend | In-kernel `gpu_print_*` | Host ring |
+|---|---|---|
+| Vulkan / Metal | ✅ driver-drained record buffer (binding 30 / `buffer(30)`) | `NotSupported` |
+| WebGPU | Refused at validation (no WGSL scheme yet) | `NotSupported` |
+| CPU | Executor prints inline | ✅ |
 
 ## See also
 

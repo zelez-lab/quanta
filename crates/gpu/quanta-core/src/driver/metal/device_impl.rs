@@ -594,6 +594,17 @@ impl GpuDevice for MetalDevice {
             // newComputePipelineStateWithFunction: returns +1 retained.
             unsafe { ffi::msg_void(p, b"release\0") };
         }
+        // gpu_print record buffer rides the same lifecycle: the last
+        // owner's destroy releases it (a printing dispatch completes
+        // synchronously, so nothing in flight still uses it).
+        if let Some(dbg) = self
+            .debug_bufs
+            .write()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .remove(&handle)
+        {
+            unsafe { ffi::msg_void(dbg, b"release\0") };
+        }
         Ok(())
     }
 

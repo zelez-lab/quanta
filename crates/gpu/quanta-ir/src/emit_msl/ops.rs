@@ -1051,7 +1051,8 @@ pub(super) fn emit_op(
                 pad,
             ));
             out.push_str(&format!(
-                "if (_dbg_off + 3u < 16384u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {tag}u; _debug_buf[_dbg_off + 3u] = {val_expr}; }} }}\n",
+                "if (_dbg_off + 3u < {cap}u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {tag}u; _debug_buf[_dbg_off + 3u] = {val_expr}; }} }}\n",
+                cap = crate::types::DEBUG_PRINT_CAP_WORDS,
             ));
         }
         KernelOp::Dispatch { .. } => {

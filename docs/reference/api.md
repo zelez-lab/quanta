@@ -61,6 +61,7 @@ path without throwing.
 | `supports_subgroups()` | `bool` | Subgroup *arithmetic* intrinsics (`reduce_*` / `scan_add_*` / `shuffle_*`). True on the software lane, Metal, and llvmpipe; false on Broadcom V3D (vote/ballot still work there) |
 | `subgroup_size()` | `u32` | How many lanes a subgroup has: 32 on Metal and the software lane, the driver's `subgroupSize` on Vulkan (64 on AMD compute parts, 16 on Broadcom V3D). `0` = the device does not fix one — WebGPU exposes only a min/max range. Kernels whose work unit IS the subgroup (`quanta-blas`'s `gemm_tc` dispatches one per output tile) size their threads by it and refuse on `0` |
 | `supports_async_compute()` | `bool` | Whether a dedicated async-compute queue is available. **Returns `false` on every backend today** — no driver overrides it yet. For overlapping submission use `gpu.queue(QueueType::Compute)` |
+| `supports_async_copy()` | `bool` | `async_copy_queue()` is real: a dedicated blit queue on Metal, a `vkCmdCopyBuffer` submission on Vulkan (same queue today), a recorded serial copy on the CPU device; false on WebGPU |
 | `supports_compute_textures()` | `bool` | Compute kernels may bind textures (`&Sampled2D` sampled reads, `&Texture2D` read-only texel access, `&mut Texture2D` read-write texel access). True on Metal, the software driver, and native Vulkan; false on WebGPU |
 | `supports_native_handle_export()` | `bool` | `Texture::native_handle()` and `Field::native_handle()` return a real backend object. True on Metal and Vulkan; false on the CPU software driver and WebGPU |
 | `supports_surface_present()` | `bool` | Presentation surfaces (`create_surface` + acquire/present). True on Metal, on Vulkan when the loader offers VK_KHR_surface + VK_KHR_swapchain, and on WebGPU (canvas presentation) |
@@ -942,7 +943,10 @@ Cross-queue ordering must be established via `Queue::signal` /
 ## `PrintfBuffer`
 
 Capacity-bounded shader-printf ring drained by the host. Created via
-`gpu.printf_buffer(capacity)`. Drop releases the backend handle.
+`gpu.printf_buffer(capacity)`. Drop releases the backend handle. CPU
+device only — for printing from inside a kernel on Metal / Vulkan /
+CPU, use the `gpu_print_*` intrinsics
+([macros reference](macros.md#in-kernel-printing-gpu_print)).
 
 | Method | Returns | Description |
 |--------|---------|-------------|

@@ -366,6 +366,21 @@ pub fn field_write_mask(def: &KernelDef) -> u16 {
     mask
 }
 
+/// gpu_print record-buffer geometry, shared by every emitter and
+/// driver implementing the scheme. Word 0 is the atomic cursor; a
+/// print appends a 3-word record (quark, type tag, raw bits) at
+/// cursor+1, dropped when its last word would land at or past this
+/// cap. Metal's guarded store allocates exactly this many words; the
+/// SPIR-V lowering is branchless (OpSelect redirects an overflowing
+/// record to a dead tail at the cap), so Vulkan allocates
+/// `DEBUG_PRINT_CAP_WORDS + 4`.
+pub const DEBUG_PRINT_CAP_WORDS: u32 = 16384;
+
+/// The reserved slot for the record buffer: Metal buffer index and
+/// Vulkan descriptor binding (set 0). User fields stop at slot 15,
+/// so the reservation can never collide.
+pub const DEBUG_PRINT_BINDING: u32 = 30;
+
 /// Whether the body contains a `DebugPrint`, at any nesting depth
 /// (Branch arms and Loop bodies included) — the drivers, the macro
 /// and the emitters all key the debug-buffer machinery on this.
