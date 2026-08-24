@@ -202,8 +202,9 @@ before touching their queue.
 The sync contract is unchanged — reads still require a wait, and a wait
 still completes everything the read needs; deferral only moves *when* work
 is submitted, never what a sync point means. On backends without a batch
-path, and for texture-binding waves, `dispatch` commits and completes
-inline (the returned pulse is already done). A composed `quanta::sci`
+path, for texture-binding waves, and for waves that `gpu_print`
+(the driver waits so it can drain the records), `dispatch` commits and
+completes inline (the returned pulse is already done). A composed `quanta::sci`
 expression therefore executes as a handful of submissions instead of one
 per op — where define-by-run training gets its throughput. Exception:
 `MappedField` views are raw memory the lane cannot intercept — flush

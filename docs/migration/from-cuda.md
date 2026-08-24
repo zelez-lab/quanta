@@ -91,6 +91,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `__device__ void helper(...)` | `#[quanta::device] fn helper(...)` |
 | `struct` in device code | `#[quanta::gpu_type] struct` |
 | `__shared__ float s[256]` | `#[quanta::shared] let s: [f32; 256]` |
+| `extern __shared__ float s[]` + `<<<g, b, bytes>>>` | `#[quanta::shared(dyn)] let s: [f32];` + the wave's `dynamic_shared_bytes` argument (JIT-only) |
 | `threadIdx.x` | `local_id()` |
 | `blockIdx.x` | `group_id()` |
 | `blockDim.x * blockIdx.x + threadIdx.x` | `quark_id()` |
@@ -234,6 +235,26 @@ fn reduce(data: &[f32], result: &mut [f32]) {
 }
 ```
 
+### Dynamic shared size
+
+CUDA's `extern __shared__ float s[];` sized by the third launch
+parameter maps to `#[quanta::shared(dyn)]`:
+
+```rust
+#[quanta::kernel(jit)]
+fn dyn_reduce(data: &[f32], result: &mut [f32]) {
+    #[quanta::shared(dyn)]
+    let sdata: [f32];
+    // ...
+}
+
+// The size binds at wave creation, like <<<grid, block, bytes>>>:
+let wave = dyn_reduce(&gpu, 256 * 4)?;
+```
+
+JIT-only (the macro enforces the flag) — see
+[`#[quanta::shared(dyn)]`](../reference/macros.md#dynamic-size-quantashareddyn).
+
 ## Structured data
 
 ### CUDA
@@ -301,12 +322,12 @@ find typed wrappers in Quanta. The render-side constructors
 | WMMA / `mma.sync` (tensor cores) | Cooperative-matrix IR ops, used through `quanta-blas`: `gemm` routes to the tensor-core kernel when the device lists its shape, and `gemm_tc::<u16, f32>` is the explicit f16-in / f32-accumulate entry on the shape the card enumerates (`u16` = binary16 bit patterns); the device's shapes via `gpu.cooperative_matrix_shapes()` — see [Cooperative matrices](../computation/how-to/cooperative-matrix.md) |
 | OptiX `optixAccel*` BLAS | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`    |
 | OptiX pipeline           | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`   |
-| `optixLaunch`            | `pipeline.dispatch_rays(width, height)`                       |
+| `optixLaunch`            | `pipeline.dispatch_rays(&blas, &out, width, height)`          |
 | Mesh shader extension    | `gpu.mesh_pipeline(MeshPipelineDesc { .. })` + `dispatch`     |
 | Tessellation             | `gpu.tessellation_pipeline(TessTopology::Triangle, n)`        |
 | `cudaStreamCreate`       | `gpu.queue(QueueType::Compute)?` (one queue per stream)       |
 | `cudaMemcpyAsync` on stream | `gpu.async_copy_queue()?.copy_buffer(&dst, &src, n)`       |
-| `printf` from kernel     | `gpu.printf_buffer(cap)?.drain()?`                            |
+| `printf` from kernel     | `gpu_print_f32(x)` / `_u32` / `_i32` in a `#[quanta::kernel(jit)]` — drained to stderr after the dispatch ([details](../reference/macros.md#in-kernel-printing-gpu_print)) |
 | Indirect launch (CUDA Graphs) | `gpu.indirect_command_buffer(cap)?` + `record_dispatch` |
 | Sparse memory (`cuMemMap`)| `gpu.sparse_texture(&desc)?.map_tile(mip, x, y, backing)`    |
 

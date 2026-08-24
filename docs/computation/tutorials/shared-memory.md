@@ -48,6 +48,29 @@ fn reduce_sum(input: &[f32], output: &mut [f32]) {
 The array size must be a compile-time constant. The type must be a scalar
 (`f32`, `u32`, `i32`, etc.).
 
+### Dynamic size
+
+When the size depends on runtime data (a tile width chosen from the
+input shape, a workgroup size tuned per device), drop the size and add
+`dyn` — the kernel gains a `dynamic_shared_bytes` argument at wave
+creation:
+
+```rust
+#[quanta::kernel(jit)]
+fn dyn_reduce(input: &[f32], output: &mut [f32]) {
+    #[quanta::shared(dyn)]
+    let local: [f32];
+    // ... same body, `local` sized at wave creation
+}
+
+let wave = dyn_reduce(&gpu, 256 * 4)?; // bytes for this wave
+```
+
+JIT-only (the macro enforces the flag), element type `f32` / `u32` /
+`i32`, one dynamic array per kernel. Distinct sizes are distinct cached
+pipelines. Full rules:
+[`#[quanta::shared(dyn)]`](../../reference/macros.md#dynamic-size-quantashareddyn).
+
 ## Barriers
 
 `barrier()` synchronizes all quarks in the workgroup. It guarantees:
@@ -121,7 +144,8 @@ Each quark reads its neighbors from the shared tile without redundant global loa
 
 ## Limitations
 
-- Size is fixed at compile time. Cannot allocate dynamically.
+- Size is fixed at compile time unless the array is declared
+  `#[quanta::shared(dyn)]` (JIT-only; sized per wave at creation).
 - Maximum size depends on hardware (query `gpu.caps()` for exact limits).
 - All quarks in the workgroup must execute the same `barrier()`. Conditional
   barriers (inside divergent branches) are undefined behavior.

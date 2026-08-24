@@ -183,7 +183,7 @@ don't implement it. The render-side methods (`gpu.mesh_pipeline`,
 |-----------------------------------------------------------|------------------------------------------------------------------|
 | `VK_KHR_acceleration_structure` / `MTLAccelerationStructure` | `gpu.acceleration_structure_blas(&[GeometryDesc { .. }])`     |
 | `VK_KHR_ray_tracing_pipeline` / Metal intersector tables  | `gpu.ray_tracing_pipeline(&RayTracingPipelineDesc { .. })`       |
-| `vkCmdTraceRaysKHR` / `dispatchThreads` on intersector    | `pipeline.dispatch_rays(w, h)`                                   |
+| `vkCmdTraceRaysKHR` / `dispatchThreads` on intersector    | `pipeline.dispatch_rays(&blas, &out, w, h)` (real on Metal — compute-based intersector, Apple family 6+) |
 | `VK_EXT_mesh_shader` / `MTLMeshRenderPipelineDescriptor`  | `gpu.mesh_pipeline(MeshPipelineDesc { .. })`                     |
 | `vkCmdDrawMeshTasksEXT` / `drawMeshThreadgroups:`         | `pipeline.dispatch([gx, gy, gz])`                                |
 | Tessellation control / evaluation stages                  | `gpu.tessellation_pipeline(TessTopology::Triangle, control_pts)` |
@@ -192,9 +192,10 @@ don't implement it. The render-side methods (`gpu.mesh_pipeline`,
 | `vkQueueBindSparse`                                       | (transparent — `map_tile` does the bind)                          |
 | Multi-queue (graphics / compute / transfer)               | `gpu.queue(QueueType::Compute)`, `gpu.queue_families()`          |
 | Transfer queue + `vkCmdCopyBuffer` / `MTLBlitCommandEncoder`| `gpu.async_copy_queue().copy_buffer(&dst, &src, n)`             |
+| `setThreadgroupMemoryLength:atIndex:` / workgroup-size spec constant | `#[quanta::shared(dyn)] let s: [f32];` + the wave's `dynamic_shared_bytes` argument (JIT-only; the size late-binds at wave creation) |
 | Secondary command buffers / `MTLIndirectCommandBuffer`    | `gpu.render_bundle(cap)`, `gpu.indirect_command_buffer(cap)`     |
 | `vkCmdDrawIndirect` / `drawPrimitives:indirectBuffer:`    | `render_pass.draw_indirect(&buffer, offset)`                     |
-| `VK_EXT_debug_printf`                                     | `gpu.printf_buffer(cap)?.drain()?`                               |
+| `VK_EXT_debug_printf` / MSL debug buffers                 | `gpu_print_f32(x)` / `_u32` / `_i32` in a `#[quanta::kernel(jit)]` — the driver drains the record buffer to stderr after the dispatch |
 | `CAMetalLayer` + `nextDrawable` / `VkSwapchainKHR` + `vkAcquireNextImageKHR` | `gpu.create_surface(&SurfaceTarget::MetalLayer { layer } /* or Xlib / Headless / `from_window(&window)?` with feature `raw-window-handle` */, &config)` + `surface.render_frame(f)` (acquire → render → present in one closure, resize self-heal), or the primitive `surface.acquire()` → `frame.present()` (native on Metal + Vulkan; a *suboptimal* Vulkan swapchain self-heals on the next acquire, hard `OUT_OF_DATE` → `SurfaceOutdated`) |
 | `MTLTexture` / `VkImage` handed to external code           | `texture.native_handle()` → `NativeTextureHandle::{Metal, Vulkan}` |
 | Fragment buffer table (`const device float4* [[buffer(n)]]` / fragment SSBO descriptor) | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |

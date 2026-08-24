@@ -8,9 +8,13 @@ Hardware-accelerated ray tracing through `AccelerationStructure` (BVH) and
 ```rust
 let gpu = quanta::init()?;
 if !gpu.supports_ray_tracing() {
-    return Err("RT requires Vulkan with VK_KHR_ray_tracing_pipeline".into());
+    return Err("no RT on this device".into());
 }
 ```
+
+True on Metal for Apple GPU family 6+ (every M-series chip — the path
+is compute-based, no RT silicon required) and on Vulkan devices
+exposing `VK_KHR_ray_tracing_pipeline`.
 
 ## Build a BLAS
 
@@ -50,9 +54,9 @@ buffers are released when the wrapper falls out of scope. Pass multiple
 
 ```rust
 let pipe = gpu.ray_tracing_pipeline(&RayTracingPipelineDesc {
-    ray_gen:     &raygen_binary,
-    closest_hit: &chit_binary,
-    miss:        &miss_binary,
+    ray_gen:     RAY_GEN.as_bytes(),  // native MSL on Metal (below)
+    closest_hit: &[],
+    miss:        &[],
     max_recursion: 2,
 })?;
 ```
@@ -62,28 +66,20 @@ that produces correct results — recursion costs scratch memory.
 
 ## Companion shaders
 
-```rust
-#[quanta::ray_gen]
-fn raygen() {
-    // trace a ray for this (x, y) pixel and write color to the output image
-}
-
-#[quanta::closest_hit]
-fn chit() {
-    // shade the surface at the closest hit
-}
-
-#[quanta::miss]
-fn miss() {
-    // background colour for rays that hit nothing
-}
-```
+On Metal, `ray_gen` is native MSL: an intersector compute kernel with
+the acceleration structure at `buffer(0)`, a `device float*` output at
+`buffer(1)`, one thread per ray — see the
+[ray-tracing tutorial](../tutorials/ray-tracing.md) for a complete
+kernel. The `#[quanta::ray_gen]` / `#[quanta::closest_hit]` /
+`#[quanta::miss]` proc-macros are stage-tagged stubs today; portable
+RT shader authoring lands with the IR's RT stages.
 
 ## Dispatch rays
 
 ```rust
-// One ray-gen invocation per (x, y) pair.
-pipe.dispatch_rays(1920, 1080)?;
+let out = gpu.field::<f32>(w * h)?;
+// One ray-gen invocation per (x, y) pair; hit distances land in `out`.
+pipe.dispatch_rays(&blas, &out, w, h)?;
 ```
 
 Width and height each clamp to `MAX_DISPATCH_DIM` (65535).
@@ -92,9 +88,10 @@ Width and height each clamp to `MAX_DISPATCH_DIM` (65535).
 
 | Backend | Status |
 |---------|--------|
-| Vulkan  | Pipeline create is lifecycle-level (extension-gated); `dispatch_rays` and the AS build execution return `NotSupported` pending shader-binding-table work + hardware validation |
-| Metal   | Pending intersector tables (Apple family 6+) |
+| Metal   | ✅ Real: `MTLAccelerationStructure` build + intersector compute pipeline + `dispatch_rays` (Apple family 6+, compute-based) |
+| Vulkan  | AS create/storage/destroy native; build execution + dispatch return `NotSupported` pending shader-binding-table work + real RT hardware |
 | WebGPU  | `NotSupported` (not in spec) |
+| CPU     | Lifecycle tier — dispatch recorded, output untouched |
 
 ## See also
 

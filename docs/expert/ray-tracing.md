@@ -2,9 +2,13 @@
 
 Hardware-accelerated ray tracing via Quanta. Requires GPU support
 (NVIDIA RTX, AMD RDNA 2+, Apple GPU family 6+ with Metal). The current
-v0.1 surface ships the **acceleration-structure foundation**; the full
+v0.1 surface ships **the full Metal path** — real
+`MTLAccelerationStructure` builds plus an intersector compute pipeline
+behind `dispatch_rays` (compute-based, so every M-series chip
+qualifies; M3+ accelerates the intersector in hardware) — and the
+**acceleration-structure foundation** on Vulkan; the Vulkan
 ray-tracing pipeline + shader binding tables + `vkCmdTraceRaysKHR`
-dispatch require IR-side work and are deferred to v0.2.x.
+dispatch require IR-side work and are deferred.
 
 ## What ships in v0.1
 
@@ -18,8 +22,9 @@ dispatch require IR-side work and are deferred to v0.2.x.
 | Vulkan: AS-storage + scratch buffer allocation + `vkCreateAccelerationStructureKHR` | ✅ validator-clean |
 | Vulkan: actual `vkCmdBuildAccelerationStructuresKHR` execution | ⚠️ Returns `NotSupported` — validator-clean inputs but lavapipe segfaults inside `vkQueueWaitIdle`. Pending real RT hardware (AMDGPU runner) to confirm whether this is a Mesa lavapipe bug or a deeper driver issue. |
 | Metal: hardware-feature gate via `[device supportsFamily:Apple6]` | ✅ |
-| Metal: Acceleration structure builds via `MTLAccelerationStructure` | ❌ Not yet wired — `dispatch_rays` returns `NotSupported` with "intersection compute pipeline integration is not yet wired". |
-| Ray-tracing pipelines + shader binding tables | ❌ Needs new IR shader stages (raygen / closest-hit / miss / any-hit / intersection) — multi-week IR work, deferred. |
+| Metal: acceleration-structure builds via `MTLAccelerationStructure` | ✅ Real — sizes via `accelerationStructureSizesWithDescriptor:`, triangle geometry from the vertex `Field` (indexed or not), built on a command buffer and waited. |
+| Metal: `dispatch_rays` | ✅ Real — the `ray_gen` MSL source compiles to an intersector compute pipeline; the dispatch binds the AS at `buffer(0)` and the `Field<f32>` output at `buffer(1)`, one thread per ray. `tests/gpu_ray_tracing.rs` pins the exact `t = 0.5` hit end to end. |
+| Portable ray-tracing pipelines + shader binding tables | ❌ Needs new IR shader stages (raygen / closest-hit / miss / any-hit / intersection). Metal runs on native MSL ray-gen source today; Vulkan waits on this work. |
 | WebGPU | `NotSupported("ray tracing is not in the WebGPU spec")`. |
 
 ## Available API today
@@ -49,6 +54,16 @@ let blas = gpu.acceleration_structure_blas(&[GeometryDesc {
     index_count: 0,
     vertex_stride: 12,
 }])?;
+
+// Metal: compile the MSL ray-gen intersector and fire the rays.
+let pipe = gpu.ray_tracing_pipeline(&RayTracingPipelineDesc {
+    ray_gen: RAY_GEN_MSL.as_bytes(),
+    closest_hit: &[],
+    miss: &[],
+    max_recursion: 1,
+})?;
+let out = gpu.field::<f32>(1)?;
+pipe.dispatch_rays(&blas, &out, 1, 1)?;   // out[0] = hit distance
 ```
 
 The returned `AccelerationStructure` is `Drop`-safe — dropping it calls
@@ -59,24 +74,26 @@ the AS handle + storage buffer + storage memory.
 
 | Backend | Builds | Dispatch | Notes |
 |---------|--------|----------|-------|
+| Metal | ✅ native `MTLAccelerationStructure` build | ✅ intersector compute pipeline | Compute-based on Apple family 6+ (no RT silicon required; M3+ accelerates in hardware). `ray_gen` is native MSL source under the MVP ABI (AS at `buffer(0)`, output at `buffer(1)`). |
 | Vulkan + RADV / NVIDIA | ⚠️ AS create + storage + destroy native; build call gated as NotSupported | ❌ pending IR work | The proc-addr foundation is loaded; the build sequence follows once we have hardware to validate against. |
 | Vulkan + lavapipe | ⚠️ Same as above | ❌ | Lavapipe technically supports `VK_KHR_ray_tracing_pipeline` but its build execution path is the source of the segfault that gates slice 23. |
-| Metal | ⚠️ Hardware-gated; build path is a buffer placeholder | ❌ | `dispatch_rays` returns "Metal ray-tracing dispatch pending — hardware supports it, but the intersection compute pipeline integration is not yet wired". |
+| CPU | lifecycle tier | lifecycle tier | Wrappers construct and destroy; the dispatch is recorded, the output untouched. |
 | WebGPU | n/a | n/a | Not in spec. |
 
-## What v0.2.x will add
+## What comes next
 
 - Vulkan: real `vkCmdBuildAccelerationStructuresKHR` execution
   (validator-clean inputs already in place; needs hardware
   validation to ship).
-- Vulkan + Metal: full ray-tracing pipeline + shader binding tables.
-  Requires raygen / closest-hit / miss / any-hit / intersection shader
-  stages in `quanta-ir` and matching MSL / SPIR-V emitters. Multi-week
-  IR work.
-- Emitter wiring for the RT stages: the `#[quanta::ray_gen]`,
-  `#[quanta::closest_hit]`, `#[quanta::miss]` proc-macros exist (in
-  `quanta-render-dsl`, re-exported by `quanta-render`) and the `ShaderStage`
-  enum carries the variants, but no backend emitter consumes them yet.
+- Vulkan: full ray-tracing pipeline + shader binding tables +
+  `vkCmdTraceRaysKHR`.
+- Portable RT shader authoring: raygen / closest-hit / miss / any-hit /
+  intersection shader stages in `quanta-ir` and matching MSL / SPIR-V
+  emitters. The `#[quanta::ray_gen]`, `#[quanta::closest_hit]`,
+  `#[quanta::miss]` proc-macros exist (in `quanta-render-dsl`,
+  re-exported by `quanta-render`) and the `ShaderStage` enum carries
+  the variants, but no backend emitter consumes them yet — Metal runs
+  on native MSL ray-gen source until then.
 
 ## How to validate against real hardware
 

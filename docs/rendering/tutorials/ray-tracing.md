@@ -12,8 +12,12 @@ see [Expert: Ray tracing](../../expert/ray-tracing.md).
 
 ## Capability gate
 
-Ray tracing is available on Vulkan (with `VK_KHR_acceleration_structure` +
-`VK_KHR_ray_tracing_pipeline`) and pending on Metal (Apple family 6+).
+Ray tracing is **live on Metal** (Apple GPU family 6+ — every M-series
+chip; compute-based intersectors, so no RT silicon is required, and M3+
+hardware accelerates them transparently). On Vulkan the
+acceleration-structure foundation is in place behind
+`VK_KHR_acceleration_structure` + `VK_KHR_ray_tracing_pipeline`, with
+the build execution gated `NotSupported` pending real RT hardware.
 WebGPU returns `NotSupported` — the spec doesn't include RT.
 
 ```rust
@@ -49,39 +53,64 @@ scratch buffer are freed when it falls out of scope.
 
 ```rust
 let pipe = gpu.ray_tracing_pipeline(&RayTracingPipelineDesc {
-    ray_gen:     &raygen_binary,
-    closest_hit: &chit_binary,
-    miss:        &miss_binary,
+    ray_gen:     RAY_GEN.as_bytes(),  // native MSL on Metal (below)
+    closest_hit: &[],
+    miss:        &[],
     max_recursion: 2,
 })?;
 ```
 
-`max_recursion` clamps to `MAX_RECURSION_DEPTH` (31). The shader binaries come
-from the matching attribute macros:
+`max_recursion` clamps to `MAX_RECURSION_DEPTH` (31). On Metal —
+the backend where the full path runs today — `ray_gen` is **native MSL
+source**: an intersector compute kernel following the MVP ABI (the
+acceleration structure at `buffer(0)`, a `Field<f32>` output at
+`buffer(1)`, one thread per ray):
 
 ```rust
-#[quanta::ray_gen]    fn raygen() { /* trace_ray(...) */ }
-#[quanta::closest_hit] fn chit()  { /* shade hit */ }
-#[quanta::miss]        fn miss()  { /* shade miss */ }
+const RAY_GEN: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+using namespace metal::raytracing;
+kernel void trace(primitive_acceleration_structure accel [[buffer(0)]],
+                  device float* out [[buffer(1)]],
+                  uint tid [[thread_position_in_grid]]) {
+  ray r;
+  r.origin = float3(0.25, 0.25, 0.0);
+  r.direction = float3(0.0, 0.0, 1.0);
+  r.min_distance = 0.0;
+  r.max_distance = 100.0;
+  intersector<triangle_data> isect;
+  intersection_result<triangle_data> res = isect.intersect(r, accel);
+  out[tid] = (res.type == intersection_type::triangle) ? res.distance : -1.0;
+}
+"#;
 ```
+
+(The `#[quanta::ray_gen]` / `#[quanta::closest_hit]` / `#[quanta::miss]`
+proc-macros exist as stage-tagged stubs; portable RT shader authoring
+through them is the planned route once the IR grows the RT stages.)
 
 ## Dispatching rays
 
 ```rust
-pipe.dispatch_rays(1920, 1080)?;
+let out = gpu.field::<f32>(width * height)?;
+pipe.dispatch_rays(&blas, &out, width, height)?;
 ```
 
-Width and height are clamped to `MAX_DISPATCH_DIM` (65535) per axis. One
-ray-gen invocation runs per `(x, y)` pair.
+The dispatch binds the acceleration structure and the output field,
+then runs one ray-gen invocation per `(x, y)` pair. Width and height
+are clamped to `MAX_DISPATCH_DIM` (65535) per axis. A triangle in the
+`z = 0.5` plane hit by a `+z` ray from `z = 0` reads back exactly
+`t = 0.5` — the shape `tests/gpu_ray_tracing.rs` pins end to end.
 
 ## Backend status (v0.1)
 
 | Backend | Status                                                         |
 |---------|----------------------------------------------------------------|
-| Vulkan  | Build path (`vkCmdBuildAccelerationStructuresKHR`) gated `NotSupported` pending hardware validation; pipeline create + dispatch live |
-| Metal   | Pending intersector tables (Apple family 6+)                   |
+| Metal   | ✅ Real: `MTLAccelerationStructure` build + intersector compute pipeline + `dispatch_rays` (Apple family 6+, compute-based — no RT hardware needed) |
+| Vulkan  | AS create/storage/destroy native; build execution gated `NotSupported` pending real RT hardware; dispatch pending shader-binding-table work |
 | WebGPU  | `NotSupported` (not in the spec)                               |
-| CPU     | Software lifecycle only                                        |
+| CPU     | Lifecycle tier — the dispatch is recorded, the output untouched |
 
 ## Constants
 

@@ -160,6 +160,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `queue.on_submitted_work_done(callback)` | `pulse.on_complete(\|\| { .. })` (runs on a waiter thread; consumes the pulse) |
 | `queue.write_texture(origin, data, layout, size)` | `texture.write(&data)` / `texture.write_region(origin, size, &data)` |
 | `var<storage, read> t: array<vec4<f32>>` read in a shader | `table: &[Vec4]` shader param, indexed `table[i]`; bound with `.uniform(slot, &field)` at the declaration index shared with `&T` uniforms |
+| `var<workgroup> s: array<f32, 256>` | `#[quanta::shared] let s: [f32; 256];` in a kernel — and `#[quanta::shared(dyn)] let s: [f32];` for a size chosen at wave creation (JIT-only) |
 | `texture_storage_2d<rgba8unorm, read_write>` in compute | `&mut Texture2D<u32>` kernel param (texels as packed `0xAABBGGRR` u32) |
 | `texture_storage_2d<_, read>` in compute | `&Texture2D<f32>` / `&Texture2D<u32>` kernel param (read-only texel access) |
 | `texture_2d<f32>` + `sampler` in compute | `&Sampled2D<f32>` kernel param, read with `texture_sample_2d` (fixed nearest/clamp sampler) |
