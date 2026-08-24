@@ -158,6 +158,16 @@ pub(crate) fn expand_kernel_core(attr: TokenStream, func: ItemFn) -> TokenStream
         .to_compile_error()
         .into();
     }
+    if quanta_ir::body_contains_debug_print(&kernel_def.body) && !is_jit {
+        return syn::Error::new_spanned(
+            &func.sig.ident,
+            "gpu_print is JIT-only: the driver allocates and drains the debug buffer \
+             from the kernel IR at wave creation, which the AOT route's pre-emitted \
+             artifacts don't carry. Add the flag: #[quanta::kernel(jit)]",
+        )
+        .to_compile_error()
+        .into();
+    }
 
     if is_jit {
         return emit_jit_kernel(&func, &kernel_def, &kernel_attrs.crate_path);

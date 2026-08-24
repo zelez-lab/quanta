@@ -246,6 +246,24 @@ impl MetalDevice {
             .write()
             .map_err(|_| QuantaError::internal("lock poisoned"))?
             .insert(handle, pipeline);
+        // Step 049: a kernel containing DebugPrint gets a CPU-visible
+        // debug buffer (16384 words: cursor + 3-word records), bound
+        // at buffer(30) on every dispatch and drained to stderr after
+        // completion.
+        if quanta_ir::body_contains_debug_print(&kernel.body) {
+            let dbg = unsafe { ffi::msg_new_buffer(self.device, 16384 * 4, 0) };
+            if dbg.is_null() {
+                return Err(QuantaError::internal("failed to allocate debug buffer"));
+            }
+            unsafe {
+                let contents = ffi::msg_ptr(dbg, b"contents\0") as *mut u32;
+                *contents = 0;
+            }
+            self.debug_bufs
+                .write()
+                .map_err(|_| QuantaError::internal("lock poisoned"))?
+                .insert(handle, dbg);
+        }
         Ok(Wave {
             handle,
             bindings: [0u64; 16],
@@ -355,6 +373,58 @@ impl MetalDevice {
         })
     }
 
+    /// Bind the wave's debug buffer at buffer(30), when it has one.
+    /// Returns whether a drain is owed after completion.
+    fn bind_debug_buf(&self, encoder: ffi::Id, wave: &Wave) -> Result<bool, QuantaError> {
+        let bufs = self
+            .debug_bufs
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        if let Some(dbg) = bufs.get(&wave.handle) {
+            unsafe {
+                ffi::msg_set_buffer(encoder, b"setBuffer:offset:atIndex:\0", *dbg, 0, 30);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Print the wave's recorded (quark, tag, bits) records to stderr
+    /// in the CPU executor's format, then reset the cursor. The buffer
+    /// is shared-storage, so the read needs no blit.
+    fn drain_debug_buf(&self, wave_handle: u64) -> Result<(), QuantaError> {
+        let bufs = self
+            .debug_bufs
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+        let Some(dbg) = bufs.get(&wave_handle) else {
+            return Ok(());
+        };
+        unsafe {
+            let words = ffi::msg_ptr(*dbg, b"contents\0") as *mut u32;
+            let cursor = (*words).min(16383) as usize;
+            let mut off = 0usize;
+            while off + 3 <= cursor {
+                let quark = *words.add(off + 1);
+                let tag = *words.add(off + 2);
+                let bits = *words.add(off + 3);
+                match tag {
+                    2 => std::eprintln!(
+                        "[quanta gpu_print] quark={} = {}",
+                        quark,
+                        f32::from_bits(bits)
+                    ),
+                    1 => std::eprintln!("[quanta gpu_print] quark={} = {}", quark, bits as i32),
+                    _ => std::eprintln!("[quanta gpu_print] quark={} = {}", quark, bits),
+                }
+                off += 3;
+            }
+            *words = 0;
+        }
+        Ok(())
+    }
+
     pub(crate) fn wave_dispatch_impl(
         &self,
         wave: &Wave,
@@ -439,6 +509,7 @@ impl MetalDevice {
         drop(textures);
         // Sampled reads need the compute sampler bound at each texture index.
         self.bind_compute_sampler(encoder, wave)?;
+        let has_debug = self.bind_debug_buf(encoder, wave)?;
 
         let grid = ffi::MTLSize::new(groups[0] as u64, groups[1] as u64, groups[2] as u64);
         let group_size = ffi::MTLSize::new(
@@ -450,7 +521,15 @@ impl MetalDevice {
             ffi::msg_dispatch_threadgroups(encoder, grid, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
         }
-        Ok(make_async_pulse(self, cmd))
+        let mut pulse = make_async_pulse(self, cmd);
+        if has_debug {
+            // A printing kernel completes synchronously: the records
+            // must reach stderr before control returns (debug tool
+            // semantics — the CPU tier prints inline too).
+            pulse.wait()?;
+            self.drain_debug_buf(wave.handle)?;
+        }
+        Ok(pulse)
     }
 
     /// Dispatch by total thread count — Metal clips to exact grid size.
@@ -467,7 +546,22 @@ impl MetalDevice {
         unsafe {
             ffi::msg_void(encoder, b"endEncoding\0");
         }
-        Ok(make_async_pulse(self, cmd))
+        // The encode helper bound the debug buffer; the drain decision
+        // re-reads the map here.
+        let has_debug = self
+            .debug_bufs
+            .read()
+            .map_err(|_| QuantaError::internal("lock poisoned"))?
+            .contains_key(&wave.handle);
+        let mut pulse = make_async_pulse(self, cmd);
+        if has_debug {
+            // A printing kernel completes synchronously: the records
+            // must reach stderr before control returns (debug tool
+            // semantics — the CPU tier prints inline too).
+            pulse.wait()?;
+            self.drain_debug_buf(wave.handle)?;
+        }
+        Ok(pulse)
     }
 
     /// Encode one exact-count dispatch (pipeline, buffers, push
@@ -555,6 +649,7 @@ impl MetalDevice {
         drop(textures);
         // Sampled reads need the compute sampler bound at each texture index.
         self.bind_compute_sampler(encoder, wave)?;
+        self.bind_debug_buf(encoder, wave)?;
 
         let grid = ffi::MTLSize::new(quarks as u64, 1, 1);
         let group_size = ffi::MTLSize::new(
@@ -634,6 +729,7 @@ impl MetalDevice {
         // (Indirect dispatch binds no textures today, so this is a no-op unless
         // a future indirect texture path sets texture_count.)
         self.bind_compute_sampler(encoder, wave)?;
+        let has_debug = self.bind_debug_buf(encoder, wave)?;
 
         let indirect_buf = buffers.get(&buffer).ok_or_else(|| {
             QuantaError::invalid_param("bad indirect buffer")
@@ -648,6 +744,14 @@ impl MetalDevice {
             ffi::msg_dispatch_threadgroups_indirect(encoder, *indirect_buf, offset, group_size);
             ffi::msg_void(encoder, b"endEncoding\0");
         }
-        Ok(make_async_pulse(self, cmd))
+        let mut pulse = make_async_pulse(self, cmd);
+        if has_debug {
+            // A printing kernel completes synchronously: the records
+            // must reach stderr before control returns (debug tool
+            // semantics — the CPU tier prints inline too).
+            pulse.wait()?;
+            self.drain_debug_buf(wave.handle)?;
+        }
+        Ok(pulse)
     }
 }

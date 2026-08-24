@@ -165,6 +165,10 @@ pub struct MetalDevice {
     /// Real MTLAccelerationStructure objects (step 026 — compute-based
     /// RT works on every Apple6+ GPU, no RT hardware needed).
     pub(crate) accel_structs: RwLock<HashMap<u64, ffi::Id>>,
+    /// Per-wave debug-print buffers (step 049): allocated at wave_jit
+    /// when the kernel contains `DebugPrint`, bound at buffer(30) on
+    /// dispatch, drained to stderr after completion.
+    pub(crate) debug_bufs: RwLock<HashMap<u64, ffi::Id>>,
     /// Ray-tracing compute pipelines: the ray-gen intersector kernel
     /// compiled as a compute pipeline state.
     pub(crate) rt_pipelines: RwLock<HashMap<u64, ffi::Id>>,
@@ -371,6 +375,7 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
         self_ref: crate::driver::DeviceSelfRef::new(),
         buffers: RwLock::new(HashMap::new()),
         accel_structs: RwLock::new(HashMap::new()),
+        debug_bufs: RwLock::new(HashMap::new()),
         rt_pipelines: RwLock::new(HashMap::new()),
         textures: RwLock::new(HashMap::new()),
         texture_formats: RwLock::new(HashMap::new()),

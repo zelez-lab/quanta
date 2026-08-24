@@ -45,6 +45,15 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// Workgroup-scope barrier. All quarks in the workgroup wait until
     /// every quark has reached this point.
+    /// Record `value` (with the calling quark's id) into the kernel's
+    /// debug buffer; the host prints `[quanta gpu_print] quark=… = …`
+    /// to stderr after the dispatch completes. JIT-only — a debug
+    /// tool, not an output path.
+    pub fn gpu_print_u32(value: u32);
+    /// Signed twin of `gpu_print_u32`.
+    pub fn gpu_print_i32(value: i32);
+    /// Float twin of `gpu_print_u32`.
+    pub fn gpu_print_f32(value: f32);
     pub fn barrier();
 
     /// Memory fence with the given ordering. `order` matches

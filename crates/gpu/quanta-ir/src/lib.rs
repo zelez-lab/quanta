@@ -56,5 +56,5 @@ pub use shader::{
 pub use types::{
     AtomicOp, BinOp, CmpOp, ConstValue, CoopFragUse, CoopMatrixUses, CoopMmaUse, DeviceFnDef,
     KernelDef, KernelOp, KernelParam, MathFn, MatrixFrag, MemoryOrder, Reg, ScalarType, UnaryOp,
-    cooperative_matrix_uses, field_write_mask, is_f64_transcendental,
+    body_contains_debug_print, cooperative_matrix_uses, field_write_mask, is_f64_transcendental,
 };

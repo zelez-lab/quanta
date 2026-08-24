@@ -240,15 +240,21 @@ fn walk_op(caps: &BackendCaps, report: &mut ValidationReport, op: &KernelOp, loc
                 reason: "cooperative matrix has no lowering on this backend (WGSL has no matrix type; the CPU executor has no fragment model) — Metal and Vulkan only",
             });
         }
-        // In-kernel debug print has no working GPU lowering: SPIR-V and WGSL
-        // emit nothing, and the MSL `_debug_buf` at buffer(30) is never
-        // bound by the Metal driver (an unbound-buffer fault, not a print).
-        // The CPU executor prints; every GPU backend refuses.
-        DebugPrint { ty, .. } if caps.backend != crate::caps::Backend::Cpu => {
+        // In-kernel debug print runs on the CPU executor (inline
+        // stderr) and on Metal (the driver binds the debug buffer at
+        // buffer(30) and drains it after completion — step 049).
+        // SPIR-V and WGSL still have no lowering; those backends
+        // refuse rather than silently drop the print.
+        DebugPrint { ty, .. }
+            if !matches!(
+                caps.backend,
+                crate::caps::Backend::Cpu | crate::caps::Backend::Metal
+            ) =>
+        {
             report.issues.push(ValidationIssue {
                 location: format!("{}: {}", loc, op_name(op)),
                 ty: *ty,
-                reason: "in-kernel debug print has no GPU lowering (SPIR-V/WGSL emit nothing; Metal's debug buffer is never bound) — runs on the CPU device only",
+                reason: "in-kernel debug print has no SPIR-V/WGSL lowering yet — runs on the CPU device and Metal",
             });
         }
         // GLSL.std.450 transcendentals (Sin/…/Exp/Log/Pow) have no f64 variant;

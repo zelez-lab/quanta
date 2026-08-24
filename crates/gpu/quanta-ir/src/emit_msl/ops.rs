@@ -1036,19 +1036,22 @@ pub(super) fn emit_op(
             ));
         }
         KernelOp::DebugPrint { src, ty } => {
-            let val_expr = match ty {
-                ScalarType::F32 => format!("as_type<uint>(r{})", src.0),
-                ScalarType::U32 => format!("r{}", src.0),
-                ScalarType::I32 => format!("as_type<uint>(r{})", src.0),
-                _ => format!("uint(r{})", src.0),
+            // Record layout: word 0 is the atomic cursor, then 3-word
+            // records (quark_id, type tag, raw bits). The tag lets the
+            // host format the bits as the printed type — 0 = u32,
+            // 1 = i32, 2 = f32 — matching the driver's drain.
+            let (tag, val_expr) = match ty {
+                ScalarType::F32 => (2u32, format!("as_type<uint>(r{})", src.0)),
+                ScalarType::I32 => (1u32, format!("as_type<uint>(r{})", src.0)),
+                ScalarType::U32 => (0u32, format!("r{}", src.0)),
+                _ => (0u32, format!("uint(r{})", src.0)),
             };
             out.push_str(&format!(
-                "{}{{ uint _dbg_off = atomic_fetch_add_explicit((device atomic_uint*)&_debug_buf[0], 2u, memory_order_relaxed); ",
+                "{}{{ uint _dbg_off = atomic_fetch_add_explicit((device atomic_uint*)&_debug_buf[0], 3u, memory_order_relaxed); ",
                 pad,
             ));
             out.push_str(&format!(
-                "if (_dbg_off + 2u < 16384u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {}; }} }}\n",
-                val_expr,
+                "if (_dbg_off + 3u < 16384u) {{ _debug_buf[_dbg_off + 1u] = _quark_id; _debug_buf[_dbg_off + 2u] = {tag}u; _debug_buf[_dbg_off + 3u] = {val_expr}; }} }}\n",
             ));
         }
         KernelOp::Dispatch { .. } => {

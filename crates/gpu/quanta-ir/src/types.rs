@@ -366,6 +366,20 @@ pub fn field_write_mask(def: &KernelDef) -> u16 {
     mask
 }
 
+/// Whether the body contains a `DebugPrint`, at any nesting depth
+/// (Branch arms and Loop bodies included) — the drivers, the macro
+/// and the emitters all key the debug-buffer machinery on this.
+pub fn body_contains_debug_print(ops: &[KernelOp]) -> bool {
+    ops.iter().any(|op| match op {
+        KernelOp::DebugPrint { .. } => true,
+        KernelOp::Branch {
+            then_ops, else_ops, ..
+        } => body_contains_debug_print(then_ops) || body_contains_debug_print(else_ops),
+        KernelOp::Loop { body, .. } => body_contains_debug_print(body),
+        _ => false,
+    })
+}
+
 /// Binary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
