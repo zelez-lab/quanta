@@ -54,6 +54,7 @@ import Quanta.Wasm.Preservation
 import Quanta.Wasm.PreservationList
 import Quanta.Wasm.PreservationBridge
 import Quanta.Wasm.PreservationIfMerge
+import Quanta.Wasm.PreservationIfBody
 import Quanta.Wasm.LowerInvariants
 import Quanta.Wasm.LowerScopeValid
 import Quanta.Wasm.PreservationInduction
