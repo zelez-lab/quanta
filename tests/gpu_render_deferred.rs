@@ -18,8 +18,13 @@ use quanta::RenderGpu;
 use quanta::{Color, FieldUsage, Format};
 use quanta::{Vec2, Vec4};
 
+/// Every test here asserts the lane's exact counters (`__pending_encodes`,
+/// `__outstanding_batches`), which are per DEVICE — so each test gets a
+/// device of its own (its own lane) and the file is safe under cargo's
+/// default parallel test runner. The shared `init()` device would let
+/// tests count each other's passes.
 fn try_gpu() -> Option<quanta::Gpu> {
-    quanta::init().ok()
+    quanta::init_isolated().ok()
 }
 
 #[rustfmt::skip]
