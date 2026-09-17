@@ -4,7 +4,7 @@ Dispatches don't submit one by one — they **encode** into a per-device
 batch and the whole batch submits at the next *sync point*. Chains of
 small kernels cost one submission instead of one each (~15× on the
 per-op overhead for a define-by-run chain; the mechanism is
-[Execution model → Deferred dispatch](../../concepts/execution-model.md#deferred-dispatch)).
+[Execution model → Deferred submission](../../concepts/execution-model.md#deferred-submission)).
 This page is the practical side: what counts as a sync point, when you
 need an explicit one, and how to structure loops to keep the batching.
 

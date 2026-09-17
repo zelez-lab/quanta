@@ -182,33 +182,48 @@ block a thread use `pulse.on_complete(f)` instead: the callback fires from a
 background waiter thread at completion. Presenting a surface frame needs no
 wait; same-queue ordering covers it.
 
-## Deferred dispatch
+## Deferred submission
 
 Committing one command buffer per dispatch costs far more than the dispatch
 itself for small kernels (~200 µs per op on Apple silicon, almost all of it
-the per-op commit + host wait). So deferral is the dispatch model, not a
-mode: `gpu.dispatch()` **encodes** into a shared per-device batch instead
-of committing, and the batch is submitted when something needs the
+the per-op commit + host wait), and one per render pass is the encode
+floor of any multi-pass frame (a backdrop blur is five passes; four of
+them, twenty command buffers). So deferral is the submission model, not a
+mode: `gpu.dispatch()`, `RenderBuilder::pulse()` and `resolve_texture()`
+all **encode** into one shared per-device batch instead of committing,
+in program order, and the batch is submitted when something needs the
 results — a `pulse.wait()` on any returned pulse, an explicit
-`gpu.flush()`, `gpu.wait_idle()`, or a `Field` byte operation (`read`,
+`gpu.flush()`, `gpu.wait_idle()`, a `Field` byte operation (`read`,
 `write`, `copy_from`, `native_handle`) touching a buffer the pending batch
-references. Program order is preserved: dispatches execute in encode
-order; a submission that bypasses the lane (`wave_dispatch`, an explicit
-`batch()`, an indirect dispatch, a render pass, an ICB execute) first
-commits pending work so queue order stays program order; and cross-queue
-paths (`Queue::submit`, async compute/copy) complete pending work outright
-before touching their queue.
+references, a `Texture` byte operation (`read`, `write`, `write_region`,
+`native_handle`) touching a texture it drew into or sampled, a
+`SurfaceFrame::present`, or `gpu.submit()` (submit without waiting — the
+mid-frame kick when a heavy early stretch should overlap the rest of the
+encode). A frame loop therefore reaches the queue as ONE command buffer
+per frame, submitted at present. Program order is preserved: work
+executes in encode order — a pass that samples an earlier pass's target,
+or vertex-pulls a compute-written buffer, sees the finished result inside
+the same command buffer; a submission that bypasses the lane
+(`wave_dispatch`, an explicit `batch()`, an indirect dispatch, an ICB
+execute, `generate_mipmaps`, a present) first submits pending work so
+queue order stays program order; and cross-queue paths (`Queue::submit`,
+async compute/copy) complete pending work outright before touching their
+queue. A result read that is not a byte op (`stencil_read`,
+`occlusion_query_read`, `read_timestamps`) completes pending work too.
 
 The sync contract is unchanged — reads still require a wait, and a wait
 still completes everything the read needs; deferral only moves *when* work
-is submitted, never what a sync point means. On backends without a batch
-path, for texture-binding waves, and for waves that `gpu_print`
-(the driver waits so it can drain the records), `dispatch` commits and
-completes inline (the returned pulse is already done). A composed `quanta::sci`
-expression therefore executes as a handful of submissions instead of one
-per op — where define-by-run training gets its throughput. Exception:
-`MappedField` views are raw memory the lane cannot intercept — flush
-explicitly before reading one.
+is submitted, never what a sync point means. Validation still happens at
+`pulse()` (dead handles, pass shape); only the submission moves. Work
+that is never synced — no wait, no read, no present, no flush — may never
+execute; that was always unobservable by contract. On backends without a
+batch path (WebGPU submits per pass and per dispatch), for texture-binding
+waves, and for waves that `gpu_print` (the driver waits so it can drain
+the records), the work commits and completes inline (the returned pulse
+is already done). A composed `quanta::sci` expression therefore executes
+as a handful of submissions instead of one per op — where define-by-run
+training gets its throughput. Exception: `MappedField` views are raw
+memory the lane cannot intercept — flush explicitly before reading one.
 
 Wave creation is cached the same way dispatch is deferred — as the model,
 not a mode: `gpu.wave()` / `gpu.wave_jit()` key the compiled driver

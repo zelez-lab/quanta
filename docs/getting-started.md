@@ -389,7 +389,7 @@ the results back from the same struct.
    are *batched*: they encode into one per-device submission and the
    wait is what submits and completes it — so chains of dispatches
    cost one submission, not one each (see
-   [Execution model](concepts/execution-model.md#deferred-dispatch)).
+   [Execution model](concepts/execution-model.md#deferred-submission)).
 
 No shader files. No intermediate representations. No runtime compilation.
 No manual slot numbers. No `gpu.write_field`. The GPU binary is baked into

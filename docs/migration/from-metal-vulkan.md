@@ -11,7 +11,7 @@ while maintaining the same performance (it generates the same API calls under th
 | Pipeline state objects | `#[quanta::kernel]` (automatic) |
 | Shader compilation at runtime | Build-time (proc macro) |
 | Platform `#ifdef` / `#if __METAL__` | One source, all backends |
-| Command buffer/encoder management | Automatic — dispatches encode into a per-device batch, submitted at sync points |
+| Command buffer/encoder management | Automatic — dispatches, render passes and resolves encode into a per-device batch, submitted at sync points (a present, a wait, a read, `flush()` / `submit()`): one command buffer per frame by construction |
 | Memory type selection (Vulkan) | Automatic (driver picks optimal) |
 | `MTLLibrary` / `VkShaderModule` | Embedded in binary as `KernelBinary`; the driver picks its artifact by `Gpu::artifact_kind()` |
 | `MTLCopyAllDevices` / `vkEnumeratePhysicalDevices` + a choice | `quanta::devices()`, or `QUANTA_DEVICE=<index or name>` for `init()` |

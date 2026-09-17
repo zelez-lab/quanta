@@ -31,11 +31,16 @@ gpu.render_into(&target, |b| {
 
 The contract:
 
-- **No host wait.** The group's pass is submitted when its closure
+- **No host wait.** The group's pass is encoded when its closure
   pulses; any LATER pass on the same `Gpu` that samples the layer sees
-  the finished contents (submission order plus the render-then-sample
-  transition the drivers guarantee). Wait inside the closure only if
-  the host itself reads the layer back.
+  the finished contents (program order plus the render-then-sample
+  transition the drivers guarantee). A host read of the layer
+  (`layer.read()`) completes the pass by itself.
+- **One command buffer.** Passes ride the device's pending lane, so a
+  group, the passes that sample it, and the frame's other passes reach
+  the queue together at the next sync point (typically the present) —
+  a backdrop pyramid over four surfaces is one submission, not twenty.
+  See the execution-model chapter on deferred submission.
 - **Nesting is free.** A group drawn inside another group's closure is
   simply an earlier pass — compose layer trees to any depth.
 - **`.msaa(n)` composes.** Call `.msaa(n).msaa_resolve()` on the
@@ -47,6 +52,16 @@ The contract:
   passes keep the driver resource alive through the deferred-destroy
   machinery, so dropping is always safe; idle shapes a consumer stops
   using are trimmed automatically.
+
+A pooled layer whose first use is NOT a pass — the destination of a
+`resolve_texture` off a multisampled base, a target several later
+passes draw into — comes from `acquire_group`:
+
+```rust,ignore
+let snapshot = gpu.acquire_group((w, h), Format::RGBA8)?; // contents undefined
+gpu.resolve_texture(&msaa_base, &snapshot)?;               // deferred, in order
+// … blur passes sample `snapshot`, composite draws it back …
+```
 
 Manual control — your own render-target textures, explicit
 `ColorTarget` ops, resolve into a texture you keep — remains available

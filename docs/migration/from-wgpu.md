@@ -131,7 +131,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 - Pipeline creation descriptors
 - Bind group creation
 - Command encoder + compute pass management
-- `queue.submit()` (dispatches are encoded and batch-submitted automatically at sync points)
+- `queue.submit()` (dispatches and render passes are encoded and batch-submitted automatically at sync points)
 - Async buffer mapping + polling
 
 ## API mapping
@@ -154,7 +154,7 @@ fn main() -> Result<(), quanta::QuantaError> {
 | `pass.set_bind_group(0, &bg, &[])` | `wave.bind(slot, &field)` |
 | `pass.dispatch_workgroups(x, y, z)` | `gpu.dispatch(&wave, n)` |
 | `encoder.copy_buffer_to_buffer(...)` | `dst.copy_from(&src)` |
-| `queue.submit(...)` | automatic — dispatches encode into a per-device batch, submitted at the next sync point (`pulse.wait()` / `flush()` / a read); see [Execution model](../concepts/execution-model.md#deferred-dispatch) |
+| `queue.submit(...)` | automatic — dispatches, render passes and resolves encode into a per-device batch, submitted at the next sync point (`pulse.wait()` / `flush()` / `submit()` / a read / a present); see [Execution model](../concepts/execution-model.md#deferred-submission) |
 | `buffer.slice(..).map_async(...)` | `field.read()` |
 | `device.poll(Maintain::Wait)` | `pulse.wait()` / `gpu.wait_idle()` |
 | `queue.on_submitted_work_done(callback)` | `pulse.on_complete(\|\| { .. })` (runs on a waiter thread; consumes the pulse) |

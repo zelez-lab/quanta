@@ -199,9 +199,11 @@ loop {
 }
 ```
 
-The closure renders into `frame.texture()` and submits with `.pulse()`;
-`render_frame` presents when it returns `Ok` (no CPU wait needed — the
-driver orders presentation after the submitted GPU work). On a closure
+The closure renders into `frame.texture()` and ends each pass with
+`.pulse()`; `render_frame` presents when it returns `Ok`. The present is
+the frame's submit point: every pass encoded since the last sync point
+reaches the queue as one command buffer, and presentation is ordered
+after it — no CPU wait needed. On a closure
 `Err` the frame drops **unpresented** and the error propagates. When
 `acquire` reports `SurfaceOutdated` (the window resized) and the driver can
 read the target's current extent (Metal `drawableSize`, Vulkan

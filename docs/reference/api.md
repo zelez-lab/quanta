@@ -129,12 +129,13 @@ trait below.
 |--------|---------|-------------|
 | `wave(kernel_bytes)` | `Result<Wave>` | Create wave from compiled kernel (pipeline cached per device by kernel bytes — repeats skip construction) |
 | `wave_jit(kernel_def)` | `Result<Wave>` | JIT-compile KernelDef and create wave (same per-device cache — only the first creation compiles) |
-| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count), **deferred**: encodes into the per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-dispatch)) |
+| `dispatch(wave, quarks)` | `Result<Pulse>` | Dispatch 1D (exact thread count), **deferred**: encodes into the per-device batch, submitted at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-submission)) |
 | `wave_dispatch(wave, [x,y,z])` | `Result<Pulse>` | Dispatch with group counts (commits, ordered after pending deferred work) |
 | `dispatch_indirect(wave, buf, off)` | `Result<Pulse>` | GPU-driven dispatch (commits, ordered after pending deferred work) |
 | `reload_wave(wave, kernel)` | `Result<()>` | Hot-reload kernel binary |
 | `batch()` | `Result<Batch>` | Begin an explicit multi-dispatch batch |
-| `flush()` | `Result<()>` | Submit all deferred dispatches and block until they complete |
+| `flush()` | `Result<()>` | Submit all deferred work — dispatches, render passes, resolves — and block until it completes |
+| `submit()` | `Result<()>` | Submit all deferred work WITHOUT waiting (the mid-frame kick); the next sync point still completes it |
 | `indirect_command_buffer(cap)` | `Result<IndirectCommandBuffer>` | Pre-record `cap` dispatch / draw commands then `execute(n)` |
 | `async_copy_queue()` | `Result<AsyncCopyQueue>` | Transfer queue concurrent with compute / graphics |
 | `printf_buffer(cap)` | `Result<PrintfBuffer>` | Capacity-bounded shader printf ring |
@@ -156,13 +157,14 @@ let pipe = gpu.pipeline(&desc)?;
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `pipeline(&desc)` | `Result<Pipeline>` | Create render pipeline (`PipelineDesc::new(shader).with_*(…)`) |
-| `render(&target)` | `Result<RenderBuilder>` | Begin render pass (builder chain) |
+| `render(&target)` | `Result<RenderBuilder>` | Begin render pass (builder chain); its `.pulse()` **encodes** into the per-device lane — a frame's passes reach the queue as one command buffer at the next sync point (see [Execution model](../concepts/execution-model.md#deferred-submission)) |
 | `render_into(&target, f)` | `Result<R>` | Closure form of `render`: hands the builder to `f`, releasing the target borrow when it returns — for call sites where `&self.target` collides with other `&mut self` state |
 | `render_group((w, h), fmt, f)` | `Result<GroupTexture>` | Offscreen compositing, pooled: `f` draws a pass into a device-pooled layer texture (must end in `.pulse()`); the returned handle derefs to `Texture`, binds in any LATER pass with no host wait, nests freely, and returns its texture to the pool on drop — see [Render Groups](../rendering/how-to/render-groups.md) |
+| `acquire_group((w, h), fmt)` | `Result<GroupTexture>` | The same pooled layer WITHOUT a pass — a resolve destination, a target drawn into later; contents undefined until written |
 | `render_target(w, h, fmt)` | `Result<Texture>` | Can be drawn to + sampled |
 | `msaa_target(w, h, fmt, samples)` | `Result<Texture>` | Multi-sampled render target (manual MSAA path; the builder path is `.msaa(n)` below) |
-| `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample; `dst` may be an acquired surface frame (on Vulkan this needs the surface to offer transfer-dst usage — checked, `NotSupported` when it doesn't) |
-| `stencil_read(&tex)` | `Result<Vec<u8>>` | Read stencil buffer contents |
+| `resolve_texture(&msaa, &dst)` | `Result<()>` | Resolve MSAA to single-sample — **deferred** like a pass (encodes into the lane, completes at the next sync point; a `dst.read()` completes it); `dst` may be an acquired surface frame (on Vulkan this needs the surface to offer transfer-dst usage — checked, `NotSupported` when it doesn't) |
+| `stencil_read(&tex)` | `Result<Vec<u8>>` | Read stencil buffer contents (completes deferred work first) |
 | `render_bundle(max_commands)` | `Result<IndirectRenderBundle>` | Render-path indirect command bundle |
 | `mesh_pipeline(desc)` | `Result<MeshPipeline>` | Create a mesh-shader pipeline (gated on `supports_mesh_shaders`); `dispatch(groups)` on the wrapper dispatches |
 | `tessellation_pipeline(topology, control_points)` | `Result<TessellationPipeline>` | Create a tessellation pipeline (gated on `supports_tessellation`) |
@@ -296,11 +298,11 @@ driver resource (exactly once) — the same holds for `TextureView`,
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `write(&data)` | `Result<()>` | Upload pixel data |
-| `write_region(origin, size, &data)` | `Result<()>` | Upload a sub-region: `origin`/`size` in texels, `data` tightly packed region rows. Available on every backend |
-| `read()` | `Result<Vec<u8>>` | Download pixel data |
-| `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain |
-| `native_handle()` | `Result<NativeTextureHandle>` | Export the backend-native object for zero-copy interop (see below) |
+| `write(&data)` | `Result<()>` | Upload pixel data (completes any deferred pass that still owes this texture work first — an upload after a pass is never sampled by that pass) |
+| `write_region(origin, size, &data)` | `Result<()>` | Upload a sub-region: `origin`/`size` in texels, `data` tightly packed region rows. Available on every backend; same deferred-work completion as `write` |
+| `read()` | `Result<Vec<u8>>` | Download pixel data — completes any deferred pass or resolve that still owes this texture work, so a read after `.pulse()` needs no explicit wait |
+| `generate_mipmaps()` | `Result<()>` | Auto-generate mip chain (submits pending deferred work first so it lands behind the pass that drew level 0) |
+| `native_handle()` | `Result<NativeTextureHandle>` | Export the backend-native object for zero-copy interop (see below); completes deferred work on this texture first |
 | `width()` | `u32` | Width in pixels |
 | `height()` | `u32` | Height in pixels |
 | `format()` | `Format` | Pixel format |
@@ -545,7 +547,7 @@ the [vertex/fragment coordinate conventions](../rendering/tutorials/vertex-fragm
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `.pulse()` | `Result<Pulse>` | Submit and return completion signal |
+| `.pulse()` | `Result<Pulse>` | End the pass: validate, encode into the per-device lane (program order; one command buffer per sync interval), return a lazy completion signal — waiting it submits and completes the whole lane |
 
 ---
 
@@ -553,6 +555,9 @@ the [vertex/fragment coordinate conventions](../rendering/tutorials/vertex-fragm
 
 A batch of GPU dispatches recorded into a single command buffer.
 Multiple kernels are encoded without per-dispatch commit overhead.
+(The deferred lane uses the same machinery for render passes and
+resolves — see [Execution model](../concepts/execution-model.md#deferred-submission);
+a user-built `Batch` records dispatches.)
 
 ```rust
 let mut batch = gpu.batch()?;
