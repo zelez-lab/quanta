@@ -45,6 +45,7 @@ pub(super) enum Retired {
     /// A compute pipeline + its per-wave pipeline layout
     /// (`wave_destroy` routes here: a lane-deferred dispatch may still
     /// reference the pipeline after the caller drops its `Wave`).
+    #[cfg(feature = "compute")]
     Pipeline {
         pipeline: ffi::VkPipeline,
         layout: ffi::VkPipelineLayout,
@@ -173,6 +174,7 @@ unsafe fn destroy(device: ffi::VkDevice, resources: Retired) {
             Retired::View(view) => {
                 ffi::vkDestroyImageView(device, view, core::ptr::null());
             }
+            #[cfg(feature = "compute")]
             Retired::Pipeline { pipeline, layout } => {
                 ffi::vkDestroyPipeline(device, pipeline, core::ptr::null());
                 ffi::vkDestroyPipelineLayout(device, layout, core::ptr::null());

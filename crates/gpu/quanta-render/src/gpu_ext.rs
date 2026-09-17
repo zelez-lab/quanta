@@ -121,16 +121,18 @@ pub trait RenderGpu: sealed::Sealed {
     /// checked out for the closure, which builds the pass and must end
     /// it with [`RenderBuilder::pulse`]; the returned
     /// [`GroupTexture`](crate::GroupTexture) derefs to [`Texture`] and
-    /// binds anywhere a texture does. Submission order plus the
+    /// binds anywhere a texture does. Program order plus the
     /// render-then-sample transition make the contents visible to any
-    /// LATER pass on this `Gpu` — no host wait needed (wait inside the
-    /// closure only to read the layer back on the host). Nest freely:
-    /// a group drawn inside another group's closure is simply an
-    /// earlier pass. Dropping the handle returns the texture to the
-    /// device's pool.
+    /// LATER pass on this `Gpu` — no host wait needed (a host read of
+    /// the layer completes the pass by itself). Nest freely: a group
+    /// drawn inside another group's closure is simply an earlier
+    /// pass, in the same command buffer. Dropping the handle returns
+    /// the texture to the device's pool.
     ///
     /// `.msaa(n)` composes: call it on the group's builder and the
-    /// multisampled pass resolves into the pooled layer.
+    /// multisampled pass resolves into the pooled layer. For a pooled
+    /// layer WITHOUT a pass — a resolve destination, a target you
+    /// draw into later — see [`acquire_group`](RenderGpu::acquire_group).
     #[cfg(feature = "std")]
     fn render_group(
         &self,
@@ -140,6 +142,22 @@ pub trait RenderGpu: sealed::Sealed {
     ) -> Result<crate::GroupTexture, QuantaError>
     where
         Self: Sized;
+
+    /// Check out a pooled GROUP layer without drawing into it — the
+    /// same device-pooled, renderable-and-sampleable texture
+    /// [`render_group`](RenderGpu::render_group) hands its closure,
+    /// for the shapes where the layer's first use is not a pass: the
+    /// destination of [`resolve_texture`](RenderGpu::resolve_texture)
+    /// off a multisampled base, a target several later passes draw
+    /// into, a snapshot kept across frames. Its contents are
+    /// undefined until something writes them. Dropping the handle
+    /// returns the texture to the pool, like any group.
+    #[cfg(feature = "std")]
+    fn acquire_group(
+        &self,
+        size: (u32, u32),
+        format: Format,
+    ) -> Result<crate::GroupTexture, QuantaError>;
 
     /// Create a render target texture (can be drawn to and read from
     /// shaders).
@@ -164,10 +182,18 @@ pub trait RenderGpu: sealed::Sealed {
     /// The source must be a multi-sampled render target, and the
     /// destination must be a single-sample texture of the same
     /// dimensions and format.
+    ///
+    /// **Deferred** like a render pass: the resolve encodes into the
+    /// pending lane in program order and completes at the next sync
+    /// point — a later pass sampling `resolve_dst` sees the resolved
+    /// image, and a host `read()` of it completes the resolve first.
+    /// Never a host stall on its own.
     fn resolve_texture(&self, msaa_src: &Texture, resolve_dst: &Texture)
     -> Result<(), QuantaError>;
 
     /// Read stencil buffer contents from a depth/stencil texture.
+    /// Completes deferred work first — the pass that wrote the
+    /// stencil may still be pending in the lane.
     fn stencil_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError>;
 
     /// Allocate a render-path Indirect Command Buffer
@@ -223,7 +249,9 @@ pub trait RenderGpu: sealed::Sealed {
     /// Create an occlusion query set with `count` slots.
     fn occlusion_query_create(&self, count: u32) -> Result<OcclusionQuery, QuantaError>;
 
-    /// Read results from an occlusion query set (fragment counts per slot).
+    /// Read results from an occlusion query set (fragment counts per
+    /// slot). Completes deferred work first — the pass that ran the
+    /// queries may still be pending in the lane.
     fn occlusion_query_read(&self, query: &OcclusionQuery) -> Result<Vec<u64>, QuantaError>;
 
     /// Build a typed bottom-level [`AccelerationStructure`] (BLAS)
@@ -277,10 +305,10 @@ impl RenderGpu for quanta_core::Gpu {
         f: impl FnOnce(RenderBuilder) -> Result<quanta_core::Pulse, QuantaError>,
     ) -> Result<crate::GroupTexture, QuantaError> {
         let pool = self.__group_pool().clone();
-        let texture = pool.checkout(self.device_handle(), size.0, size.1, format, 1)?;
+        let texture = pool.checkout(self, size.0, size.1, format, 1)?;
         // Pulse proof: the closure returns the pass's Pulse, so an
         // unpulsed group cannot typecheck. The pulse itself is dropped
-        // — ordering is by submission, not host sync.
+        // — ordering is by program order in the lane, not host sync.
         match f(self.render(&texture)?) {
             Ok(_pulse) => Ok(crate::GroupTexture::new(texture, pool)),
             Err(e) => {
@@ -290,6 +318,17 @@ impl RenderGpu for quanta_core::Gpu {
                 Err(e)
             }
         }
+    }
+
+    #[cfg(feature = "std")]
+    fn acquire_group(
+        &self,
+        size: (u32, u32),
+        format: Format,
+    ) -> Result<crate::GroupTexture, QuantaError> {
+        let pool = self.__group_pool().clone();
+        let texture = pool.checkout(self, size.0, size.1, format, 1)?;
+        Ok(crate::GroupTexture::new(texture, pool))
     }
 
     fn render(&self, target: &Texture) -> Result<RenderBuilder, QuantaError> {
@@ -337,11 +376,11 @@ impl RenderGpu for quanta_core::Gpu {
         msaa_src: &Texture,
         resolve_dst: &Texture,
     ) -> Result<(), QuantaError> {
-        self.device_handle()
-            .resolve_texture(msaa_src.handle(), resolve_dst.handle())
+        self.__resolve_texture(msaa_src.handle(), resolve_dst.handle())
     }
 
     fn stencil_read(&self, texture: &Texture) -> Result<Vec<u8>, QuantaError> {
+        self.__flush_pending()?;
         self.device_handle().stencil_read(texture.handle())
     }
 
@@ -431,12 +470,11 @@ impl RenderGpu for quanta_core::Gpu {
                 "surface extent must be non-zero",
             ));
         }
-        let device = self.device_handle();
-        let handle = device.surface_create(target, config)?;
+        let handle = self.device_handle().surface_create(target, config)?;
         Ok(Surface {
             handle,
             config: *config,
-            device: device.clone(),
+            gpu: self.clone(),
         })
     }
 
@@ -447,6 +485,7 @@ impl RenderGpu for quanta_core::Gpu {
     }
 
     fn occlusion_query_read(&self, query: &OcclusionQuery) -> Result<Vec<u64>, QuantaError> {
+        self.__flush_pending()?;
         self.device_handle().occlusion_query_read(query.handle())
     }
 

@@ -210,16 +210,23 @@ impl GpuDevice for VulkanDevice {
 
     // === Batch ===
 
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
-        Ok(Box::new(super::compute::VulkanBatch::begin(self, true)?))
+        // Serial: a global barrier between every pair of encodes.
+        Ok(Box::new(super::batch::VulkanBatch::begin(self, true)?))
     }
 
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin_concurrent(
         &self,
     ) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
-        Ok(Box::new(super::compute::VulkanBatch::begin(self, false)?))
+        // Concurrent: barriers only where the lane's hazard runs end.
+        Ok(Box::new(super::batch::VulkanBatch::begin(self, false)?))
+    }
+
+    #[cfg(feature = "render")]
+    fn supports_render_batching(&self) -> bool {
+        true
     }
 
     // === Render === (render-gated, step 085)
@@ -405,8 +412,11 @@ impl GpuDevice for VulkanDevice {
             if t.memory.is_null() {
                 return Ok(());
             }
-            self.retire_bin.retire(
-                self.device,
+            // A batched pass still recording against this image has no
+            // submission serial yet — park behind the batch pins, else
+            // retire behind the newest serial (`retire_or_park`).
+            self.retire_or_park(
+                handle,
                 super::retire::Retired::Image {
                     image: t.image,
                     view: t.view,
@@ -446,8 +456,8 @@ impl GpuDevice for VulkanDevice {
             // (render pipelines own theirs, unlike compute whose
             // layouts live in layout_cache) retire in the same entry
             // so the destroy stays atomic.
-            self.retire_bin.retire(
-                self.device,
+            self.retire_or_park(
+                handle,
                 super::retire::Retired::RenderPipeline {
                     pipeline: rp.pipeline,
                     layout: rp.layout,
@@ -468,8 +478,7 @@ impl GpuDevice for VulkanDevice {
         if let Some(qp) = pool {
             // A submitted pass writes the pool until its fence signals
             // (VUID-vkDestroyQueryPool-queryPool-00793).
-            self.retire_bin
-                .retire(self.device, super::retire::Retired::QueryPool(qp.pool));
+            self.retire_or_park(handle, super::retire::Retired::QueryPool(qp.pool));
         }
         Ok(())
     }
@@ -1701,10 +1710,7 @@ impl GpuDevice for VulkanDevice {
             // `vkCmdExecuteCommands` them is
             // (VUID-vkDestroyCommandPool-commandPool-00041), so the
             // pool defers like every other pass-referenced resource.
-            self.retire_bin.retire(
-                self.device,
-                super::retire::Retired::CommandPool(bundle.pool),
-            );
+            self.retire_or_park(handle, super::retire::Retired::CommandPool(bundle.pool));
         }
         Ok(())
     }

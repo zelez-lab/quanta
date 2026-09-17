@@ -15,12 +15,11 @@
 //! Internal machinery of `Gpu::render_group` — not part of the stable
 //! public surface.
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::{Format, GpuDevice, QuantaError, Texture, TextureDesc, TextureUsage};
+use crate::{Format, Gpu, QuantaError, Texture, TextureDesc, TextureUsage};
 
 /// Checkouts between trims after which an unreused returned entry is
 /// evicted. Mirrors the MSAA frame-lane staleness discipline.
@@ -54,7 +53,7 @@ impl GroupPool {
     /// then bound.
     pub fn checkout(
         &self,
-        device: &Arc<dyn GpuDevice>,
+        gpu: &Gpu,
         width: u32,
         height: u32,
         format: Format,
@@ -81,10 +80,12 @@ impl GroupPool {
         let desc = TextureDesc::new(width, height, format)
             .with_sample_count(samples)
             .with_usage(TextureUsage::RENDER_TARGET.union(TextureUsage::SHADER_READ));
-        let mut texture = device.texture_create(&desc)?;
-        // Attach the device so an evicted/unreturned entry releases its
-        // driver resource on drop.
-        texture.device = Some(device.clone());
+        let mut texture = gpu.device_handle().texture_create(&desc)?;
+        // Adopt it like any consumer-held texture: the device so an
+        // evicted/unreturned entry releases its driver resource on
+        // drop, the lane so a host read of the layer completes the
+        // pass that drew it.
+        gpu.__attach_texture(&mut texture);
         Ok(texture)
     }
 

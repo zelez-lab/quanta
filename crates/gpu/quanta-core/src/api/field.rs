@@ -31,7 +31,7 @@ pub struct Field<T: Copy> {
     /// `native_handle`) complete any encoded-but-unflushed work that
     /// references this buffer before acting, so a deferred producer
     /// can never be observed half-done through its consumers.
-    #[cfg(all(feature = "compute", feature = "std"))]
+    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
     pub(crate) lane: Arc<crate::api::deferred::PendingLane>,
     pub(crate) _marker: PhantomData<T>,
 }
@@ -247,7 +247,7 @@ impl<T: Copy> Field<T> {
     /// in particular for freshly allocated fields, so mid-graph
     /// uploads never break an open batch.
     fn complete_deferred(&self) -> Result<(), QuantaError> {
-        #[cfg(all(feature = "compute", feature = "std"))]
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
         if self.lane.references(self.handle) {
             self.lane.flush_and_wait()?;
         }

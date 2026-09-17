@@ -287,6 +287,26 @@ impl GpuDevice for ValidationDevice {
         self.inner.wave_dispatch_indirect(wave, buffer, offset)
     }
 
+    // === Batch === — forwarded so validation never changes the
+    // submission model (the deferred lane batches under it too).
+
+    #[cfg(any(feature = "compute", feature = "render"))]
+    fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
+        self.inner.batch_begin()
+    }
+
+    #[cfg(any(feature = "compute", feature = "render"))]
+    fn batch_begin_concurrent(
+        &self,
+    ) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
+        self.inner.batch_begin_concurrent()
+    }
+
+    #[cfg(feature = "render")]
+    fn supports_render_batching(&self) -> bool {
+        self.inner.supports_render_batching()
+    }
+
     // === Render === (render-gated, step 085)
 
     #[cfg(feature = "render")]

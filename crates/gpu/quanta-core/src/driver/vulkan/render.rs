@@ -5,6 +5,8 @@
 mod pipeline;
 #[cfg(feature = "render")]
 mod render_pass;
+#[cfg(feature = "render")]
+pub(super) use render_pass::RenderPassObjects;
 // `queries` also holds the SHARED timestamp-query impls used by compute,
 // so it stays compiled; its render-only items are gated inside.
 mod queries;

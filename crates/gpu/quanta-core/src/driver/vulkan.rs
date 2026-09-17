@@ -6,6 +6,8 @@
 
 #[cfg(feature = "render")]
 mod accel;
+#[cfg(any(feature = "compute", feature = "render"))]
+mod batch;
 #[cfg(feature = "compute")]
 mod compute;
 mod device;

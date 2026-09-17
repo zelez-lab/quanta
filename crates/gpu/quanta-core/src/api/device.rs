@@ -476,14 +476,14 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
         offset: u64,
     ) -> Result<Pulse, QuantaError>;
 
-    // === Batch ===
+    // === Batch === (shared by both faces — see `api::batch`)
 
     /// Returns the raw driver batch, NOT `crate::Batch`: only the api
     /// layer — which holds the device `Arc` — may build the public
     /// wrapper, so every `Batch` owns a keep-alive on its device and
     /// its Drop (which hands command buffers and pools back through a
     /// raw device pointer on every backend) can never outlive it.
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin(
         &self,
     ) -> Result<alloc::boxed::Box<dyn crate::api::batch::BatchInner>, QuantaError> {
@@ -494,11 +494,22 @@ pub trait GpuDevice: sealed::Sealed + Send + Sync {
     /// only at explicit `encode_barrier` points. The deferred lane
     /// uses this with hazard-run analysis. Default falls back to the
     /// serial batch — always correct, merely maximally ordered.
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin_concurrent(
         &self,
     ) -> Result<alloc::boxed::Box<dyn crate::api::batch::BatchInner>, QuantaError> {
         self.batch_begin()
+    }
+
+    /// Whether this device's batches record render passes and MSAA
+    /// resolves (`BatchInner::encode_render` / `encode_resolve`), so
+    /// the deferred lane can coalesce a frame's passes into one
+    /// command buffer. Default false: every pass submits on its own
+    /// (WebGPU today). Same semantics either way — only the
+    /// submission count differs.
+    #[cfg(feature = "render")]
+    fn supports_render_batching(&self) -> bool {
+        false
     }
 
     // === Render === (render-typed; gated with the `render` feature, step 085)

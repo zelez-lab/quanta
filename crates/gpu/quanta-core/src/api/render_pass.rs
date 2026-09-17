@@ -309,9 +309,65 @@ pub(crate) enum HandleKind {
     Texture,
     Pipeline,
     OcclusionQuery,
+    RenderBundle,
 }
 
 impl RenderPass {
+    /// Visit every driver handle this pass references, attachments
+    /// included: the primary target, each color target and its resolve
+    /// destination, the depth/stencil target, and every op-bound
+    /// resource. The deferred lane uses it to pin the handles of a
+    /// pass recorded into an open (not yet submitted) batch and to
+    /// track which textures it still owes work to. Duplicates are
+    /// reported as encountered — callers dedupe if they care.
+    pub(crate) fn for_each_handle(&self, mut f: impl FnMut(HandleKind, u64)) {
+        f(HandleKind::Texture, self.handle);
+        for ct in &self.color_targets {
+            f(HandleKind::Texture, ct.texture);
+            if let crate::StoreOp::Resolve(dest) = ct.store_op {
+                f(HandleKind::Texture, dest.0);
+            }
+        }
+        if let Some(dt) = &self.depth_target {
+            f(HandleKind::Texture, dt.texture);
+            if let crate::StoreOp::Resolve(dest) = dt.store_op {
+                f(HandleKind::Texture, dest.0);
+            }
+        }
+        for op in &self.ops {
+            match op {
+                RenderOp::SetPipeline(h) => f(HandleKind::Pipeline, *h),
+                RenderOp::BindVertices { handle, .. }
+                | RenderOp::BindIndices { handle, .. }
+                | RenderOp::SetField { handle, .. }
+                | RenderOp::SetUniform { handle, .. } => f(HandleKind::Buffer, *handle),
+                RenderOp::SetTexture { handle, .. } => f(HandleKind::Texture, *handle),
+                RenderOp::DrawIndirect { buffer_handle, .. } => {
+                    f(HandleKind::Buffer, *buffer_handle)
+                }
+                RenderOp::DrawIndexedIndirect {
+                    buffer_handle,
+                    index_handle,
+                    ..
+                } => {
+                    f(HandleKind::Buffer, *buffer_handle);
+                    f(HandleKind::Buffer, *index_handle);
+                }
+                RenderOp::BeginOcclusionQuery { handle, .. }
+                | RenderOp::EndOcclusionQuery { handle, .. } => {
+                    f(HandleKind::OcclusionQuery, *handle)
+                }
+                RenderOp::SetShadingRateImage { texture_handle } => {
+                    f(HandleKind::Texture, *texture_handle)
+                }
+                RenderOp::ExecuteRenderBundle { bundle_handle, .. } => {
+                    f(HandleKind::RenderBundle, *bundle_handle)
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Pre-encode validation: walk the recorded ops, check every
     /// registry handle they reference via `lookup`, and enforce the
     /// ordering rules a replay depends on (`draw_indexed` needs a
@@ -396,6 +452,9 @@ impl RenderPass {
                     "shading-rate image",
                     i,
                 )?,
+                RenderOp::ExecuteRenderBundle { bundle_handle, .. } => {
+                    check(HandleKind::RenderBundle, *bundle_handle, "render bundle", i)?
+                }
                 _ => {}
             }
         }

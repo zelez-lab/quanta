@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use alloc::format;
 
+use crate::driver::RecordFailure;
 use crate::{LoadOp, Pulse, QuantaError, RenderPass, StoreOp, render_pass::RenderOp};
 
 use super::super::MetalDevice;
@@ -662,42 +663,36 @@ impl MetalDevice {
     /// applied to the render pass descriptor as an MTLRasterizationRateMap
     /// before the encoder began (Metal's VRS is pass-level, not per-draw),
     /// so `SetShadingRate` is a no-op — but only when that build path
-    /// actually ran. On failure this ends the encoder and returns
-    /// NotSupported.
+    /// actually ran. Both refusals are decided before the encoder opens
+    /// (`record_render_pass`); the arms here are the defensive twin.
     unsafe fn encode_vrs_op(
         &self,
         op: &RenderOp,
         state: &mut EncoderState,
     ) -> Result<(), QuantaError> {
-        let encoder = state.encoder;
-        unsafe {
-            match op {
-                // VRS native lowering (step 063 slice 3). The
-                // rate was already applied to the render pass
-                // descriptor as an MTLRasterizationRateMap above
-                // (Metal's VRS is pass-level, not per-draw), so
-                // the in-encoder op is a no-op — but only when
-                // the descriptor-build path actually ran. If
-                // metal_vrs_active is false, the rate map could
-                // not be built; surface that as NotSupported.
-                RenderOp::SetShadingRate(_) => {
-                    if !state.metal_vrs_active {
-                        ffi::msg_void(encoder, b"endEncoding\0");
-                        return Err(QuantaError::not_supported(
-                            "Metal render encoder: VRS rate not applied (no rate map built)",
-                        ));
-                    }
-                }
-                RenderOp::SetShadingRateImage { .. } => {
-                    ffi::msg_void(encoder, b"endEncoding\0");
+        match op {
+            // VRS native lowering (step 063 slice 3). The rate was
+            // already applied to the render pass descriptor as an
+            // MTLRasterizationRateMap above (Metal's VRS is
+            // pass-level, not per-draw), so the in-encoder op is a
+            // no-op — but only when the descriptor-build path actually
+            // ran. `record_render_pass` refuses both cases before the
+            // encoder opens; these arms are the defensive twin.
+            RenderOp::SetShadingRate(_) => {
+                if !state.metal_vrs_active {
                     return Err(QuantaError::not_supported(
-                        "Metal render encoder: shading-rate-image (texel-driven VRS) deferred",
+                        "Metal render encoder: VRS rate not applied (no rate map built)",
                     ));
                 }
-                _ => unreachable!("encode_vrs_op called with non-VRS op"),
             }
-            Ok(())
+            RenderOp::SetShadingRateImage { .. } => {
+                return Err(QuantaError::not_supported(
+                    "Metal render encoder: shading-rate-image (texel-driven VRS) deferred",
+                ));
+            }
+            _ => unreachable!("encode_vrs_op called with non-VRS op"),
         }
+        Ok(())
     }
 
     /// Indirect render-bundle replay (steps 032 + 033). Metal:
@@ -758,52 +753,93 @@ impl MetalDevice {
         }
     }
 
-    pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
+    /// Record `pass` as a render encoder on `cmd` — the ONE recording
+    /// path the per-submission `render_end` and the batch's
+    /// `encode_render` share.
+    ///
+    /// Everything fallible that can be checked up front IS checked
+    /// before the encoder exists — dead handles, pass shape, bundle
+    /// counts, the VRS rate map — so a `Clean` failure leaves `cmd`
+    /// untouched and only this pass fails. Once the encoder is open
+    /// every path ends it (the guard): Metal asserts on releasing an
+    /// open encoder, and a batch must be able to carry on past a
+    /// failed pass. A failure after the encoder opened is `Partial`.
+    pub(crate) fn record_render_pass(
+        &self,
+        cmd: ffi::Id,
+        pass: RenderPass,
+    ) -> Result<(), RecordFailure> {
         let textures = self
             .textures
             .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
         let target = textures.get(&pass.handle).ok_or_else(|| {
-            QuantaError::not_found("render target not found")
-                .with_context(&format!("render_end: target handle {}", pass.handle))
+            RecordFailure::Clean(
+                QuantaError::not_found("render target not found")
+                    .with_context(&format!("render_end: target handle {}", pass.handle)),
+            )
         })?;
 
         unsafe {
             // Create render pass descriptor
             let rpd = ffi::msg_id(ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id, b"new\0");
 
-            self.configure_color_attachments(rpd, &pass, &textures, *target)?;
+            self.configure_color_attachments(rpd, &pass, &textures, *target)
+                .map_err(RecordFailure::Clean)?;
 
             // Depth/stencil target
             if let Some(ref dt) = pass.depth_target {
-                self.configure_depth_stencil_attachments(rpd, dt, &textures)?;
+                self.configure_depth_stencil_attachments(rpd, dt, &textures)
+                    .map_err(RecordFailure::Clean)?;
             }
 
             // Set visibility result buffer if any occlusion query ops are present.
             let buffers = self
                 .buffers
                 .read()
-                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
+
+            let render_pipelines = self
+                .render_pipelines
+                .read()
+                .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
 
             // Fail loudly on any dead handle BEFORE encoding starts —
             // a silently skipped bind renders wrong (classic cause: a
             // Field dropped before pulse()).
             {
                 use crate::render_pass::HandleKind;
-                let pipelines = self
-                    .render_pipelines
+                let bundles = self
+                    .render_bundles
                     .read()
-                    .map_err(|_| QuantaError::internal("lock poisoned"))?;
+                    .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
                 pass.validate_handles(|kind, h| match kind {
                     // Metal's occlusion queries are visibility buffers.
                     HandleKind::Buffer | HandleKind::OcclusionQuery => buffers.contains_key(&h),
                     HandleKind::Texture => textures.contains_key(&h),
-                    HandleKind::Pipeline => pipelines.contains_key(&h),
-                })?;
+                    HandleKind::Pipeline => render_pipelines.contains_key(&h),
+                    HandleKind::RenderBundle => bundles.contains_key(&h),
+                })
+                .map_err(RecordFailure::Clean)?;
                 // Also fail loudly on a pipeline/target shape mismatch —
                 // a phantom or mis-typed attachment that Metal would
                 // accept silently and then drop draws for.
-                pass.validate_pass_shape()?;
+                pass.validate_pass_shape().map_err(RecordFailure::Clean)?;
+                // Bundle replay lengths — checked here rather than
+                // mid-walk so the refusal never truncates a pass.
+                for op in &pass.ops {
+                    if let RenderOp::ExecuteRenderBundle {
+                        bundle_handle,
+                        count,
+                    } = op
+                        && let Some(bundle) = bundles.get(bundle_handle)
+                        && *count > bundle.recorded
+                    {
+                        return Err(RecordFailure::Clean(QuantaError::invalid_param(
+                            "execute_bundle count exceeds recorded length",
+                        )));
+                    }
+                }
             }
 
             for op in &pass.ops {
@@ -823,15 +859,32 @@ impl MetalDevice {
             // supports it, build a single-layer rate map and attach
             // it to the descriptor. The in-encoder SetShadingRate
             // op then becomes a no-op below.
-            let metal_vrs_active = self.apply_shading_rate(rpd, &pass, &textures)?;
+            let metal_vrs_active = self
+                .apply_shading_rate(rpd, &pass, &textures)
+                .map_err(RecordFailure::Clean)?;
+            // The two VRS refusals the encoder walk used to raise,
+            // decided up front: a rate op with no rate map built, and
+            // the texel-driven form Metal has no lowering for yet.
+            for op in &pass.ops {
+                match op {
+                    RenderOp::SetShadingRate(_) if !metal_vrs_active => {
+                        return Err(RecordFailure::Clean(QuantaError::not_supported(
+                            "Metal render encoder: VRS rate not applied (no rate map built)",
+                        )));
+                    }
+                    RenderOp::SetShadingRateImage { .. } => {
+                        return Err(RecordFailure::Clean(QuantaError::not_supported(
+                            "Metal render encoder: shading-rate-image (texel-driven VRS) deferred",
+                        )));
+                    }
+                    _ => {}
+                }
+            }
 
-            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
             let encoder = ffi::msg_new_render_encoder(cmd, rpd);
-
-            let render_pipelines = self
-                .render_pipelines
-                .read()
-                .map_err(|_| QuantaError::internal("lock poisoned"))?;
+            // From here on the encoder is open: whatever happens below,
+            // it is ended exactly once when this guard drops.
+            let _end = EncoderEnd(encoder);
 
             // Metal has no encoder-level index-buffer bind — the buffer is
             // passed per draw call — so the replay tracks the most recent
@@ -845,7 +898,7 @@ impl MetalDevice {
             };
 
             for op in &pass.ops {
-                match op {
+                let step = match op {
                     RenderOp::SetPipeline(_)
                     | RenderOp::BindVertices { .. }
                     | RenderOp::BindIndices { .. }
@@ -856,16 +909,14 @@ impl MetalDevice {
                     | RenderOp::Draw { .. }
                     | RenderOp::DrawIndexed { .. }
                     | RenderOp::DrawIndirect { .. }
-                    | RenderOp::DrawIndexedIndirect { .. } => {
-                        self.encode_bind_draw_op(
-                            op,
-                            &pass,
-                            &mut state,
-                            &buffers,
-                            &textures,
-                            &render_pipelines,
-                        )?;
-                    }
+                    | RenderOp::DrawIndexedIndirect { .. } => self.encode_bind_draw_op(
+                        op,
+                        &pass,
+                        &mut state,
+                        &buffers,
+                        &textures,
+                        &render_pipelines,
+                    ),
                     RenderOp::SetScissor { .. }
                     | RenderOp::SetViewport { .. }
                     | RenderOp::Clear(_)
@@ -876,22 +927,111 @@ impl MetalDevice {
                     | RenderOp::DebugPop
                     | RenderOp::SetSampler { .. } => {
                         self.encode_state_op(op, &pass, &mut state);
+                        Ok(())
                     }
                     RenderOp::BeginOcclusionQuery { .. } | RenderOp::EndOcclusionQuery { .. } => {
                         self.encode_occlusion_op(op, &mut state, &buffers);
+                        Ok(())
                     }
                     RenderOp::SetShadingRate(_) | RenderOp::SetShadingRateImage { .. } => {
-                        self.encode_vrs_op(op, &mut state)?;
+                        self.encode_vrs_op(op, &mut state)
                     }
                     RenderOp::ExecuteRenderBundle { .. } => {
-                        self.encode_bundle_op(op, &mut state, &buffers)?;
+                        self.encode_bundle_op(op, &mut state, &buffers)
                     }
-                }
+                };
+                // The encoder is open: a refusal here truncates the pass.
+                step.map_err(RecordFailure::Partial)?;
             }
+        }
+        Ok(())
+    }
 
+    /// Record an MSAA resolve of `src` into `dst` as a zero-draw render
+    /// encoder on `cmd` (LOAD + MULTISAMPLE_RESOLVE store) — the ONE
+    /// path the per-submission `resolve_texture` and the batch's
+    /// `encode_resolve` share. Everything fallible is decided before
+    /// the encoder exists, so a failure is always `Clean`.
+    pub(crate) fn record_resolve(
+        &self,
+        cmd: ffi::Id,
+        src_handle: u64,
+        dst_handle: u64,
+    ) -> Result<(), RecordFailure> {
+        let textures = self
+            .textures
+            .read()
+            .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
+        let src = textures.get(&src_handle).ok_or_else(|| {
+            RecordFailure::Clean(QuantaError::invalid_param("bad src texture handle"))
+        })?;
+        let dst = textures.get(&dst_handle).ok_or_else(|| {
+            RecordFailure::Clean(QuantaError::invalid_param("bad dst texture handle"))
+        })?;
+
+        // Metal requires an MSAA attachment and its resolve target to share
+        // one pixel format — a mismatch is API-invalid and renders garbage
+        // or asserts in the driver. The Vulkan lane converts through a
+        // same-format temp + blit; Metal has no format-converting blit, so
+        // until a conversion pass is wired this fails loudly instead of
+        // encoding an invalid resolve.
+        {
+            let fmts = self
+                .texture_formats
+                .read()
+                .map_err(|_| RecordFailure::Clean(QuantaError::internal("lock poisoned")))?;
+            if let (Some(&sf), Some(&df)) = (fmts.get(&src_handle), fmts.get(&dst_handle))
+                && sf != df
+            {
+                return Err(RecordFailure::Clean(
+                    QuantaError::not_supported(
+                        "resolve_texture: source and destination formats differ; Metal has \
+                         no format-converting resolve — create the destination in the \
+                         source's format",
+                    )
+                    .with_context(&format!("src {sf:?} vs dst {df:?}")),
+                ));
+            }
+        }
+
+        unsafe {
+            let rpd = ffi::msg_id(
+                ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id,
+                b"renderPassDescriptor\0",
+            );
+            let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
+            let color0 = ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
+            ffi::msg_void_id(color0, b"setTexture:\0", *src);
+            ffi::msg_void_id(color0, b"setResolveTexture:\0", *dst);
+            ffi::msg_void_u64(color0, b"setLoadAction:\0", ffi::MTL_LOAD_ACTION_LOAD);
+            ffi::msg_void_u64(
+                color0,
+                b"setStoreAction:\0",
+                ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
+            );
+
+            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
             ffi::msg_void(encoder, b"endEncoding\0");
+        }
+        Ok(())
+    }
 
+    pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
+        unsafe {
+            let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
+            self.record_render_pass(cmd, pass)
+                .map_err(RecordFailure::into_error)?;
             Ok(super::super::device::make_async_pulse(self, cmd))
         }
+    }
+}
+
+/// Ends a render encoder exactly once, on every exit path of the
+/// recording function that opened it.
+struct EncoderEnd(ffi::Id);
+
+impl Drop for EncoderEnd {
+    fn drop(&mut self) {
+        unsafe { ffi::msg_void(self.0, b"endEncoding\0") }
     }
 }

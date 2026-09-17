@@ -333,6 +333,8 @@ impl WebgpuDevice {
                 // Canvas frames are always single-sample.
                 sample_count: 1,
                 device: None,
+                #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+                lane: None,
                 // The canvas owns the image — the wrapper must not
                 // destroy it.
                 live: false,

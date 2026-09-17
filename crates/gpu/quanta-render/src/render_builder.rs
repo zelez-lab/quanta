@@ -475,24 +475,30 @@ impl RenderBuilder {
 
     // === Terminal ===
 
-    /// Submit the render pass for execution.
+    /// End the render pass and hand it to the device.
     ///
-    /// Consumes the builder and returns a `Pulse` that signals when the
-    /// GPU finishes rendering. On an [`msaa`](Self::msaa) pass this
-    /// first assembles the pooled intermediate into the pass's color
-    /// attachment (and surfaces any deferred builder-time validation
-    /// error).
+    /// Consumes the builder and returns a `Pulse` that completes when
+    /// the GPU has finished rendering. The pass is **deferred**: it is
+    /// encoded into the device's pending lane in program order — behind
+    /// every dispatch, pass and resolve issued before it — and reaches
+    /// the queue as part of ONE command buffer at the next sync point
+    /// (this pulse's `wait`, a texture read, a surface present,
+    /// `gpu.flush()` / `gpu.submit()`). Validation (dead handles, the
+    /// pass shape) still happens here; only the submission moves. A
+    /// later pass on the same `Gpu` that samples this pass's target
+    /// sees the finished contents with no host wait, exactly as
+    /// before. On a backend whose batches take no render work
+    /// (WebGPU) the pass submits on its own. See the execution-model
+    /// chapter on deferred submission.
+    ///
+    /// On an [`msaa`](Self::msaa) pass this first assembles the pooled
+    /// intermediate into the pass's color attachment (and surfaces any
+    /// deferred builder-time validation error).
     #[cfg_attr(not(feature = "std"), allow(unused_mut))]
     pub fn pulse(mut self) -> Result<Pulse, QuantaError> {
         #[cfg(feature = "std")]
         self.assemble_msaa()?;
-        // A render submission bypasses the deferred compute lane:
-        // complete pending compute work first, so a pass sampling a
-        // compute-written field or vertex-pulling from one can never
-        // overtake its producer (submit order alone is not a memory
-        // dependency on Vulkan).
-        self.gpu.__flush_pending()?;
-        self.gpu.device_handle().render_end(self.pass)
+        self.gpu.__render_end(self.pass)
     }
 
     /// The `pulse()`-time half of the builder-managed MSAA path:

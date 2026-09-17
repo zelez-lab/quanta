@@ -29,6 +29,14 @@ pub struct Texture {
     /// Drivers construct textures with `device: None`; the `Gpu`
     /// wrapper attaches the device Arc so Drop can release the handle.
     pub(crate) device: Option<Arc<dyn GpuDevice>>,
+    /// The device's pending lane, attached with the device by
+    /// `Gpu::__attach_texture`. The byte ops (`read`, `write`,
+    /// `write_region`, `native_handle`) complete any encoded-but-
+    /// unsubmitted pass that still owes this texture work before
+    /// acting — a deferred pass must never be observed half-done, and
+    /// an upload issued after it must not be sampled by it.
+    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+    pub(crate) lane: Option<Arc<crate::api::deferred::PendingLane>>,
     /// True while this wrapper owns the driver-side resource. Cleared
     /// on destroy so Drop is idempotent-safe (no double-free).
     pub(crate) live: bool,
@@ -43,6 +51,31 @@ impl Texture {
     #[doc(hidden)]
     pub fn __attach_device(&mut self, device: Arc<dyn GpuDevice>) {
         self.device = Some(device);
+    }
+
+    /// Complete any deferred-lane work that references this texture.
+    /// No-op (one lock + set probe) when the lane owes it nothing —
+    /// a fresh upload target never breaks an open batch.
+    fn complete_deferred(&self) -> Result<(), QuantaError> {
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        if let Some(lane) = &self.lane
+            && lane.references(self.handle)
+        {
+            lane.flush_and_wait()?;
+        }
+        Ok(())
+    }
+
+    /// Submit (without waiting) any deferred-lane work that references
+    /// this texture, so a submission of our own lands behind it.
+    fn submit_deferred(&self) -> Result<(), QuantaError> {
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        if let Some(lane) = &self.lane
+            && lane.references(self.handle)
+        {
+            lane.submit_pending()?;
+        }
+        Ok(())
     }
 
     /// Width in texels.
@@ -70,6 +103,7 @@ impl Texture {
 
     /// Write pixel data to this texture.
     pub fn write(&self, data: &[u8]) -> Result<(), QuantaError> {
+        self.complete_deferred()?;
         if let Some(ref dev) = self.device {
             dev.texture_write(self, data)
         } else {
@@ -109,6 +143,7 @@ impl Texture {
                 "write_region data length does not match region size",
             ));
         }
+        self.complete_deferred()?;
         dev.texture_write_region(self, origin, size, data)
     }
 
@@ -119,6 +154,7 @@ impl Texture {
     /// (or call `Gpu::wait_idle`) first — otherwise the read races the
     /// GPU and can return stale or blank contents.
     pub fn read(&self) -> Result<Vec<u8>, QuantaError> {
+        self.complete_deferred()?;
         if let Some(ref dev) = self.device {
             dev.texture_read(self)
         } else {
@@ -128,6 +164,9 @@ impl Texture {
 
     /// Generate mipmaps for this texture.
     pub fn generate_mipmaps(&self) -> Result<(), QuantaError> {
+        // Its own submission: queue order behind the pending pass that
+        // drew level 0 is all it needs.
+        self.submit_deferred()?;
         if let Some(ref dev) = self.device {
             dev.generate_mipmaps(self)
         } else {
@@ -156,6 +195,7 @@ impl Texture {
     /// ([`QuantaErrorKind::NotSupported`](crate::QuantaErrorKind)); query
     /// `Gpu::supports_native_handle_export` to branch ahead of time.
     pub fn native_handle(&self) -> Result<NativeTextureHandle, QuantaError> {
+        self.complete_deferred()?;
         if let Some(ref dev) = self.device {
             dev.texture_native_handle(self)
         } else {

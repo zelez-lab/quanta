@@ -20,6 +20,16 @@
 //! Backends without a [`Batch`] implementation stay eager: dispatch
 //! commits and waits inline, returning a completed pulse. Semantics
 //! are identical, only the batching win is absent.
+//!
+//! The render face rides the SAME lane: a `RenderBuilder::pulse()`
+//! and a `resolve_texture` encode into the open batch in program
+//! order (on backends whose batch takes render work —
+//! `GpuDevice::supports_render_batching`), so a frame's passes reach
+//! the queue as one command buffer at the next sync point — a pulse
+//! wait, a texture read, a present, `Gpu::flush`/`submit`. Every
+//! submission that bypasses the lane submits the pending batch first,
+//! so record order is submission order and the drivers' tracked
+//! layouts stay truthful.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -27,7 +37,9 @@ use alloc::vec::Vec;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use crate::{Batch, GpuDevice, Pulse, QuantaError, QuantaErrorKind, Wave};
+#[cfg(feature = "compute")]
+use crate::Wave;
+use crate::{Batch, GpuDevice, Pulse, QuantaError, QuantaErrorKind};
 
 /// Auto-submit threshold: at this many encoded dispatches the lane
 /// submits the open batch (without waiting) and starts a fresh one.
@@ -67,6 +79,12 @@ struct LaneState {
     /// deferred dispatch probes `batch_begin`; `Some(false)` routes
     /// every later dispatch down the eager path without re-probing.
     batch_capable: Option<bool>,
+    /// Whether the device's batches take render passes and resolves
+    /// (`GpuDevice::supports_render_batching`), probed once like
+    /// `batch_capable`. `Some(false)` sends every pass down the
+    /// per-submission path.
+    #[cfg_attr(not(feature = "render"), allow(dead_code))]
+    render_capable: Option<bool>,
 }
 
 /// One device's deferred-dispatch state. Lives in [`crate::Gpu`]
@@ -87,6 +105,7 @@ impl Default for PendingLane {
                 run_writes: HashSet::new(),
                 poisoned: None,
                 batch_capable: None,
+                render_capable: None,
             }),
         }
     }
@@ -98,17 +117,18 @@ impl PendingLane {
     /// no batch path (the caller dispatches eagerly). Surfaces any
     /// stored poison first, so an error from a deferred flush lands on
     /// the next op rather than vanishing.
+    #[cfg(feature = "compute")]
     pub(crate) fn encode(
         &self,
         device: &Arc<dyn GpuDevice>,
         wave: &Wave,
         quarks: u32,
     ) -> Result<bool, QuantaError> {
-        // Texture-binding waves take the eager path: completion
-        // tracking covers field handles only (`referenced`), so a
-        // deferred texture write could be observed stale through
-        // `Texture::read`. Until textures get the same treatment,
-        // correctness wins over batching for them. The caller
+        // Texture-binding waves take the eager path: the lane's
+        // hazard-run analysis covers field handles only, so two
+        // texture-touching dispatches in one batch would have no
+        // ordering between them (render passes carry their own
+        // barriers; dispatches rely on the run sets). The caller
         // pre-submits the lane, so ordering against encoded buffer
         // work still holds.
         if wave.texture_count > 0 {
@@ -118,28 +138,8 @@ impl PendingLane {
         if let Some(e) = state.poisoned.take() {
             return Err(e);
         }
-        if state.batch_capable == Some(false) {
+        if !Self::ensure_batch(&mut state, device)? {
             return Ok(false);
-        }
-        if state.batch.is_none() {
-            match device.batch_begin_concurrent() {
-                Ok(b) => {
-                    state.batch_capable = Some(true);
-                    // The wrapper takes the device Arc: a parked batch
-                    // OWNS its device, so lane teardown can never hand
-                    // resources back to a destroyed device — whatever
-                    // order `Gpu`'s fields drop in.
-                    state.batch = Some(Batch::new(b, device.clone()));
-                }
-                Err(QuantaError {
-                    kind: QuantaErrorKind::NotSupported(_),
-                    ..
-                }) => {
-                    state.batch_capable = Some(false);
-                    return Ok(false);
-                }
-                Err(e) => return Err(e),
-            }
         }
         // Hazard-run grouping: this dispatch joins the current run
         // unless it conflicts with it — W∩(R'∪W') (its writes touch
@@ -198,8 +198,141 @@ impl PendingLane {
         Ok(true)
     }
 
-    /// Whether the lane may still owe work to the given field handle
-    /// (bound by an encoded wave, not yet completed by a full flush).
+    /// Open the lane's batch if none is open. `Ok(false)` = this
+    /// device has no batch path (cached — never re-probed).
+    fn ensure_batch(
+        state: &mut LaneState,
+        device: &Arc<dyn GpuDevice>,
+    ) -> Result<bool, QuantaError> {
+        if state.batch_capable == Some(false) {
+            return Ok(false);
+        }
+        if state.batch.is_none() {
+            match device.batch_begin_concurrent() {
+                Ok(b) => {
+                    state.batch_capable = Some(true);
+                    // The wrapper takes the device Arc: a parked batch
+                    // OWNS its device, so lane teardown can never hand
+                    // resources back to a destroyed device — whatever
+                    // order `Gpu`'s fields drop in.
+                    state.batch = Some(Batch::new(b, device.clone()));
+                }
+                Err(QuantaError {
+                    kind: QuantaErrorKind::NotSupported(_),
+                    ..
+                }) => {
+                    state.batch_capable = Some(false);
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether this device's batches take render work — probed once
+    /// through `supports_render_batching` and cached.
+    #[cfg(feature = "render")]
+    fn render_capable(state: &mut LaneState, device: &Arc<dyn GpuDevice>) -> bool {
+        *state
+            .render_capable
+            .get_or_insert_with(|| device.supports_render_batching())
+    }
+
+    /// Encode a whole render pass into the lane, after everything
+    /// encoded so far. `Ok(None)` = encoded (the caller hands out a
+    /// lazy pulse); `Ok(Some(pass))` = declined — the device batches
+    /// no render work — and the pass comes back for the caller's
+    /// per-submission path. A driver error leaves the batch exactly
+    /// as it was when the driver validated before recording (dead
+    /// handle, pass shape: only THIS pass fails); a failure mid-record
+    /// marks the driver batch broken, and the next sync point
+    /// surfaces it and discards the batch.
+    #[cfg(feature = "render")]
+    pub(crate) fn encode_render(
+        &self,
+        device: &Arc<dyn GpuDevice>,
+        pass: crate::RenderPass,
+    ) -> Result<Option<crate::RenderPass>, QuantaError> {
+        let mut state = self.state.lock().expect("deferred lane mutex poisoned");
+        if let Some(e) = state.poisoned.take() {
+            return Err(e);
+        }
+        if !Self::render_capable(&mut state, device) || !Self::ensure_batch(&mut state, device)? {
+            return Ok(Some(pass));
+        }
+        // A render pass is a full ordering point (the driver batch
+        // fences it against everything before and after), so the
+        // hazard run the compute encodes were building ends here.
+        state.run_reads.clear();
+        state.run_writes.clear();
+        let mut refs: Vec<u64> = Vec::new();
+        pass.for_each_handle(|kind, h| {
+            use crate::render_pass::HandleKind;
+            if matches!(kind, HandleKind::Buffer | HandleKind::Texture) {
+                refs.push(h);
+            }
+        });
+        state
+            .batch
+            .as_mut()
+            .expect("open batch present after begin")
+            .encode_render(pass)?;
+        state.encoded += 1;
+        state.referenced.extend(refs);
+        if state.encoded >= AUTO_SUBMIT_ENCODES {
+            Self::submit_open_batch(&mut state)?;
+        }
+        Ok(None)
+    }
+
+    /// Encode an MSAA resolve into the lane, after everything encoded
+    /// so far. `Ok(true)` = encoded; `Ok(false)` = declined (the
+    /// caller resolves through the per-submission driver path).
+    #[cfg(feature = "render")]
+    pub(crate) fn encode_resolve(
+        &self,
+        device: &Arc<dyn GpuDevice>,
+        src: u64,
+        dst: u64,
+    ) -> Result<bool, QuantaError> {
+        let mut state = self.state.lock().expect("deferred lane mutex poisoned");
+        if let Some(e) = state.poisoned.take() {
+            return Err(e);
+        }
+        if !Self::render_capable(&mut state, device) || !Self::ensure_batch(&mut state, device)? {
+            return Ok(false);
+        }
+        state.run_reads.clear();
+        state.run_writes.clear();
+        state
+            .batch
+            .as_mut()
+            .expect("open batch present after begin")
+            .encode_resolve(src, dst)?;
+        state.encoded += 1;
+        state.referenced.insert(src);
+        state.referenced.insert(dst);
+        if state.encoded >= AUTO_SUBMIT_ENCODES {
+            Self::submit_open_batch(&mut state)?;
+        }
+        Ok(true)
+    }
+
+    /// Test-support: how many encodes the OPEN batch holds (0 between
+    /// submissions). Lets a test prove work stayed pending until a
+    /// sync point without a driver-side probe.
+    pub(crate) fn pending_encodes(&self) -> u32 {
+        self.state
+            .lock()
+            .expect("deferred lane mutex poisoned")
+            .encoded
+    }
+
+    /// Whether the lane may still owe work to the given handle (a
+    /// buffer bound by an encoded wave or pass, a texture a pass drew
+    /// into or sampled, a resolve source or destination — not yet
+    /// completed by a full flush).
     pub(crate) fn references(&self, handle: u64) -> bool {
         self.state
             .lock()

@@ -1,6 +1,5 @@
 //! Compute dispatch operations for Vulkan.
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -64,11 +63,11 @@ fn try_optimize_spirv(spirv: &[u8]) -> Vec<u8> {
 /// record (see `VulkanDevice::prepare_wave_dispatch`). The descriptor
 /// `pool` backs `ds` and returns to the device cache only when the set
 /// can no longer be in flight.
-struct PreparedDispatch {
+pub(super) struct PreparedDispatch {
     pipeline: ffi::VkPipeline,
     layout: ffi::VkPipelineLayout,
     ds: ffi::VkDescriptorSet,
-    pool: ffi::VkDescriptorPool,
+    pub(super) pool: ffi::VkDescriptorPool,
 }
 
 impl VulkanDevice {
@@ -751,7 +750,10 @@ impl VulkanDevice {
     /// one-shot dispatch and the batch encoder; the caller owns
     /// returning `pool` to the cache once the set can no longer be in
     /// flight. Every error path returns the pool itself.
-    fn prepare_wave_dispatch(&self, wave: &Wave) -> Result<PreparedDispatch, QuantaError> {
+    pub(super) fn prepare_wave_dispatch(
+        &self,
+        wave: &Wave,
+    ) -> Result<PreparedDispatch, QuantaError> {
         let (pipeline, layout, descriptor_set_layout, kinds) = {
             let compute_pipelines = self
                 .compute_pipelines
@@ -918,7 +920,7 @@ impl VulkanDevice {
     /// # Safety
     /// `cmd` must be in the recording state and `prep` built from a
     /// live pipeline (see `prepare_wave_dispatch`).
-    unsafe fn record_wave_commands(
+    pub(super) unsafe fn record_wave_commands(
         &self,
         cmd: ffi::VkCommandBuffer,
         prep: &PreparedDispatch,
@@ -1146,285 +1148,4 @@ impl VulkanDevice {
             keep_alive: self.self_ref.pulse_keep_alive(),
         })
     }
-}
-
-// ── Batched dispatch ────────────────────────────────────────────────────────
-
-/// The Vulkan [`crate::Batch`]: one command buffer accumulating
-/// dispatches with a global COMPUTE→COMPUTE memory barrier between
-/// consecutive encodes (Vulkan gives no implicit ordering between
-/// dispatches in a command buffer), submitted as one queue submission
-/// with one fence.
-///
-/// Lifetime bookkeeping an eager dispatch never needed:
-/// - every bound buffer handle and the wave's pipeline handle are
-///   PINNED (`VulkanDevice::batch_pins`) before the encode's registry
-///   lookups, so a destroy racing the open batch parks instead of
-///   freeing what the recorded commands reference;
-/// - descriptor pools return to the cache only after the submission's
-///   fence completes (resetting a pool whose set is in flight is UB);
-/// - an abandoned batch (dropped un-submitted) resets and reclaims its
-///   command buffer, returns its pools, and unpins — parked destroys
-///   then retire behind the newest *submitted* serial, which is
-///   correct because nothing submitted references them.
-pub(super) struct VulkanBatch {
-    device: *const VulkanDevice,
-    /// The exclusively owned command buffer — `None` once submitted
-    /// (`submit_and_wait` consumes the lease into its fence waiter).
-    /// An abandoned batch drops the lease back to the device's cache.
-    lease: Option<super::device::CmdLease>,
-    /// Copy of `lease.cmd` for the recording paths; dangling only
-    /// after submit, which consumes the batch.
-    cmd: ffi::VkCommandBuffer,
-    pools: Vec<ffi::VkDescriptorPool>,
-    /// One entry per `pin_for_batch` call (duplicates meaningful:
-    /// unpin decrements per occurrence).
-    pinned: Vec<u64>,
-    any_encoded: bool,
-    /// Serial mode (the public batch): a global barrier goes between
-    /// EVERY pair of encodes. Concurrent mode (the deferred lane):
-    /// barriers come only from `encode_barrier` at hazard-run
-    /// boundaries.
-    auto_barrier: bool,
-}
-
-// Safety: a `Batch` may be created on one thread and encoded/submitted
-// on another (the deferred lane keeps one behind a `Mutex`). Vulkan
-// command buffers require external synchronization, not thread
-// affinity, and every access is exclusive (`&mut self` / by-value under
-// that lock). The raw device pointer is valid for this batch's whole
-// life, Drop included: the api `Batch` wrapper — the only way this type
-// leaves the driver — owns a device `Arc` declared to drop AFTER the
-// inner batch (see `api::batch::Batch`).
-unsafe impl Send for VulkanBatch {}
-
-impl VulkanBatch {
-    pub(super) fn begin(device: &VulkanDevice, auto_barrier: bool) -> Result<Self, QuantaError> {
-        let lease = device.alloc_command_buffer()?;
-        let cmd = lease.cmd;
-        let begin = ffi::VkCommandBufferBeginInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            p_next: core::ptr::null(),
-            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            p_inheritance_info: core::ptr::null(),
-        };
-        let r = unsafe { ffi::vkBeginCommandBuffer(cmd, &begin) };
-        if r != ffi::VK_SUCCESS {
-            // Dropping the lease returns the pair to the cache.
-            return Err(QuantaError::submit_failed());
-        }
-        // Leading global barrier: Vulkan pipeline-barrier scopes cover
-        // SUBMISSION order, not command-buffer extent — this one line
-        // orders the whole batch after every previously submitted
-        // compute (the lane's threshold submits chain batches without
-        // host waits, and nothing else provides that dependency).
-        unsafe {
-            emit_global_compute_barrier(cmd);
-        }
-        Ok(VulkanBatch {
-            device: device as *const VulkanDevice,
-            lease: Some(lease),
-            cmd,
-            pools: Vec::new(),
-            pinned: Vec::new(),
-            any_encoded: false,
-            auto_barrier,
-        })
-    }
-}
-
-/// The global COMPUTE→COMPUTE memory barrier both batch modes use:
-/// prior shader writes become visible to later shader reads and
-/// writes, across the whole queue up to this point in submission
-/// order.
-///
-/// # Safety
-/// `cmd` must be in the recording state.
-unsafe fn emit_global_compute_barrier(cmd: ffi::VkCommandBuffer) {
-    let barrier = ffi::VkMemoryBarrier {
-        s_type: ffi::VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-        p_next: core::ptr::null(),
-        src_access_mask: ffi::VK_ACCESS_SHADER_WRITE_BIT,
-        dst_access_mask: ffi::VK_ACCESS_SHADER_READ_BIT | ffi::VK_ACCESS_SHADER_WRITE_BIT,
-    };
-    unsafe {
-        ffi::vkCmdPipelineBarrier(
-            cmd,
-            ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            ffi::VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0,
-            1,
-            &barrier as *const ffi::VkMemoryBarrier as *const c_void,
-            0,
-            core::ptr::null(),
-            0,
-            core::ptr::null(),
-        );
-    }
-}
-
-impl crate::batch::BatchInner for VulkanBatch {
-    fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
-        let device = unsafe { &*self.device };
-
-        // Pin FIRST — before any registry lookup — so a concurrent
-        // destroy of a bound buffer or of the wave's pipeline can only
-        // park, never free what this encode is about to reference.
-        let pin_base = self.pinned.len();
-        device.pin_for_batch(wave.handle);
-        self.pinned.push(wave.handle);
-        for slot in 0..wave.binding_count as usize {
-            let handle = wave.bindings[slot];
-            if handle != 0 {
-                device.pin_for_batch(handle);
-                self.pinned.push(handle);
-            }
-        }
-        let unpin_new = |batch: &mut Self| {
-            let fresh: Vec<u64> = batch.pinned.split_off(pin_base);
-            device.unpin_for_batch(fresh.into_iter());
-        };
-
-        let records = match device.fold_dispatch_records(wave, quarks) {
-            Ok(r) => r,
-            Err(e) => {
-                unpin_new(self);
-                return Err(e);
-            }
-        };
-        let prep = match device.prepare_wave_dispatch(wave) {
-            Ok(p) => p,
-            Err(e) => {
-                unpin_new(self);
-                return Err(e);
-            }
-        };
-
-        // Vulkan orders nothing between dispatches on one command
-        // buffer: a global memory barrier makes every prior encode's
-        // shader writes visible to this one's reads and writes — the
-        // chain shape the deferred lane records (op N+1 consumes op
-        // N's output).
-        if self.auto_barrier && self.any_encoded {
-            unsafe {
-                emit_global_compute_barrier(self.cmd);
-            }
-        }
-
-        let recorded = unsafe { self_record(device, self.cmd, &prep, wave, &records) };
-        match recorded {
-            Ok(()) => {
-                self.pools.push(prep.pool);
-                self.any_encoded = true;
-                Ok(())
-            }
-            Err(e) => {
-                device.return_descriptor_pool(prep.pool);
-                unpin_new(self);
-                Err(e)
-            }
-        }
-    }
-
-    fn encode_barrier(&mut self) -> Result<(), QuantaError> {
-        // Meaningful in concurrent mode (the lane's hazard-run
-        // boundary); harmless over-ordering in serial mode.
-        unsafe {
-            emit_global_compute_barrier(self.cmd);
-        }
-        Ok(())
-    }
-
-    fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {
-        let mut this = self;
-        let device = unsafe { &*this.device };
-        let r = unsafe { ffi::vkEndCommandBuffer(this.cmd) };
-        if r != ffi::VK_SUCCESS {
-            // Drop reclaims the (still-owned) command buffer, pools, pins.
-            return Err(QuantaError::submit_failed());
-        }
-        // Consumed: `submit_and_wait` owns the lease from here (its
-        // fence waiter returns it after the GPU is done; on submit
-        // failure it drops straight back to the cache) — Drop must not
-        // return it a second time, hence the take().
-        let Some(lease) = this.lease.take() else {
-            return Err(QuantaError::internal("batch submitted twice"));
-        };
-        let mut inner = device.submit_and_wait(lease)?;
-
-        // The submission has its serial: unpin now — anything parked
-        // for these handles retires behind the newest serial (ours).
-        let pins = core::mem::take(&mut this.pinned);
-        device.unpin_for_batch(pins.into_iter());
-
-        // Descriptor pools return only after the fence: compose the
-        // submission pulse with the pool give-back.
-        let pools = core::mem::take(&mut this.pools);
-        let inner_wait = inner.wait_fn.take();
-        let keep_alive = inner.keep_alive.take();
-        struct PoolReturner {
-            device: *const VulkanDevice,
-            pools: Vec<ffi::VkDescriptorPool>,
-        }
-        // Safety: same argument as `FenceWaiter` in submit_and_wait —
-        // the pool cache sits behind its mutex, and the pulse's
-        // keep-alive holds the device across the deferred wait.
-        unsafe impl Send for PoolReturner {}
-        impl PoolReturner {
-            fn take(self) -> (*const VulkanDevice, Vec<ffi::VkDescriptorPool>) {
-                (self.device, self.pools)
-            }
-        }
-        let returner = PoolReturner {
-            device: this.device,
-            pools,
-        };
-        Ok(Pulse {
-            handle: inner.handle,
-            completed: false,
-            keep_alive,
-            wait_fn: Some(Box::new(move || {
-                if let Some(wait) = inner_wait {
-                    wait();
-                }
-                let (device, pools) = returner.take();
-                let device = unsafe { &*device };
-                for pool in pools {
-                    device.return_descriptor_pool(pool);
-                }
-            })),
-        })
-    }
-}
-
-impl Drop for VulkanBatch {
-    fn drop(&mut self) {
-        let device = unsafe { &*self.device };
-        // A submitted batch reaches here with the lease consumed and
-        // pools/pins drained — every arm below no-ops. An ABANDONED
-        // batch was never submitted: dropping its lease returns the
-        // (still-recording) buffer to the cache, where reacquisition's
-        // pool reset clears it; its descriptor sets are unreferenced by
-        // the GPU, and its parked destroys retire behind the newest
-        // submitted serial (nothing submitted references them).
-        drop(self.lease.take());
-        for pool in self.pools.drain(..) {
-            device.return_descriptor_pool(pool);
-        }
-        let pins = core::mem::take(&mut self.pinned);
-        device.unpin_for_batch(pins.into_iter());
-    }
-}
-
-/// Free-fn shim: `record_wave_commands` is a device method, but the
-/// borrow checker cannot see through `&mut self` on the batch plus
-/// `&*self.device` — record through the device reference directly.
-unsafe fn self_record(
-    device: &VulkanDevice,
-    cmd: ffi::VkCommandBuffer,
-    prep: &PreparedDispatch,
-    wave: &Wave,
-    records: &[DispatchRecord],
-) -> Result<(), QuantaError> {
-    unsafe { device.record_wave_commands(cmd, prep, wave, records) }
 }

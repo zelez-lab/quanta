@@ -102,3 +102,31 @@ impl DeviceSelfRef {
         self.0.get().and_then(|w| w.upgrade())
     }
 }
+
+/// How a driver's `record_render_pass` / `record_resolve` failed, for
+/// the batch that called it. `Clean`: validation refused the pass
+/// before anything reached the command buffer — the batch is exactly
+/// as it was and only THIS pass fails. `Partial`: recording had
+/// started (a driver object failed to create, an encoder refused an
+/// op), the command buffer holds a truncated pass, and the batch
+/// marks itself broken: later encodes refuse and `submit` returns the
+/// error instead of committing. The per-submission `render_end` path
+/// maps both to the plain error.
+// Only the native drivers record into command buffers; the WebGPU
+// face submits per pass, so on wasm32 the type is declared and unused.
+#[cfg(feature = "render")]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) enum RecordFailure {
+    Clean(crate::QuantaError),
+    Partial(crate::QuantaError),
+}
+
+#[cfg(feature = "render")]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl RecordFailure {
+    pub(crate) fn into_error(self) -> crate::QuantaError {
+        match self {
+            RecordFailure::Clean(e) | RecordFailure::Partial(e) => e,
+        }
+    }
+}

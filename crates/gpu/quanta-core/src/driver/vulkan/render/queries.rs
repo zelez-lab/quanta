@@ -6,9 +6,12 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use crate::QuantaError;
+#[cfg(feature = "render")]
+use crate::driver::RecordFailure;
 
 use super::super::VulkanDevice;
 use super::super::ffi;
+#[cfg(feature = "render")]
 use super::super::image_rest_state;
 
 impl VulkanDevice {
@@ -163,11 +166,68 @@ impl VulkanDevice {
     /// same-format single-sample temp — resolve src→temp, then a
     /// format-converting `vkCmdBlitImage` temp→dst (1:1 extent, NEAREST,
     /// so the blit is exact; blit handles the channel swizzle).
+    /// Record the resolve into `cmd` (a command buffer in the
+    /// recording state) — the ONE recording path the per-submission
+    /// `resolve_texture` and the batch's `encode_resolve` share.
+    /// `Clean` failures (dead handles, usage refusals, a temp that
+    /// failed to create) leave `cmd` untouched; `recorded` flips right
+    /// before the first command reaches it.
+    #[cfg(feature = "render")]
+    pub(crate) fn record_resolve(
+        &self,
+        cmd: ffi::VkCommandBuffer,
+        src_handle: u64,
+        dst_handle: u64,
+    ) -> Result<(), RecordFailure> {
+        let mut recorded = false;
+        match self.record_resolve_inner(cmd, src_handle, dst_handle, &mut recorded) {
+            Ok(()) => Ok(()),
+            Err(e) if recorded => Err(RecordFailure::Partial(e)),
+            Err(e) => Err(RecordFailure::Clean(e)),
+        }
+    }
+
+    /// The per-submission resolve: its own command buffer, submitted
+    /// and WAITED (the eager path a device without render batching
+    /// takes; the lane never calls it on Vulkan).
     #[cfg(feature = "render")]
     pub(crate) fn resolve_texture_impl(
         &self,
         src_handle: u64,
         dst_handle: u64,
+    ) -> Result<(), QuantaError> {
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
+        let begin = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        // On failure the lease drops back to the cache (pool reset on
+        // reacquire) — a partial recording is never submitted.
+        self.record_resolve(cmd, src_handle, dst_handle)
+            .map_err(RecordFailure::into_error)?;
+        let r = unsafe { ffi::vkEndCommandBuffer(cmd) };
+        if r != ffi::VK_SUCCESS {
+            return Err(QuantaError::submit_failed());
+        }
+        self.submit_and_wait(lease).and_then(|mut p| p.wait())
+    }
+
+    #[cfg(feature = "render")]
+    fn record_resolve_inner(
+        &self,
+        cmd: ffi::VkCommandBuffer,
+        src_handle: u64,
+        dst_handle: u64,
+        recorded: &mut bool,
     ) -> Result<(), QuantaError> {
         // Conversion decision in its own lock scope: temp creation below
         // takes the textures WRITE lock, so it must not overlap the read
@@ -269,20 +329,9 @@ impl VulkanDevice {
         let (src_rest, src_rest_access, src_rest_stage) = image_rest_state(src.usage);
         let (dst_rest, dst_rest_access, dst_rest_stage) = image_rest_state(dst.usage);
 
-        let lease = self.alloc_command_buffer()?;
-        let cmd = lease.cmd;
-        let begin = ffi::VkCommandBufferBeginInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            p_next: core::ptr::null(),
-            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            p_inheritance_info: core::ptr::null(),
-        };
+        // Everything below writes commands into `cmd`.
+        *recorded = true;
         unsafe {
-            let r = ffi::vkBeginCommandBuffer(cmd, &begin);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
-
             // Transition src to TRANSFER_SRC from its tracked layout.
             let barrier_src = ffi::VkImageMemoryBarrier {
                 s_type: ffi::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -517,11 +566,6 @@ impl VulkanDevice {
                 2,
                 barriers_back.as_ptr(),
             );
-
-            let r = ffi::vkEndCommandBuffer(cmd);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
         }
         // Record the rest layouts so the NEXT transition on either
         // texture — a later resolve, a sub-region upload, a present —
@@ -540,7 +584,7 @@ impl VulkanDevice {
             );
         }
         drop(textures);
-        self.submit_and_wait(lease).and_then(|mut p| p.wait())
+        Ok(())
     }
 
     /// Get-or-create the cached single-sample intermediate for a

@@ -964,6 +964,8 @@ impl VulkanDevice {
                     // Swapchain images are always single-sample.
                     sample_count: 1,
                     device: None,
+                    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+                    lane: None,
                     live: false,
                 },
             ));
@@ -979,6 +981,8 @@ impl VulkanDevice {
                 // Swapchain images are always single-sample.
                 sample_count: 1,
                 device: None,
+                #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+                lane: None,
                 live: false,
             },
         ))

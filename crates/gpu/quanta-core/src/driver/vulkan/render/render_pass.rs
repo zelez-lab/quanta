@@ -3,6 +3,7 @@
 use alloc::{boxed::Box, format, vec, vec::Vec};
 use core::ffi::c_void;
 
+use crate::driver::RecordFailure;
 use crate::render_pass::RenderOp;
 use crate::{LoadOp, Pulse, QuantaError, RenderPass, StoreOp, Texture};
 
@@ -343,7 +344,18 @@ impl VulkanDevice {
         })
     }
 
-    pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
+    /// The recording body of `record_render_pass`. `recorded` flips
+    /// to true right before the first command reaches `cmd`; every
+    /// error before that leaves the buffer untouched. `objects`
+    /// accumulates the per-pass driver objects as they are created,
+    /// destroying them on any error path.
+    fn record_render_pass_inner(
+        &self,
+        cmd: ffi::VkCommandBuffer,
+        pass: &RenderPass,
+        recorded: &mut bool,
+        objects: &mut PassObjectsGuard,
+    ) -> Result<(), QuantaError> {
         let pipeline_handle = pass.ops.iter().find_map(|op| {
             if let RenderOp::SetPipeline(h) = op {
                 Some(*h)
@@ -382,6 +394,11 @@ impl VulkanDevice {
                     .query_pools
                     .read()
                     .map(|p| p.contains_key(&h))
+                    .unwrap_or(false),
+                HandleKind::RenderBundle => self
+                    .render_bundles
+                    .read()
+                    .map(|b| b.contains_key(&h))
                     .unwrap_or(false),
             })?;
             // Also fail loudly on a pipeline/target shape mismatch — a
@@ -599,6 +616,7 @@ impl VulkanDevice {
                 core::ptr::null(),
             )?
         };
+        objects.transient_rp = Some(vk_render_pass);
 
         // Create framebuffer — MRT uses multiple image views.
         let fb_attachments: Vec<ffi::VkImageView> = if has_mrt {
@@ -636,6 +654,7 @@ impl VulkanDevice {
         if result != ffi::VK_SUCCESS {
             return Err(QuantaError::submit_failed());
         }
+        objects.framebuffer = Some(framebuffer);
 
         // --- Descriptor pool: one set PER DRAW ---
         //
@@ -719,6 +738,7 @@ impl VulkanDevice {
                 return Err(QuantaError::submit_failed());
             }
             descriptor_pool = Some(pool);
+            objects.descriptor_pool = Some(pool);
             rp_layout = Some(rp.layout);
             rp_ds_layout = Some(rp.descriptor_set_layout);
         } else {
@@ -795,22 +815,35 @@ impl VulkanDevice {
             vec![clear_color]
         };
 
-        // Allocate command buffer and begin recording.
-        let lease = self.alloc_command_buffer()?;
-        let cmd = lease.cmd;
-        let begin_info = ffi::VkCommandBufferBeginInfo {
-            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            p_next: core::ptr::null(),
-            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            p_inheritance_info: core::ptr::null(),
-        };
-
-        unsafe {
-            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
+        // If any op is `ExecuteRenderBundle`, the pass must be begun
+        // with SECONDARY_COMMAND_BUFFERS contents (Vulkan forbids
+        // mixing inline + secondary inside one subpass). Refused HERE,
+        // before anything is recorded, so the refusal never truncates
+        // a pass inside a batch.
+        let uses_bundles = pass
+            .ops
+            .iter()
+            .any(|op| matches!(op, RenderOp::ExecuteRenderBundle { .. }));
+        if uses_bundles {
+            let has_inline_draw = pass.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    RenderOp::Draw { .. }
+                        | RenderOp::DrawIndexed { .. }
+                        | RenderOp::DrawIndirect { .. }
+                        | RenderOp::DrawIndexedIndirect { .. }
+                )
+            });
+            if has_inline_draw {
+                return Err(QuantaError::invalid_param(
+                    "Vulkan render: cannot mix inline draws with execute_bundle in one render pass",
+                ));
             }
+        }
 
+        // Everything below writes commands into `cmd`.
+        *recorded = true;
+        unsafe {
             // Transition target image to COLOR_ATTACHMENT_OPTIMAL. A
             // clearing pass may transition from UNDEFINED (contents die
             // anyway — and it is the universal wildcard). A LOADING
@@ -945,7 +978,7 @@ impl VulkanDevice {
             // source. A texture that is also the render target is skipped
             // (a read-after-write feedback loop is invalid API usage, and
             // it must stay COLOR_ATTACHMENT for the draw).
-            for handle in sampled_source_handles(&pass) {
+            for handle in sampled_source_handles(pass) {
                 if handle == pass.handle || pass.color_targets.iter().any(|ct| ct.texture == handle)
                 {
                     continue;
@@ -1013,31 +1046,6 @@ impl VulkanDevice {
                 clear_value_count: clear_values.len() as u32,
                 p_clear_values: clear_values.as_ptr(),
             };
-            // If any op is `ExecuteRenderBundle`, the pass must be
-            // begun with SECONDARY_COMMAND_BUFFERS contents (Vulkan
-            // forbids mixing inline + secondary inside one
-            // subpass). Pre-validate that inline draws and bundle
-            // execute don't coexist in the same pass.
-            let uses_bundles = pass
-                .ops
-                .iter()
-                .any(|op| matches!(op, RenderOp::ExecuteRenderBundle { .. }));
-            if uses_bundles {
-                let has_inline_draw = pass.ops.iter().any(|op| {
-                    matches!(
-                        op,
-                        RenderOp::Draw { .. }
-                            | RenderOp::DrawIndexed { .. }
-                            | RenderOp::DrawIndirect { .. }
-                            | RenderOp::DrawIndexedIndirect { .. }
-                    )
-                });
-                if has_inline_draw {
-                    return Err(QuantaError::invalid_param(
-                        "Vulkan render: cannot mix inline draws with execute_bundle in one render pass",
-                    ));
-                }
-            }
             let subpass_contents = if uses_bundles {
                 ffi::VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS
             } else {
@@ -1168,22 +1176,18 @@ impl VulkanDevice {
             }
 
             ffi::vkCmdEndRenderPass(cmd);
-            let r = ffi::vkEndCommandBuffer(cmd);
-            if r != ffi::VK_SUCCESS {
-                return Err(QuantaError::submit_failed());
-            }
         }
 
-        // The begin pass is ALWAYS per-pass transient now (the
-        // pipeline's baked pass never begins a pass), so it is always
-        // cleaned up with the framebuffer.
-        let transient_rp = Some(vk_render_pass);
         drop(samplers);
         drop(buffers);
         // The render pass's attachments end in COLOR_ATTACHMENT_OPTIMAL
         // (the hardcoded final layout); record that so a later
         // transition (pre-present, sub-region upload) starts from the
-        // right layout.
+        // right layout. Stored at RECORD time: record order is
+        // submission order (every submission goes through, or submits
+        // ahead of, the pending lane), so the tracked layout is the
+        // layout the image will have when the next recorded command
+        // runs.
         if let Some(t) = textures.get(&pass.handle) {
             t.current_layout.store(
                 ffi::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1200,6 +1204,61 @@ impl VulkanDevice {
         }
         drop(textures);
         drop(render_pipelines);
+        Ok(())
+    }
+
+    /// Record `pass` into `cmd` (a command buffer in the recording
+    /// state) — the ONE recording path the per-submission `render_end`
+    /// and the batch's `encode_render` share. Returns the per-pass
+    /// driver objects the recorded commands reference; the caller
+    /// destroys them after the submission's fence (or immediately if
+    /// the submission never happens).
+    ///
+    /// `Clean` failures (dead handles, pass shape, bundle mixing, a
+    /// driver object that failed to create) leave `cmd` untouched;
+    /// `Partial` means commands were already written. Either way the
+    /// objects created so far are destroyed here.
+    pub(crate) fn record_render_pass(
+        &self,
+        cmd: ffi::VkCommandBuffer,
+        pass: RenderPass,
+    ) -> Result<RenderPassObjects, RecordFailure> {
+        let mut recorded = false;
+        let mut objects = PassObjectsGuard::new(self.device);
+        match self.record_render_pass_inner(cmd, &pass, &mut recorded, &mut objects) {
+            Ok(()) => Ok(objects.finish()),
+            Err(e) if recorded => Err(RecordFailure::Partial(e)),
+            Err(e) => Err(RecordFailure::Clean(e)),
+        }
+    }
+
+    pub(crate) fn render_end_impl(&self, pass: RenderPass) -> Result<Pulse, QuantaError> {
+        // Allocate command buffer and begin recording.
+        let lease = self.alloc_command_buffer()?;
+        let cmd = lease.cmd;
+        let begin_info = ffi::VkCommandBufferBeginInfo {
+            s_type: ffi::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: core::ptr::null(),
+            flags: ffi::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            p_inheritance_info: core::ptr::null(),
+        };
+        unsafe {
+            let r = ffi::vkBeginCommandBuffer(cmd, &begin_info);
+            if r != ffi::VK_SUCCESS {
+                return Err(QuantaError::submit_failed());
+            }
+        }
+        // On failure the lease drops back to the cache, whose
+        // reacquire resets the pool — a partially recorded buffer is
+        // never submitted.
+        let objects = self
+            .record_render_pass(cmd, pass)
+            .map_err(RecordFailure::into_error)?;
+        let r = unsafe { ffi::vkEndCommandBuffer(cmd) };
+        if r != ffi::VK_SUCCESS {
+            objects.destroy(self.device);
+            return Err(QuantaError::submit_failed());
+        }
 
         // Submit WITHOUT blocking. `submit_and_wait` only records the
         // queue submission and hands back a Pulse whose wait_fn blocks
@@ -1213,12 +1272,7 @@ impl VulkanDevice {
                 // The submission never reached the queue, so the GPU
                 // holds no reference to the per-pass objects — destroy
                 // them immediately.
-                destroy_render_pass_objects(
-                    self.device,
-                    framebuffer,
-                    transient_rp,
-                    descriptor_pool,
-                );
+                objects.destroy(self.device);
                 return Err(e);
             }
         };
@@ -1232,9 +1286,7 @@ impl VulkanDevice {
         let cleanup = RenderPassCleanup {
             submit_pulse,
             device: self.device,
-            framebuffer,
-            transient_rp,
-            descriptor_pool,
+            objects: Some(objects),
         };
 
         Ok(Pulse {
@@ -1761,9 +1813,85 @@ struct DrawContext<'a> {
 struct RenderPassCleanup {
     submit_pulse: Pulse,
     device: ffi::VkDevice,
+    objects: Option<RenderPassObjects>,
+}
+
+/// The per-pass driver objects a recorded pass references until the
+/// submission carrying it completes: the framebuffer, the per-pass
+/// transient render pass, and (when a pipeline was bound) the
+/// descriptor pool holding its per-draw sets.
+pub(crate) struct RenderPassObjects {
     framebuffer: ffi::VkFramebuffer,
     transient_rp: Option<ffi::VkRenderPass>,
     descriptor_pool: Option<ffi::VkDescriptorPool>,
+}
+
+impl RenderPassObjects {
+    /// Destroy the objects. The caller guarantees the GPU no longer
+    /// references them (the fence signaled, or nothing was submitted).
+    pub(crate) fn destroy(self, device: ffi::VkDevice) {
+        destroy_render_pass_objects(
+            device,
+            self.framebuffer,
+            self.transient_rp,
+            self.descriptor_pool,
+        );
+    }
+}
+
+/// Owns the per-pass objects WHILE the pass is being recorded: a
+/// failure on any path drops the guard, which destroys whatever was
+/// created so far (nothing submitted references it); success takes
+/// them out through `finish`.
+struct PassObjectsGuard {
+    device: ffi::VkDevice,
+    framebuffer: Option<ffi::VkFramebuffer>,
+    transient_rp: Option<ffi::VkRenderPass>,
+    descriptor_pool: Option<ffi::VkDescriptorPool>,
+}
+
+impl PassObjectsGuard {
+    fn new(device: ffi::VkDevice) -> Self {
+        Self {
+            device,
+            framebuffer: None,
+            transient_rp: None,
+            descriptor_pool: None,
+        }
+    }
+
+    fn finish(mut self) -> RenderPassObjects {
+        RenderPassObjects {
+            framebuffer: self
+                .framebuffer
+                .take()
+                .expect("a recorded pass always has a framebuffer"),
+            transient_rp: self.transient_rp.take(),
+            descriptor_pool: self.descriptor_pool.take(),
+        }
+    }
+}
+
+impl Drop for PassObjectsGuard {
+    fn drop(&mut self) {
+        if self.framebuffer.is_none()
+            && self.transient_rp.is_none()
+            && self.descriptor_pool.is_none()
+        {
+            return;
+        }
+        unsafe {
+            if let Some(fb) = self.framebuffer.take() {
+                ffi::vkDestroyFramebuffer(self.device, fb, core::ptr::null());
+            }
+            if let Some(rp) = self.transient_rp.take() {
+                ffi::vkDestroyRenderPass(self.device, rp, core::ptr::null());
+            }
+            if let Some(pool) = self.descriptor_pool.take() {
+                ffi::vkDestroyDescriptorPool(self.device, pool, core::ptr::null());
+            }
+        }
+    }
 }
 
 // Drop only waits the submission fence (legal from any thread) and
@@ -1778,12 +1906,9 @@ impl Drop for RenderPassCleanup {
         // wait_fn does both), so the command buffer cannot be recycled
         // while still executing.
         let _ = self.submit_pulse.wait();
-        destroy_render_pass_objects(
-            self.device,
-            self.framebuffer,
-            self.transient_rp,
-            self.descriptor_pool,
-        );
+        if let Some(objects) = self.objects.take() {
+            objects.destroy(self.device);
+        }
     }
 }
 

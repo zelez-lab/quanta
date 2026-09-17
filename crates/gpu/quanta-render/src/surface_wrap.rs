@@ -68,9 +68,7 @@
 //! exports the rendered texture so an external compositor owns present
 //! instead.
 
-use alloc::sync::Arc;
-
-use quanta_core::{GpuDevice, QuantaError, QuantaErrorKind, SurfaceConfig, Texture};
+use quanta_core::{Gpu, QuantaError, QuantaErrorKind, SurfaceConfig, Texture};
 
 /// A swapchain over a platform presentation target. Created with
 /// [`RenderGpu::create_surface`](crate::RenderGpu::create_surface);
@@ -82,7 +80,10 @@ use quanta_core::{GpuDevice, QuantaError, QuantaErrorKind, SurfaceConfig, Textur
 pub struct Surface {
     pub(crate) handle: u64,
     pub(crate) config: SurfaceConfig,
-    pub(crate) device: Arc<dyn GpuDevice>,
+    /// The owning device handle — the driver for the swapchain calls,
+    /// the pending lane for the present (which submits what the
+    /// frame's passes encoded before showing the frame).
+    pub(crate) gpu: Gpu,
 }
 
 impl Surface {
@@ -112,7 +113,7 @@ impl Surface {
     /// pipeline per acquired frame from `frame.texture().format()`
     /// instead.
     pub fn format(&self) -> Result<quanta_core::Format, QuantaError> {
-        self.device.surface_format(self.handle)
+        self.gpu.device_handle().surface_format(self.handle)
     }
 
     /// Current frame width in pixels.
@@ -132,7 +133,9 @@ impl Surface {
     /// from [`acquire`](Surface::acquire)). Frames acquired before
     /// the reconfigure must be presented or dropped first.
     pub fn configure(&mut self, config: SurfaceConfig) -> Result<(), QuantaError> {
-        self.device.surface_configure(self.handle, &config)?;
+        self.gpu
+            .device_handle()
+            .surface_configure(self.handle, &config)?;
         self.config = config;
         Ok(())
     }
@@ -183,7 +186,9 @@ impl Surface {
             Err(e) if matches!(e.kind, QuantaErrorKind::SurfaceOutdated(_)) => {
                 // Self-heal: adopt the target's current extent if the
                 // driver can read it; otherwise the caller reconfigures.
-                let Some((width, height)) = self.device.surface_current_extent(self.handle) else {
+                let Some((width, height)) =
+                    self.gpu.device_handle().surface_current_extent(self.handle)
+                else {
                     return Err(e);
                 };
                 let mut config = self.config;
@@ -210,13 +215,13 @@ impl Surface {
     /// [`render_frame`](Surface::render_frame) — acquire/present plus
     /// resize self-healing in one call.
     pub fn acquire(&mut self) -> Result<SurfaceFrame, QuantaError> {
-        let (frame, mut texture) = self.device.surface_acquire(self.handle)?;
-        texture.__attach_device(self.device.clone());
+        let (frame, mut texture) = self.gpu.device_handle().surface_acquire(self.handle)?;
+        self.gpu.__attach_texture(&mut texture);
         Ok(SurfaceFrame {
             surface: self.handle,
             frame,
             texture,
-            device: self.device.clone(),
+            gpu: self.gpu.clone(),
             presented: false,
         })
     }
@@ -234,7 +239,7 @@ impl core::fmt::Debug for Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         // Best-effort: the driver default no-ops.
-        let _ = self.device.surface_destroy(self.handle);
+        let _ = self.gpu.device_handle().surface_destroy(self.handle);
     }
 }
 
@@ -251,7 +256,7 @@ pub struct SurfaceFrame {
     pub(crate) surface: u64,
     pub(crate) frame: u64,
     pub(crate) texture: Texture,
-    pub(crate) device: Arc<dyn GpuDevice>,
+    pub(crate) gpu: Gpu,
     pub(crate) presented: bool,
 }
 
@@ -273,7 +278,14 @@ impl SurfaceFrame {
     /// needed between submit and present.
     pub fn present(mut self) -> Result<(), QuantaError> {
         self.presented = true;
-        self.device.surface_present(self.surface, self.frame)
+        // The frame's passes sit in the pending lane: submit them
+        // (no wait) so the present lands behind them in queue order.
+        // This is the frame loop's natural submit point — one command
+        // buffer per frame.
+        self.gpu.__submit_pending()?;
+        self.gpu
+            .device_handle()
+            .surface_present(self.surface, self.frame)
     }
 }
 
@@ -291,7 +303,10 @@ impl Drop for SurfaceFrame {
     fn drop(&mut self) {
         if !self.presented {
             // Discard: return the image to the swapchain unshown.
-            let _ = self.device.surface_discard(self.surface, self.frame);
+            let _ = self
+                .gpu
+                .device_handle()
+                .surface_discard(self.surface, self.frame);
         }
     }
 }

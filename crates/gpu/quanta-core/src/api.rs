@@ -10,16 +10,16 @@ pub mod sparse_texture;
 pub mod texture;
 pub mod types;
 
-// Compute face — only when the `compute` feature is on (symmetric to
-// the render face below). `Wave` is the compute dispatch handle;
-// `Batch` records wave dispatches; `Queue` submits wave dispatches on
-// explicit queue handles.
-#[cfg(feature = "compute")]
+// The batch and the deferred lane serve BOTH faces: compute
+// dispatches (`Batch::dispatch`, `compute`) and render passes /
+// resolves routed through the lane (`render`). Either face turns them
+// on; the face-specific entry points inside carry their own gates.
+#[cfg(any(feature = "compute", feature = "render"))]
 pub mod batch;
-// The deferred-dispatch pending lane (`Gpu::deferred`) needs `std` for
-// its lock; every backend feature implies `std`, so the gate only
-// prunes the pure type-check no_std configuration (same as msaa_pool).
-#[cfg(all(feature = "compute", feature = "std"))]
+// The pending lane needs `std` for its lock; every backend feature
+// implies `std`, so the gate only prunes the pure type-check no_std
+// configuration (same as msaa_pool).
+#[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
 pub mod deferred;
 #[cfg(feature = "compute")]
 pub mod multi_queue;
@@ -109,9 +109,10 @@ pub use sparse_texture::SparseTexture;
 pub use texture::*;
 pub use types::*;
 
-// Compute-face re-exports — gated with the `compute` feature.
-#[cfg(feature = "compute")]
+// Shared by both faces (see the module gate above).
+#[cfg(any(feature = "compute", feature = "render"))]
 pub use batch::Batch;
+// Compute-face re-exports — gated with the `compute` feature.
 #[cfg(feature = "compute")]
 pub use gpu_type::{GpuType, KernelBinary, ScalarType};
 #[cfg(feature = "compute")]

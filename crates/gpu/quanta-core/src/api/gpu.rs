@@ -53,11 +53,12 @@ pub struct Gpu {
 /// device Arc — but future fields holding device children without
 /// their own keep-alive get the safe order for free).
 pub(crate) struct DeviceContext {
-    /// The deferred-dispatch pending lane — one per device (a single
+    /// The deferred-submission pending lane — one per device (a single
     /// lane = a single submission order; see [`crate::api::deferred`]).
-    /// Deferral is THE dispatch model, not a mode: every `dispatch`
-    /// encodes here and the lane submits at the sync points.
-    #[cfg(all(feature = "compute", feature = "std"))]
+    /// Deferral is THE submission model, not a mode: every `dispatch`,
+    /// render pass and resolve encodes here and the lane submits at
+    /// the sync points.
+    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
     pub(crate) pending: Arc<crate::api::deferred::PendingLane>,
     /// Compiled-wave cache — one per device, so `Gpu::wave` /
     /// `Gpu::wave_jit` dedup pipeline construction by kernel bytes
@@ -85,7 +86,7 @@ impl Gpu {
     pub(crate) fn new(inner: Arc<dyn GpuDevice>) -> Self {
         Self {
             ctx: Arc::new(DeviceContext {
-                #[cfg(all(feature = "compute", feature = "std"))]
+                #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
                 pending: Arc::new(crate::api::deferred::PendingLane::default()),
                 #[cfg(all(feature = "compute", feature = "std"))]
                 wave_cache: crate::api::wave_cache::WaveCache::default(),
@@ -391,7 +392,7 @@ impl Gpu {
             handle,
             count,
             device: self.ctx.device.clone(),
-            #[cfg(all(feature = "compute", feature = "std"))]
+            #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
             lane: Arc::clone(&self.ctx.pending),
             _marker: PhantomData,
         })
@@ -512,8 +513,24 @@ impl Gpu {
     /// Create a texture from a descriptor (full control).
     pub fn create_texture(&self, desc: &TextureDesc) -> Result<Texture, QuantaError> {
         let mut tex = self.ctx.device.texture_create(desc)?;
-        tex.device = Some(self.ctx.device.clone());
+        self.__attach_texture(&mut tex);
         Ok(tex)
+    }
+
+    /// Adopt a driver-built texture into this device: attach the
+    /// device Arc (so Drop releases the handle and the byte ops reach
+    /// the driver) and the pending lane (so `read`/`write` complete a
+    /// deferred pass that still owes the texture work). Every texture
+    /// a consumer can hold goes through here — `create_texture`, the
+    /// pooled intermediates, an acquired surface frame. Hook for the
+    /// `quanta-render` sibling crate; not part of the stable surface.
+    #[doc(hidden)]
+    pub fn __attach_texture(&self, texture: &mut Texture) {
+        texture.device = Some(self.ctx.device.clone());
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        {
+            texture.lane = Some(Arc::clone(&self.ctx.pending));
+        }
     }
 
     /// Create a simple RGBA8 texture (convenience).
@@ -610,34 +627,122 @@ impl Gpu {
     pub fn wait_idle(&self) -> Result<(), QuantaError> {
         // Deferred work that was never submitted is invisible to the
         // driver's drain — flush the pending lane first so "everything
-        // submitted so far" includes everything *dispatched* so far.
-        #[cfg(all(feature = "compute", feature = "std"))]
+        // submitted so far" includes everything *encoded* so far.
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
         self.ctx.pending.flush_and_wait()?;
         self.ctx.device.wait_idle()
     }
 
-    /// Submit all deferred dispatches and block until they complete.
-    /// The explicit sync point for consumers that bypass
-    /// [`Pulse`](crate::Pulse)s —
-    /// e.g. an external reader of a
+    /// Submit all deferred work — dispatches, render passes, resolves
+    /// — and block until it completes. The explicit sync point for
+    /// consumers that bypass [`Pulse`](crate::Pulse)s — e.g. an
+    /// external reader of a
     /// [`Field::native_handle`](crate::Field::native_handle) export.
     /// A no-op when nothing is pending.
-    #[cfg(all(feature = "compute", feature = "std"))]
+    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
     pub fn flush(&self) -> Result<(), QuantaError> {
         self.ctx.pending.flush_and_wait()
     }
 
-    /// Complete all deferred compute work, for the sibling extension
-    /// crates (`quanta-render`) whose submissions bypass the pending
-    /// lane: a render pass sampling a compute-written field must not
-    /// overtake the encoded producer. Exists on every feature combo
-    /// (no-op without `compute` + `std`) so callers need no cfg. Not
-    /// part of the stable public surface.
+    /// Submit all deferred work WITHOUT waiting for it. The "kick":
+    /// the GPU starts on everything encoded so far while the host
+    /// keeps encoding, and the next sync point still completes it.
+    /// Use it mid-frame when a heavy early stretch (a backdrop
+    /// pyramid, a simulation step) should overlap the rest of the
+    /// frame's encode instead of waiting for `present()`. A no-op
+    /// when nothing is pending.
+    #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+    pub fn submit(&self) -> Result<(), QuantaError> {
+        self.ctx.pending.submit_pending()
+    }
+
+    /// Complete all deferred work, for the sibling extension crates
+    /// (`quanta-render`) whose reads observe results (a stencil or
+    /// occlusion-query read of a pass still pending in the lane).
+    /// Exists on every feature combo (no-op without a lane) so
+    /// callers need no cfg. Not part of the stable public surface.
     #[doc(hidden)]
     pub fn __flush_pending(&self) -> Result<(), QuantaError> {
-        #[cfg(all(feature = "compute", feature = "std"))]
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
         self.ctx.pending.flush_and_wait()?;
         Ok(())
+    }
+
+    /// Submit deferred work without waiting, for the sibling
+    /// extension crates' submissions that bypass the lane (a present)
+    /// and must land behind everything encoded before them. Same
+    /// every-combo shape as [`__flush_pending`](Self::__flush_pending).
+    #[doc(hidden)]
+    pub fn __submit_pending(&self) -> Result<(), QuantaError> {
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        self.ctx.pending.submit_pending()?;
+        Ok(())
+    }
+
+    /// Test-support: encodes held by the lane's OPEN batch — 0 between
+    /// submissions, and always 0 on a backend without a batch path.
+    #[doc(hidden)]
+    pub fn __pending_encodes(&self) -> u32 {
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        {
+            self.ctx.pending.pending_encodes()
+        }
+        #[cfg(not(all(any(feature = "compute", feature = "render"), feature = "std")))]
+        {
+            0
+        }
+    }
+
+    /// Submit a recorded render pass: the render crate's
+    /// `RenderBuilder::pulse` seam. The pass encodes into the pending
+    /// lane in program order (behind every dispatch and pass encoded
+    /// before it) and the returned pulse is lazy — waiting it submits
+    /// and completes the whole lane. On a device whose batches take no
+    /// render work the pass submits on its own, after completing
+    /// pending compute (a pass sampling a compute-written field must
+    /// not overtake its producer). Not part of the stable surface.
+    #[cfg(feature = "render")]
+    #[doc(hidden)]
+    pub fn __render_end(&self, pass: crate::RenderPass) -> Result<crate::Pulse, QuantaError> {
+        #[cfg(feature = "std")]
+        {
+            let pass = match self.ctx.pending.encode_render(&self.ctx.device, pass)? {
+                None => {
+                    return Ok(crate::api::deferred::lazy_pulse(
+                        self.ctx.pending.clone(),
+                        self.ctx.device.clone(),
+                    ));
+                }
+                Some(pass) => pass,
+            };
+            self.ctx.pending.flush_and_wait()?;
+            self.ctx.device.render_end(pass)
+        }
+        #[cfg(not(feature = "std"))]
+        self.ctx.device.render_end(pass)
+    }
+
+    /// Resolve `src` (multisampled) into `dst`: the render crate's
+    /// `resolve_texture` seam. Encodes into the pending lane like a
+    /// pass — completes at the next sync point, never a host stall —
+    /// or, on a device without render batching, runs the driver's own
+    /// resolve after completing pending work. Not part of the stable
+    /// surface.
+    #[cfg(feature = "render")]
+    #[doc(hidden)]
+    pub fn __resolve_texture(&self, src: u64, dst: u64) -> Result<(), QuantaError> {
+        #[cfg(feature = "std")]
+        {
+            if self
+                .ctx
+                .pending
+                .encode_resolve(&self.ctx.device, src, dst)?
+            {
+                return Ok(());
+            }
+            self.ctx.pending.flush_and_wait()?;
+        }
+        self.ctx.device.resolve_texture(src, dst)
     }
 
     // === Timestamps ===
@@ -653,8 +758,11 @@ impl Gpu {
         self.ctx.device.timestamp_write(query.handle, index)
     }
 
-    /// Read all timestamps from a query set.
+    /// Read all timestamps from a query set. Completes deferred work
+    /// first: a timestamp written by a pass still pending in the lane
+    /// has no value to read yet.
     pub fn read_timestamps(&self, query: &TimestampQuery) -> Result<Vec<u64>, QuantaError> {
+        self.__flush_pending()?;
         self.ctx.device.timestamp_query_read(query.handle)
     }
 

@@ -1,8 +1,8 @@
 //! GpuDevice trait implementation for MetalDevice, type conversions, and batch dispatch.
 
-#[cfg(feature = "compute")]
+#[cfg(any(feature = "compute", feature = "render"))]
 use alloc::boxed::Box;
-#[cfg(feature = "render")]
+#[cfg(any(feature = "compute", feature = "render"))]
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -242,35 +242,16 @@ impl GpuDevice for MetalDevice {
 
     // === Batch ===
 
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin(&self) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
-        // The default compute encoder is SERIAL dispatch type: every
-        // dispatch implicitly orders against the previous one — the
-        // ordering the public Batch documents.
-        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
-        let encoder = unsafe { ffi::msg_id(cmd, b"computeCommandEncoder\0") };
-        // Both factory returns are AUTORELEASED — owned by the creating
-        // thread's autorelease pool, drained at that thread's exit. This
-        // batch lives in the shared deferred lane and must outlive the
-        // creating thread (a test/worker thread can exit with the batch
-        // still open), so take a real reference; Drop releases exactly
-        // once. Without this, the pool drain released the still-open
-        // encoder (Metal asserts in `_MTLCommandEncoder dealloc`) and
-        // left the lane encoding into freed driver objects.
-        unsafe {
-            ffi::msg_id(cmd, b"retain\0");
-            ffi::msg_id(encoder, b"retain\0");
-        }
-        Ok(Box::new(MetalBatch {
-            device: self as *const MetalDevice,
-            cmd,
-            encoder,
-            concurrent: false,
-            ended: false,
-        }))
+        // SERIAL dispatch type: every dispatch implicitly orders
+        // against the previous one — the ordering the public Batch
+        // documents. The compute encoder itself opens lazily (see
+        // `MetalBatch::compute_encoder`).
+        Ok(Box::new(MetalBatch::begin(self, false)))
     }
 
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     fn batch_begin_concurrent(
         &self,
     ) -> Result<Box<dyn crate::api::batch::BatchInner>, QuantaError> {
@@ -278,26 +259,12 @@ impl GpuDevice for MetalDevice {
         // exists only at explicit `memoryBarrierWithScope:` points —
         // which `encode_barrier` emits at the lane's hazard-run
         // boundaries.
-        let cmd = unsafe { ffi::msg_id(self.queue, b"commandBuffer\0") };
-        let encoder = unsafe {
-            ffi::msg_id_u64(
-                cmd,
-                b"computeCommandEncoderWithDispatchType:\0",
-                ffi::MTL_DISPATCH_TYPE_CONCURRENT,
-            )
-        };
-        // Autoreleased returns — take ownership; see `batch_begin`.
-        unsafe {
-            ffi::msg_id(cmd, b"retain\0");
-            ffi::msg_id(encoder, b"retain\0");
-        }
-        Ok(Box::new(MetalBatch {
-            device: self as *const MetalDevice,
-            cmd,
-            encoder,
-            concurrent: true,
-            ended: false,
-        }))
+        Ok(Box::new(MetalBatch::begin(self, true)))
+    }
+
+    #[cfg(feature = "render")]
+    fn supports_render_batching(&self) -> bool {
+        true
     }
 
     // === Render === (render-gated, step 085)
@@ -626,59 +593,10 @@ impl GpuDevice for MetalDevice {
 
     #[cfg(feature = "render")]
     fn resolve_texture(&self, src_handle: u64, dst_handle: u64) -> Result<(), QuantaError> {
-        let textures = self
-            .textures
-            .read()
-            .map_err(|_| QuantaError::internal("lock poisoned"))?;
-        let src = textures
-            .get(&src_handle)
-            .ok_or_else(|| QuantaError::invalid_param("bad src texture handle"))?;
-        let dst = textures
-            .get(&dst_handle)
-            .ok_or_else(|| QuantaError::invalid_param("bad dst texture handle"))?;
-
-        // Metal requires an MSAA attachment and its resolve target to share
-        // one pixel format — a mismatch is API-invalid and renders garbage
-        // or asserts in the driver. The Vulkan lane converts through a
-        // same-format temp + blit; Metal has no format-converting blit, so
-        // until a conversion pass is wired this fails loudly instead of
-        // encoding an invalid resolve.
-        {
-            let fmts = self
-                .texture_formats
-                .read()
-                .map_err(|_| QuantaError::internal("lock poisoned"))?;
-            if let (Some(&sf), Some(&df)) = (fmts.get(&src_handle), fmts.get(&dst_handle))
-                && sf != df
-            {
-                return Err(QuantaError::not_supported(
-                    "resolve_texture: source and destination formats differ; Metal has \
-                     no format-converting resolve — create the destination in the \
-                     source's format",
-                )
-                .with_context(&format!("src {sf:?} vs dst {df:?}")));
-            }
-        }
-
         unsafe {
             let cmd = ffi::msg_id(self.queue, b"commandBuffer\0");
-            let rpd = ffi::msg_id(
-                ffi::cls(b"MTLRenderPassDescriptor\0") as ffi::Id,
-                b"renderPassDescriptor\0",
-            );
-            let color_attachments = ffi::msg_id(rpd, b"colorAttachments\0");
-            let color0 = ffi::msg_id_u64(color_attachments, b"objectAtIndexedSubscript:\0", 0);
-            ffi::msg_void_id(color0, b"setTexture:\0", *src);
-            ffi::msg_void_id(color0, b"setResolveTexture:\0", *dst);
-            ffi::msg_void_u64(color0, b"setLoadAction:\0", ffi::MTL_LOAD_ACTION_LOAD);
-            ffi::msg_void_u64(
-                color0,
-                b"setStoreAction:\0",
-                ffi::MTL_STORE_ACTION_MULTISAMPLE_RESOLVE,
-            );
-
-            let encoder = ffi::msg_new_render_encoder(cmd, rpd);
-            ffi::msg_void(encoder, b"endEncoding\0");
+            self.record_resolve(cmd, src_handle, dst_handle)
+                .map_err(crate::driver::RecordFailure::into_error)?;
             ffi::msg_void(cmd, b"commit\0");
             ffi::msg_void(cmd, b"waitUntilCompleted\0");
         }
@@ -2034,23 +1952,34 @@ pub(crate) fn blend_op_to_metal(op: crate::BlendOp) -> ffi::NSUInteger {
     }
 }
 
-// ── Batched dispatch ────────────────────────────────────────────────────────
+// ── Batched submission ──────────────────────────────────────────────────────
 
-#[cfg(feature = "compute")]
+/// One command buffer, both faces: compute dispatches through a lazily
+/// opened compute encoder, render passes and resolves through their
+/// own render encoders. Metal allows one active encoder per command
+/// buffer, so the compute encoder is ended before a render/resolve
+/// encoder opens and re-created by the next dispatch; encoder
+/// boundaries are Metal's ordering points for tracked resources, which
+/// is exactly the render-then-sample / compute→render visibility the
+/// lane promises.
+#[cfg(any(feature = "compute", feature = "render"))]
 struct MetalBatch {
     device: *const MetalDevice,
     cmd: ffi::Id,
-    encoder: ffi::Id,
+    /// The open compute encoder, if any (retained — see `begin`).
+    encoder: Option<ffi::Id>,
     /// Concurrent dispatch type: dispatches may overlap and
     /// `encode_barrier` is a real memory barrier. Serial (the public
     /// batch): implicit per-dispatch ordering, barrier a no-op.
     concurrent: bool,
-    /// Set by `submit` so `Drop` doesn't end the encoding twice. A
-    /// batch dropped WITHOUT submit is abandoned: its encoder is ended
-    /// (Metal asserts on releasing an open encoder) and the command
-    /// buffer released un-committed — discarding work nothing ever
-    /// waited on, which nothing can observe.
-    ended: bool,
+    /// A recording failure mid-pass (`RecordFailure::Partial`): the
+    /// command buffer holds a truncated pass, so later encodes refuse
+    /// and `submit` returns this instead of committing. A batch dropped
+    /// WITHOUT submit is abandoned: its encoder is ended (Metal asserts
+    /// on releasing an open encoder) and the command buffer released
+    /// un-committed — discarding work nothing ever waited on, which
+    /// nothing can observe.
+    broken: Option<QuantaError>,
 }
 
 // Safety: a `Batch` may be created on one thread and encoded/submitted
@@ -2059,19 +1988,102 @@ struct MetalBatch {
 // synchronization*, not thread affinity — and every access here is
 // exclusive: `&mut self` on encode, by-value on submit, and the lane's
 // lock around both. LIFETIME is the other half of the argument:
-// `batch_begin` retains `cmd` and `encoder` (the factory returns are
-// autoreleased — pool-owned by the CREATING thread, drained at its
-// exit), so the batch owns them independent of any thread's pool and
-// Drop releases exactly once. The raw device pointer is valid for the
-// batch's whole life, Drop included: the api `Batch` wrapper — the
-// only way this type leaves the driver — owns a device `Arc` declared
-// to drop AFTER the inner batch (see `api::batch::Batch`).
-#[cfg(feature = "compute")]
+// `begin` retains `cmd` (and `compute_encoder` its encoder — the
+// factory returns are autoreleased: pool-owned by the CREATING thread,
+// drained at its exit), so the batch owns them independent of any
+// thread's pool and Drop releases exactly once. The raw device pointer
+// is valid for the batch's whole life, Drop included: the api `Batch`
+// wrapper — the only way this type leaves the driver — owns a device
+// `Arc` declared to drop AFTER the inner batch (see `api::batch::Batch`).
+#[cfg(any(feature = "compute", feature = "render"))]
 unsafe impl Send for MetalBatch {}
 
-#[cfg(feature = "compute")]
+#[cfg(any(feature = "compute", feature = "render"))]
+impl MetalBatch {
+    fn begin(device: &MetalDevice, concurrent: bool) -> Self {
+        let cmd = unsafe { ffi::msg_id(device.queue, b"commandBuffer\0") };
+        // Autoreleased factory return — owned by the creating thread's
+        // autorelease pool, drained at that thread's exit. This batch
+        // lives in the shared deferred lane and must outlive the
+        // creating thread (a test/worker thread can exit with the
+        // batch still open), so take a real reference; Drop releases
+        // exactly once.
+        unsafe { ffi::msg_id(cmd, b"retain\0") };
+        MetalBatch {
+            device: device as *const MetalDevice,
+            cmd,
+            encoder: None,
+            concurrent,
+            broken: None,
+        }
+    }
+
+    /// The open compute encoder, opened now if none is. Retained for
+    /// the same reason as the command buffer (see `begin`).
+    #[cfg(feature = "compute")]
+    fn compute_encoder(&mut self) -> ffi::Id {
+        if let Some(encoder) = self.encoder {
+            return encoder;
+        }
+        let encoder = unsafe {
+            if self.concurrent {
+                ffi::msg_id_u64(
+                    self.cmd,
+                    b"computeCommandEncoderWithDispatchType:\0",
+                    ffi::MTL_DISPATCH_TYPE_CONCURRENT,
+                )
+            } else {
+                ffi::msg_id(self.cmd, b"computeCommandEncoder\0")
+            }
+        };
+        unsafe { ffi::msg_id(encoder, b"retain\0") };
+        self.encoder = Some(encoder);
+        encoder
+    }
+
+    /// End (and release) the open compute encoder, if any — before a
+    /// render/resolve encoder opens, at submit, and on abandon.
+    fn end_compute_encoder(&mut self) {
+        if let Some(encoder) = self.encoder.take() {
+            unsafe {
+                ffi::msg_void(encoder, b"endEncoding\0");
+                ffi::msg_void(encoder, b"release\0");
+            }
+        }
+    }
+
+    fn check_not_broken(&self) -> Result<(), QuantaError> {
+        match &self.broken {
+            Some(e) => Err(QuantaError::internal(
+                "batch refused: an earlier pass failed mid-record and the command buffer \
+                 holds a truncated pass — the next sync point surfaces that error and \
+                 discards the batch",
+            )
+            .with_context(&format!("{e}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// Route a driver recording outcome: `Partial` breaks the batch.
+    #[cfg(feature = "render")]
+    fn recorded(&mut self, r: Result<(), crate::driver::RecordFailure>) -> Result<(), QuantaError> {
+        use crate::driver::RecordFailure;
+        match r {
+            Ok(()) => Ok(()),
+            Err(RecordFailure::Clean(e)) => Err(e),
+            Err(RecordFailure::Partial(e)) => {
+                self.broken = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "compute", feature = "render"))]
 impl crate::batch::BatchInner for MetalBatch {
+    #[cfg(feature = "compute")]
     fn encode_dispatch(&mut self, wave: &Wave, quarks: u32) -> Result<(), QuantaError> {
+        self.check_not_broken()?;
         let device = unsafe { &*self.device };
         // Same validation + binding + exact-count `dispatchThreads` as
         // a lone `Gpu::dispatch` — a batched dispatch must not
@@ -2081,17 +2093,23 @@ impl crate::batch::BatchInner for MetalBatch {
         // dependent dispatches in one batch see each other's writes in
         // encode order.
         device.validate_compute_texture_formats(wave)?;
-        device.encode_wave_dispatch_threads(self.encoder, wave, quarks)
+        let encoder = self.compute_encoder();
+        device.encode_wave_dispatch_threads(encoder, wave, quarks)
     }
 
+    #[cfg(feature = "compute")]
     fn encode_barrier(&mut self) -> Result<(), QuantaError> {
         // Serial encoders are already fully ordered; on the concurrent
         // encoder this is the run-boundary fence: everything encoded
-        // before completes before anything encoded after.
-        if self.concurrent {
+        // before completes before anything encoded after. With no
+        // compute encoder open (a render pass just closed it) the
+        // encoder boundary is the fence.
+        if self.concurrent
+            && let Some(encoder) = self.encoder
+        {
             unsafe {
                 ffi::msg_void_u64(
-                    self.encoder,
+                    encoder,
                     b"memoryBarrierWithScope:\0",
                     ffi::MTL_BARRIER_SCOPE_BUFFERS,
                 );
@@ -2100,30 +2118,50 @@ impl crate::batch::BatchInner for MetalBatch {
         Ok(())
     }
 
+    #[cfg(feature = "render")]
+    fn encode_render(&mut self, pass: crate::RenderPass) -> Result<(), QuantaError> {
+        self.check_not_broken()?;
+        let device = unsafe { &*self.device };
+        // One active encoder per command buffer: close the compute
+        // encoder first. The boundary orders the pass after every
+        // dispatch encoded so far.
+        self.end_compute_encoder();
+        let r = device.record_render_pass(self.cmd, pass);
+        self.recorded(r)
+    }
+
+    #[cfg(feature = "render")]
+    fn encode_resolve(&mut self, src: u64, dst: u64) -> Result<(), QuantaError> {
+        self.check_not_broken()?;
+        let device = unsafe { &*self.device };
+        self.end_compute_encoder();
+        let r = device.record_resolve(self.cmd, src, dst);
+        self.recorded(r)
+    }
+
     fn submit(self: Box<Self>) -> Result<Pulse, QuantaError> {
         let mut this = self;
-        unsafe {
-            ffi::msg_void(this.encoder, b"endEncoding\0");
+        if let Some(e) = this.broken.take() {
+            // Drop abandons the command buffer un-committed.
+            return Err(e);
         }
-        this.ended = true;
+        this.end_compute_encoder();
         let device = unsafe { &*this.device };
         Ok(super::device::make_async_pulse(device, this.cmd))
     }
 }
 
-#[cfg(feature = "compute")]
+#[cfg(any(feature = "compute", feature = "render"))]
 impl Drop for MetalBatch {
     fn drop(&mut self) {
+        // An abandoned batch still holds its compute encoder open;
+        // a submitted one has none. Then balance the `begin` retain —
+        // on every path (after submit the commit took its own
+        // reference through the queue), so the release is exactly
+        // once and the buffer no longer depends on the creating
+        // thread's autorelease pool.
+        self.end_compute_encoder();
         unsafe {
-            if !self.ended {
-                ffi::msg_void(self.encoder, b"endEncoding\0");
-            }
-            // Balance the `batch_begin` retains. Runs on every path —
-            // after submit (commit took its own reference via the
-            // queue) and on abandon alike — so the release is exactly
-            // once and the objects no longer depend on the creating
-            // thread's autorelease pool.
-            ffi::msg_void(self.encoder, b"release\0");
             ffi::msg_void(self.cmd, b"release\0");
         }
     }

@@ -285,7 +285,7 @@ jobs:
         run: cargo test --test gpu_texture -- --test-threads=1
 
       - name: GPU render tests
-        run: cargo test --test gpu_render --test gpu_pipeline --test gpu_mrt --test gpu_resolve -- --test-threads=1
+        run: cargo test --test gpu_render --test gpu_pipeline --test gpu_mrt --test gpu_resolve --test gpu_render_deferred -- --test-threads=1
 
       - name: GPU resource tests
         run: cargo test --test gpu_barriers --test gpu_mapped --test gpu_timestamps -- --test-threads=1
@@ -413,7 +413,7 @@ jobs:
         env:
           MTL_DEBUG_LAYER: "1"
           MTL_SHADER_VALIDATION: "1"
-        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_texture --test gpu_render --test gpu_deferred -- --test-threads=1
+        run: cargo test --test gpu_compute --test gpu_atomics --test gpu_texture --test gpu_render --test gpu_deferred --test gpu_render_deferred -- --test-threads=1
 
   # ─── LLVM compiler + SPIR-V validation ───────────────────────────────
   compiler-validation:
@@ -995,6 +995,7 @@ jobs:
             cargo test --test icb_vulkan --no-default-features --features vulkan,jit,compute
             cargo test --test render_midflight_destroy --no-default-features --features vulkan,render
             cargo test --test render_group --no-default-features --features vulkan,render
+            cargo test --test gpu_render_deferred --no-default-features --features vulkan,render,compute,jit
             cargo test --test gpu_surface --no-default-features --features vulkan,render
             cargo test --test gpu_timestamps --no-default-features --features vulkan,render,compute,jit
             cargo test --test gpu_advanced --no-default-features --features vulkan,render,compute,jit

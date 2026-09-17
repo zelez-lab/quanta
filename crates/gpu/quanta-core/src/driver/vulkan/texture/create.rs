@@ -138,6 +138,8 @@ impl VulkanDevice {
             format: desc.format,
             sample_count: desc.sample_count,
             device: None,
+            #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+            lane: None,
             live: true,
         })
     }
@@ -255,6 +257,8 @@ impl VulkanDevice {
             format: desc.format,
             sample_count: desc.sample_count,
             device: None,
+            #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+            lane: None,
             live: true,
         })
     }

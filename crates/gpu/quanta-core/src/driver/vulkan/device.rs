@@ -162,19 +162,21 @@ pub struct VulkanDevice {
     pub(super) resolve_temp: Mutex<Option<(u32, u32, u32, u64)>>,
     /// Pool of reusable descriptor pools — avoids create/destroy per dispatch.
     pub(super) descriptor_pool_cache: Mutex<Vec<ffi::VkDescriptorPool>>,
-    /// Handles (buffers AND wave pipelines — one device-wide handle
-    /// namespace) referenced by OPEN batches: encoded into a command
+    /// Handles (buffers, wave pipelines, and every resource a batched
+    /// render pass names: textures, render pipelines, query pools,
+    /// render bundles — one device-wide handle namespace) referenced
+    /// by OPEN batches: encoded into a command
     /// buffer that has no submission serial yet, so the retire bin's
     /// serial gate cannot protect them. A destroy that arrives while a
     /// handle is pinned parks in `batch_parked`; the batch's
     /// submit/drop unpins and hands the parked entries to the retire
     /// bin (which then stamps them behind the freshly assigned — or
     /// newest — serial). Values are open-batch refcounts.
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     pub(super) batch_pins: Mutex<HashMap<u64, u32>>,
     /// Destroys parked because their handle was pinned (see
     /// `batch_pins`).
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     pub(super) batch_parked: Mutex<Vec<(u64, super::retire::Retired)>>,
     /// Pool of reusable staging buffers — avoids alloc/free per texture upload.
     pub(super) staging_pool: Mutex<Vec<(ffi::VkBuffer, ffi::VkDeviceMemory, usize)>>,
@@ -696,7 +698,7 @@ impl VulkanDevice {
     /// Pin `handle` for an open batch (see `batch_pins`). Call while
     /// the referencing registry entry is still live — the pin must be
     /// visible before the encode's registry lookup can race a destroy.
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     pub(super) fn pin_for_batch(&self, handle: u64) {
         if let Ok(mut pins) = self.batch_pins.lock() {
             *pins.entry(handle).or_insert(0) += 1;
@@ -709,7 +711,7 @@ impl VulkanDevice {
     /// after this batch's own submit (its serial IS the newest) and
     /// for an abandoned batch (nothing submitted referenced them, so
     /// the newest completed serial already licenses destruction).
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     pub(super) fn unpin_for_batch(&self, pinned: impl Iterator<Item = u64>) {
         let Ok(mut pins) = self.batch_pins.lock() else {
             return; // poisoned: leak pins (and thus parked entries) rather than free early
@@ -743,7 +745,7 @@ impl VulkanDevice {
     /// Route a destroy through the batch pins: parks it when `handle`
     /// is pinned by an open batch, else hands it straight to the
     /// retire bin. Registry entry must already be removed.
-    #[cfg(feature = "compute")]
+    #[cfg(any(feature = "compute", feature = "render"))]
     pub(super) fn retire_or_park(&self, handle: u64, entry: super::retire::Retired) {
         let pinned = self
             .batch_pins
@@ -2055,9 +2057,9 @@ pub fn discover() -> Vec<Box<dyn GpuDevice>> {
             #[allow(clippy::arc_with_non_send_sync)]
             cmd_buffer_pool: std::sync::Arc::new(Mutex::new(Vec::new())),
             descriptor_pool_cache: Mutex::new(Vec::new()),
-            #[cfg(feature = "compute")]
+            #[cfg(any(feature = "compute", feature = "render"))]
             batch_pins: Mutex::new(HashMap::new()),
-            #[cfg(feature = "compute")]
+            #[cfg(any(feature = "compute", feature = "render"))]
             batch_parked: Mutex::new(Vec::new()),
             staging_pool: Mutex::new(Vec::new()),
             layout_cache: Mutex::new(HashMap::new()),
