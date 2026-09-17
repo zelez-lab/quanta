@@ -85,7 +85,9 @@ let pipeline = gpu.pipeline(
 ## Draw
 
 Create a render target (a texture to draw into), then use the chainable builder:
-clear it, bind the pipeline and vertices, draw three vertices, and submit.
+clear it, bind the pipeline and vertices, draw three vertices, and end the
+pass. Ending it records the pass into the device's pending work; the wait
+(or a read of the target, or a present) is what submits and completes it.
 
 ```rust,ignore
 let target = gpu.render_target(800, 600, Format::BGRA8)?;
@@ -95,8 +97,8 @@ gpu.render(&target)?
     .pipeline(&pipeline)      // bind the pipeline
     .vertices(0, &vb)         // bind the vertex buffer to slot 0
     .draw(3)                  // rasterize 3 vertices → one triangle
-    .pulse()?                 // submit
-    .wait()?;                 // block until the GPU finishes
+    .pulse()?                 // end the pass (recorded, not yet submitted)
+    .wait()?;                 // submit and block until the GPU finishes
 ```
 
 That's a rendered triangle sitting in `target`. From here you'd read it back

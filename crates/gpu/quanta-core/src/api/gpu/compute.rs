@@ -153,7 +153,7 @@ impl Gpu {
     pub fn dispatch(&self, wave: &Wave, quarks: u32) -> Result<Pulse, QuantaError> {
         #[cfg(feature = "std")]
         {
-            if self
+            if let Some(serial) = self
                 .ctx
                 .pending
                 .encode(self.device_handle(), wave, quarks)?
@@ -161,6 +161,7 @@ impl Gpu {
                 return Ok(crate::api::deferred::lazy_pulse(
                     self.ctx.pending.clone(),
                     self.device_handle().clone(),
+                    serial,
                 ));
             }
             // Not encodable (batch-less backend, or a texture-binding

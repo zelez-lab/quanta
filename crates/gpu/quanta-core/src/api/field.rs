@@ -242,15 +242,14 @@ pub enum NativeBufferHandle {
 }
 
 impl<T: Copy> Field<T> {
-    /// Complete any deferred-lane work that references this buffer.
-    /// No-op (one lock + set probe) when the lane owes it nothing —
-    /// in particular for freshly allocated fields, so mid-graph
-    /// uploads never break an open batch.
+    /// Complete any deferred-lane work that references this buffer —
+    /// the submissions that bound it, not the whole lane. No-op (one
+    /// lock + set probes) when the lane owes it nothing — in
+    /// particular for freshly allocated fields, so mid-graph uploads
+    /// never break an open batch.
     fn complete_deferred(&self) -> Result<(), QuantaError> {
         #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
-        if self.lane.references(self.handle) {
-            self.lane.flush_and_wait()?;
-        }
+        self.lane.complete_referencing(self.handle)?;
         Ok(())
     }
 

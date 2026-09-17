@@ -109,8 +109,13 @@ The builder chain:
 - `.pipeline()` -- bind a render pipeline
 - `.vertices()` -- bind vertex data at a slot
 - `.draw()` -- record a draw command
-- `.pulse()` -- submit the render pass, returns a `Pulse`
-- `.wait()` -- block until the GPU finishes
+- `.pulse()` -- end the render pass, returns a `Pulse`. The pass is recorded
+  into the device's pending work and submitted — together with every other
+  pass and dispatch recorded since the last sync point — at the next one: a
+  wait on any pulse, a read of the target, a surface present, `gpu.flush()`
+  or `gpu.submit()`. A frame is one command buffer by construction.
+- `.wait()` -- submit if needed, then block until the GPU finishes this
+  pass (and everything submitted before it; later work stays in flight)
 
 ## PipelineDesc
 

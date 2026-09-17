@@ -213,7 +213,13 @@ queue. A result read that is not a byte op (`stencil_read`,
 
 The sync contract is unchanged — reads still require a wait, and a wait
 still completes everything the read needs; deferral only moves *when* work
-is submitted, never what a sync point means. Validation still happens at
+is submitted, never what a sync point means. Sync points are as narrow as
+they can be: a pulse's `wait` completes the submission its work went into
+(submitting it first if still open) and everything before it, leaving later
+submissions in flight — one pulse per frame, waited N frames later, is
+depth-N pacing; a `Field`/`Texture` byte op completes only the submissions
+that referenced that resource, never the batch being encoded unless it is
+one of them. Validation still happens at
 `pulse()` (dead handles, pass shape); only the submission moves. Work
 that is never synced — no wait, no read, no present, no flush — may never
 execute; that was always unobservable by contract. On backends without a

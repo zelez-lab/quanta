@@ -679,6 +679,21 @@ impl Gpu {
         Ok(())
     }
 
+    /// Test-support: submitted batches the lane has not yet waited —
+    /// proves that waiting one frame's pulse leaves later frames in
+    /// flight. Always 0 on a backend without a batch path.
+    #[doc(hidden)]
+    pub fn __outstanding_batches(&self) -> usize {
+        #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
+        {
+            self.ctx.pending.outstanding_batches()
+        }
+        #[cfg(not(all(any(feature = "compute", feature = "render"), feature = "std")))]
+        {
+            0
+        }
+    }
+
     /// Test-support: encodes held by the lane's OPEN batch — 0 between
     /// submissions, and always 0 on a backend without a batch path.
     #[doc(hidden)]
@@ -706,14 +721,16 @@ impl Gpu {
     pub fn __render_end(&self, pass: crate::RenderPass) -> Result<crate::Pulse, QuantaError> {
         #[cfg(feature = "std")]
         {
+            use crate::api::deferred::RenderEncode;
             let pass = match self.ctx.pending.encode_render(&self.ctx.device, pass)? {
-                None => {
+                RenderEncode::Deferred(serial) => {
                     return Ok(crate::api::deferred::lazy_pulse(
                         self.ctx.pending.clone(),
                         self.ctx.device.clone(),
+                        serial,
                     ));
                 }
-                Some(pass) => pass,
+                RenderEncode::Declined(pass) => pass,
             };
             self.ctx.pending.flush_and_wait()?;
             self.ctx.device.render_end(pass)

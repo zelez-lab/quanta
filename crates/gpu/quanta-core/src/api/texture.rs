@@ -53,27 +53,25 @@ impl Texture {
         self.device = Some(device);
     }
 
-    /// Complete any deferred-lane work that references this texture.
-    /// No-op (one lock + set probe) when the lane owes it nothing —
-    /// a fresh upload target never breaks an open batch.
+    /// Complete any deferred-lane work that references this texture —
+    /// the submissions that drew into or sampled it, not the whole
+    /// lane (the frame being encoded stays pending, later frames stay
+    /// in flight). No-op (one lock + set probes) when the lane owes it
+    /// nothing — a fresh upload target never breaks an open batch.
     fn complete_deferred(&self) -> Result<(), QuantaError> {
         #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
-        if let Some(lane) = &self.lane
-            && lane.references(self.handle)
-        {
-            lane.flush_and_wait()?;
+        if let Some(lane) = &self.lane {
+            lane.complete_referencing(self.handle)?;
         }
         Ok(())
     }
 
-    /// Submit (without waiting) any deferred-lane work that references
-    /// this texture, so a submission of our own lands behind it.
+    /// Submit (without waiting) the open batch if it references this
+    /// texture, so a submission of our own lands behind it.
     fn submit_deferred(&self) -> Result<(), QuantaError> {
         #[cfg(all(any(feature = "compute", feature = "render"), feature = "std"))]
-        if let Some(lane) = &self.lane
-            && lane.references(self.handle)
-        {
-            lane.submit_pending()?;
+        if let Some(lane) = &self.lane {
+            lane.submit_if_referenced(self.handle)?;
         }
         Ok(())
     }

@@ -211,6 +211,30 @@ read the target's current extent (Metal `drawableSize`, Vulkan
 **once** — the healed extent shows through `surface.config()` / `width()` /
 `height()`. `Timeout` propagates for you to retry next iteration.
 
+#### When your frame actually runs
+
+`.pulse()` records a pass; nothing reaches the GPU until a sync point.
+In a frame loop that point is the present, so a frame's passes — the
+scene, its offscreen groups, an MSAA resolve — reach the queue as **one
+command buffer per frame**. Three knobs when the default is not what you
+want:
+
+- **`gpu.submit()`** submits everything recorded so far without waiting.
+  Call it mid-frame when an early, heavy stretch (a shadow pyramid, a
+  simulation step) should overlap the rest of the frame's encode instead
+  of starting at present.
+- **A pulse waits its own frame.** `pulse.wait()` completes the
+  submission that pass went into and everything before it — never the
+  frames submitted after. Holding one pulse per frame and waiting the one
+  from N frames back is exactly depth-N pacing.
+- **Uploads wait only the frames that used the texture.** A
+  `texture.write()` completes the submissions that drew with or sampled
+  that texture and leaves the frame being encoded pending. To upload
+  every frame without ever waiting, double-buffer the texture.
+
+The one thing to remember: a frame you record and never present (nor
+wait, read or flush) never runs.
+
 #### The manual loop
 
 When the loop needs custom resize or timeout policy, spell it out over the
@@ -237,9 +261,9 @@ loop {
         .draw(3)
         .pulse()?;
 
-    // Present after the pass is SUBMITTED (`.pulse()` returned). No CPU
-    // wait is needed: the driver orders presentation after the submitted
-    // GPU work, asynchronously.
+    // Present after the pass is RECORDED (`.pulse()` returned). The
+    // present submits the frame's passes and orders presentation after
+    // them — no CPU wait is needed.
     frame.present()?;
 }
 ```

@@ -360,7 +360,11 @@ resource handle is safe — its deferred wait (and any cleanup it
 carries) always runs against a live device. The depth-N
 in-flight-fence pattern, which holds a pulse across frames and often
 across teardown, relies on this; no drop-order discipline is required
-on the consumer side.
+on the consumer side. A deferred pulse (every `dispatch`, every render
+pass) waits *its own submission* — the batch its work went into,
+submitted first if it is still open, plus everything submitted before
+it — and leaves later submissions in flight, so the pattern keeps its
+depth.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -547,7 +551,7 @@ the [vertex/fragment coordinate conventions](../rendering/tutorials/vertex-fragm
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `.pulse()` | `Result<Pulse>` | End the pass: validate, encode into the per-device lane (program order; one command buffer per sync interval), return a lazy completion signal — waiting it submits and completes the whole lane |
+| `.pulse()` | `Result<Pulse>` | End the pass: validate, encode into the per-device lane (program order; one command buffer per sync interval), return a lazy completion signal — waiting it submits (if still open) and completes the submission this pass went into and everything before it; later submissions stay in flight |
 
 ---
 

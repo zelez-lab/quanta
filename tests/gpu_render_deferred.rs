@@ -605,3 +605,162 @@ fn msaa_builder_pass_is_one_encode() {
         "resolved msaa pass",
     );
 }
+
+#[test]
+fn waiting_a_frame_pulse_leaves_later_frames_in_flight() {
+    let Some(gpu) = try_gpu() else { return };
+    let Some(batching) = batches_render(&gpu) else {
+        return;
+    };
+    if !batching {
+        eprintln!("SKIP: per-submission backend");
+        return;
+    }
+    // Three "frames", each submitted with the kick (present's role
+    // in a windowed loop), the third left open.
+    let a = gpu.render_target(4, 4, Format::RGBA8).unwrap();
+    let b = gpu.render_target(4, 4, Format::RGBA8).unwrap();
+    let c = gpu.render_target(4, 4, Format::RGBA8).unwrap();
+    let mut pulse_a = gpu
+        .render(&a)
+        .unwrap()
+        .clear(Color::rgba(1.0, 0.0, 0.0, 1.0))
+        .pulse()
+        .unwrap();
+    gpu.submit().unwrap();
+    let mut pulse_b = gpu
+        .render(&b)
+        .unwrap()
+        .clear(Color::rgba(0.0, 1.0, 0.0, 1.0))
+        .pulse()
+        .unwrap();
+    gpu.submit().unwrap();
+    let mut pulse_c = gpu
+        .render(&c)
+        .unwrap()
+        .clear(Color::rgba(0.0, 0.0, 1.0, 1.0))
+        .pulse()
+        .unwrap();
+    assert_eq!(gpu.__outstanding_batches(), 2, "two frames submitted");
+    assert_eq!(gpu.__pending_encodes(), 1, "third frame still open");
+
+    // The depth-N pattern: waiting the OLDEST frame must not drain
+    // the newer ones — frame b stays in flight, frame c stays open.
+    pulse_a.wait().unwrap();
+    assert_eq!(gpu.__outstanding_batches(), 1, "frame b still in flight");
+    assert_eq!(gpu.__pending_encodes(), 1, "frame c still open");
+    expect_rgb(&a.read().unwrap(), 4, 0, 0, (255, 0, 0), "frame a");
+    // (the read of `a` touched nothing newer either)
+    assert_eq!(gpu.__outstanding_batches(), 1);
+    assert_eq!(gpu.__pending_encodes(), 1);
+
+    // Waiting the open frame's pulse submits it and completes through
+    // it — which includes the older frame b (queue order).
+    pulse_c.wait().unwrap();
+    assert_eq!(gpu.__outstanding_batches(), 0);
+    assert_eq!(gpu.__pending_encodes(), 0);
+    pulse_b.wait().unwrap(); // already complete: a no-op
+    expect_rgb(&b.read().unwrap(), 4, 0, 0, (0, 255, 0), "frame b");
+    expect_rgb(&c.read().unwrap(), 4, 0, 0, (0, 0, 255), "frame c");
+}
+
+#[test]
+fn texture_byte_ops_wait_only_the_batches_that_touched_them() {
+    let Some(gpu) = try_gpu() else { return };
+    if !shaders_ready(
+        &gpu,
+        &[&DEFER_QUAD_VERTEX_SHADER, &DEFER_SAMPLE_FRAG_SHADER],
+    ) {
+        eprintln!("SKIP: no shader binary");
+        return;
+    }
+    let Some(batching) = batches_render(&gpu) else {
+        return;
+    };
+    if !batching {
+        eprintln!("SKIP: per-submission backend");
+        return;
+    }
+    let sampling = pipeline(&gpu, &DEFER_QUAD_VERTEX_SHADER, &DEFER_SAMPLE_FRAG_SHADER);
+    let vb = fullscreen_vb(&gpu);
+    // The atlas shape: an uploadable texture sampled by frame 1,
+    // presented (submitted), then re-uploaded while frame 2 — which
+    // never touches it — is being encoded. The upload must wait frame
+    // 1 only, and frame 1 must have sampled the OLD contents.
+    let atlas = gpu.texture(4, 4).unwrap();
+    atlas.write(&[255u8; 4 * 4 * 4]).unwrap();
+    let sampled = gpu.render_target(4, 4, Format::RGBA8).unwrap();
+    let other = gpu.render_target(4, 4, Format::RGBA8).unwrap();
+    let _ = draw_quad(
+        gpu.render(&sampled).unwrap().clear(Color::BLACK),
+        &sampling,
+        &vb,
+        Some(&atlas),
+        (4, 4),
+    )
+    .unwrap();
+    gpu.submit().unwrap(); // frame 1 submitted — it sampled `atlas`
+    let _ = gpu
+        .render(&other)
+        .unwrap()
+        .clear(Color::rgba(0.0, 0.0, 0.0, 1.0))
+        .pulse()
+        .unwrap();
+    gpu.submit().unwrap(); // frame 2 submitted, never touched `atlas`
+    let _ = gpu
+        .render(&other)
+        .unwrap()
+        .clear(Color::rgba(0.5, 0.5, 0.5, 1.0))
+        .pulse()
+        .unwrap(); // frame 3 open, never touched `atlas`
+    assert_eq!(gpu.__outstanding_batches(), 2);
+    assert_eq!(gpu.__pending_encodes(), 1);
+
+    atlas.write(&[7u8; 4 * 4 * 4]).unwrap();
+    assert_eq!(
+        gpu.__outstanding_batches(),
+        1,
+        "the upload waited frame 1 (which sampled the atlas) and nothing newer"
+    );
+    assert_eq!(
+        gpu.__pending_encodes(),
+        1,
+        "the open frame was not submitted"
+    );
+    // Frame 1 ran BEFORE the upload landed: it sampled white, not 7s.
+    expect_rgb(
+        &sampled.read().unwrap(),
+        4,
+        1,
+        1,
+        (255, 255, 255),
+        "frame 1 sampled the old atlas",
+    );
+    assert_eq!(
+        gpu.__pending_encodes(),
+        1,
+        "reading a completed target submits nothing"
+    );
+
+    // A read of a texture the OPEN frame draws into submits and
+    // completes through it (queue order carries frame 2 along).
+    let px = other.read().unwrap();
+    assert_eq!(gpu.__outstanding_batches(), 0);
+    assert_eq!(gpu.__pending_encodes(), 0);
+    expect_rgb(
+        &px,
+        4,
+        1,
+        1,
+        (128, 128, 128),
+        "open frame completed by the read",
+    );
+    expect_rgb(
+        &atlas.read().unwrap(),
+        4,
+        1,
+        1,
+        (7, 7, 7),
+        "upload landed after frame 1",
+    );
+}
