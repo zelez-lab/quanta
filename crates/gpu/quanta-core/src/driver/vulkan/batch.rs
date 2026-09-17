@@ -387,19 +387,14 @@ impl crate::batch::BatchInner for VulkanBatch {
         let pools = core::mem::take(&mut this.pools);
         #[cfg(feature = "render")]
         let render_objects = core::mem::take(&mut this.render_objects);
-        let inner_wait = inner.wait_fn.take();
         let keep_alive = inner.keep_alive.take();
+        let handle = inner.handle;
         struct AfterFence {
             device: *const VulkanDevice,
             pools: Vec<ffi::VkDescriptorPool>,
             #[cfg(feature = "render")]
             render_objects: Vec<RenderPassObjects>,
         }
-        // Safety: same argument as `FenceWaiter` in submit_and_wait —
-        // the pool cache sits behind its mutex, the per-pass objects
-        // are exclusively ours, and the pulse's keep-alive holds the
-        // device across the deferred wait.
-        unsafe impl Send for AfterFence {}
         impl AfterFence {
             fn run(self) {
                 let device = unsafe { &*self.device };
@@ -412,22 +407,49 @@ impl crate::batch::BatchInner for VulkanBatch {
                 }
             }
         }
-        let after = AfterFence {
-            device: this.device,
-            pools,
-            #[cfg(feature = "render")]
-            render_objects,
+        /// The submission's fence wait plus the after-fence work,
+        /// run EXACTLY ONCE whether the pulse is waited or dropped
+        /// unwaited (the lane drops its outstanding pulses at device
+        /// teardown; a public batch's caller may drop the pulse
+        /// anytime). Dropping the wait closure unrun would leak the
+        /// fence, the framebuffers and the transient render passes
+        /// past `vkDestroyDevice` — the same shape the per-pass path
+        /// guards with `RenderPassCleanup`.
+        struct BatchCleanup {
+            inner: Pulse,
+            after: Option<AfterFence>,
+        }
+        // Safety: same argument as `FenceWaiter` in submit_and_wait —
+        // the fence wait is legal from any thread, the pool cache sits
+        // behind its mutex, the per-pass objects are exclusively ours,
+        // and the outer pulse's keep-alive holds the device across the
+        // deferred wait (its `wait_fn` drops before its `keep_alive`).
+        unsafe impl Send for BatchCleanup {}
+        impl Drop for BatchCleanup {
+            fn drop(&mut self) {
+                // Waits the fence (which destroys it, returns the command
+                // buffer lease and completes the retire serial), then
+                // hands the pools back and destroys the per-pass objects.
+                let _ = self.inner.wait();
+                if let Some(after) = self.after.take() {
+                    after.run();
+                }
+            }
+        }
+        let cleanup = BatchCleanup {
+            inner,
+            after: Some(AfterFence {
+                device: this.device,
+                pools,
+                #[cfg(feature = "render")]
+                render_objects,
+            }),
         };
         Ok(Pulse {
-            handle: inner.handle,
+            handle,
             completed: false,
             keep_alive,
-            wait_fn: Some(Box::new(move || {
-                if let Some(wait) = inner_wait {
-                    wait();
-                }
-                after.run();
-            })),
+            wait_fn: Some(Box::new(move || drop(cleanup))),
         })
     }
 }
